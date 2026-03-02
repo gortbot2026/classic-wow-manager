@@ -3511,6 +3511,27 @@ app.get('/auth/logout', (req, res, next) => {
   });
 });
 
+// QA auth bypass - staging only, requires secret token
+app.get('/auth/qa-bypass', (req, res) => {
+  const bypassToken = process.env.QA_BYPASS_TOKEN;
+  if (!bypassToken || req.query.token !== bypassToken) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  // Log in as a fake QA user
+  const qaUser = {
+    id: 'qa-bot-0000000001',
+    username: 'QA-Gort',
+    discriminator: '0000',
+    avatar: null,
+    accessToken: 'qa-bypass',
+    refreshToken: 'qa-bypass',
+  };
+  req.login(qaUser, (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.redirect(req.query.redirect || '/');
+  });
+});
+
 app.get('/user', async (req, res) => {
   if (req.isAuthenticated()) {
     try {
