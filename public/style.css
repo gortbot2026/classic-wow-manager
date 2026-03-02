@@ -56,6 +56,17 @@ body.has-raid-bar {
     filter: brightness(1.1);
 }
 
+/* Sandbox/staging environment label — replaces logo on staging deployments */
+.sandbox-logo {
+    color: #FF6600;
+    font-weight: 900;
+    font-size: 22px;
+    letter-spacing: 2px;
+    text-decoration: none;
+    display: inline-block;
+    line-height: 30px;
+}
+
 .top-nav { display: flex; gap: 0; height: 44px; align-items: stretch; position: absolute; left: 50%; transform: translateX(-50%); top: 0; }
 
 /* Button-style top navigation links */

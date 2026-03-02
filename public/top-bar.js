@@ -258,6 +258,31 @@ function injectRulesNavLink() {
     });
 }
 
+/**
+ * Replaces the logo image with bold orange "SANDBOX" text on staging deployments.
+ * Detection is hostname-based: only activates when the hostname contains "staging".
+ * Must be called AFTER normalizeTopBar() so the logo-link anchor is already in place.
+ *
+ * @see public/style.css .sandbox-logo for styling
+ */
+function injectSandboxBanner() {
+    try {
+        const hostname = window.location.hostname || '';
+        if (!hostname.includes('staging')) return;
+
+        const logoImg = document.querySelector('.top-bar .app-logo');
+        if (!logoImg) return;
+
+        const sandboxLabel = document.createElement('span');
+        sandboxLabel.textContent = 'SANDBOX';
+        sandboxLabel.className = 'sandbox-logo';
+
+        logoImg.parentNode.replaceChild(sandboxLabel, logoImg);
+    } catch (_) {
+        // Fail silently — production and localhost are unaffected
+    }
+}
+
 // Normalize top bar: link logo to home and remove explicit Home link
 function normalizeTopBar() {
     try {
@@ -624,6 +649,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Inject links first so icon enhancement can decorate them
     injectRulesNavLink();
     normalizeTopBar();
+    injectSandboxBanner();
     enhanceTopNavIcons();
     highlightActiveNav();
     setupUpcomingRaidsDropdown();
