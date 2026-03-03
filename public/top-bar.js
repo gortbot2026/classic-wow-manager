@@ -277,7 +277,15 @@ function injectSandboxBanner() {
         sandboxLabel.textContent = 'SANDBOX';
         sandboxLabel.className = 'sandbox-logo';
 
-        logoImg.parentNode.replaceChild(sandboxLabel, logoImg);
+        const parentAnchor = logoImg.parentNode;
+        parentAnchor.replaceChild(sandboxLabel, logoImg);
+
+        // Set inline color on the anchor to guarantee orange in all browsers,
+        // including those without CSS :has() support
+        if (parentAnchor.tagName === 'A') {
+            parentAnchor.style.color = '#FF6600';
+            parentAnchor.style.textDecoration = 'none';
+        }
     } catch (_) {
         // Fail silently — production and localhost are unaffected
     }

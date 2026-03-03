@@ -56,15 +56,32 @@ body.has-raid-bar {
     filter: brightness(1.1);
 }
 
-/* Sandbox/staging environment label — replaces logo on staging deployments */
-.sandbox-logo {
-    color: #FF6600;
+/* Sandbox/staging environment label — replaces logo on staging deployments.
+   High-specificity selector ensures orange wins over .top-bar { color: white }
+   cascading through the .logo-link anchor. !important as belt-and-suspenders. */
+.top-bar .logo-link .sandbox-logo,
+.top-bar .sandbox-logo {
+    color: #FF6600 !important;
     font-weight: 900;
     font-size: 22px;
     letter-spacing: 2px;
     text-decoration: none;
     display: inline-block;
     line-height: 30px;
+}
+
+/* Ensure the anchor wrapper inherits the orange when it contains the sandbox label */
+.top-bar a.logo-link:has(.sandbox-logo) {
+    color: #FF6600 !important;
+    text-decoration: none;
+}
+
+/* Prevent hover/visited/active states from overriding the orange */
+.top-bar a.logo-link:has(.sandbox-logo):hover,
+.top-bar a.logo-link:has(.sandbox-logo):visited,
+.top-bar a.logo-link:has(.sandbox-logo):active {
+    color: #FF6600 !important;
+    text-decoration: none;
 }
 
 .top-nav { display: flex; gap: 0; height: 44px; align-items: stretch; position: absolute; left: 50%; transform: translateX(-50%); top: 0; }
