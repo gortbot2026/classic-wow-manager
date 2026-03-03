@@ -494,6 +494,7 @@ cloudinary.config({
 // --- Database Configuration ---
 const connectionString = process.env.DATABASE_URL;
 const isProduction = process.env.NODE_ENV === 'production';
+console.log(`[startup] NODE_ENV=${process.env.NODE_ENV || '(not set)'}, isProduction=${isProduction}`);
 
 const pool = new Pool({
   connectionString: connectionString,
@@ -1789,7 +1790,7 @@ app.use(session({
     pool: pool,
     tableName: 'session',
     createTableIfMissing: true,
-    ttl: 30 * 24 * 60 * 60 // keep sessions for 30 days in store
+    ttl: 90 * 24 * 60 * 60 // keep sessions for 90 days in store
   }),
   name: 'sid',
   secret: process.env.SESSION_SECRET,
@@ -1798,7 +1799,7 @@ app.use(session({
   rolling: true, // refresh cookie expiration on every response
   proxy: true,
   cookie: {
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days cookie lifetime
+    maxAge: 90 * 24 * 60 * 60 * 1000, // 90 days cookie lifetime
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax'
   }
@@ -1807,6 +1808,99 @@ app.use(session({
 // --- Passport.js Configuration ---
 app.use(passport.initialize());
 app.use(passport.session());
+
+// --- Discord Token Refresh ---
+
+/** How often (ms) to proactively refresh Discord tokens — 6 days (1 day buffer before 7-day expiry). */
+const TOKEN_REFRESH_AGE_MS = 6 * 24 * 60 * 60 * 1000;
+/** Minimum interval (ms) between refresh attempts to avoid hammering Discord API. */
+const TOKEN_REFRESH_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Refresh a Discord OAuth access token using the stored refresh token.
+ * Updates the user object in-place and saves the session on success.
+ *
+ * @param {object} req - Express request (must have req.user and req.session)
+ * @returns {Promise<boolean>} true if refresh succeeded, false otherwise
+ */
+async function refreshDiscordToken(req) {
+  const user = req.user;
+  if (!user || !user.refreshToken || user.refreshToken === 'qa-bypass') {
+    return false;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: user.refreshToken,
+      client_id: process.env.DISCORD_CLIENT_ID,
+      client_secret: process.env.DISCORD_CLIENT_SECRET,
+    });
+
+    const response = await axios.post(
+      'https://discord.com/api/v10/oauth2/token',
+      params.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const data = response.data;
+    user.accessToken = data.access_token;
+    user.refreshToken = data.refresh_token;
+    user.tokenIssuedAt = Date.now();
+    user.lastRefreshAttempt = Date.now();
+
+    // Persist updated tokens to the session store
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => (err ? reject(err) : resolve()));
+    });
+
+    console.log(`[token-refresh] SUCCESS discord_id=${user.id} at ${new Date().toISOString()} expires_in=${data.expires_in}s`);
+    return true;
+  } catch (err) {
+    const status = err.response ? err.response.status : 'network_error';
+    const body = err.response ? JSON.stringify(err.response.data) : err.message;
+    console.warn(`[token-refresh] FAILED discord_id=${user.id} status=${status} body=${body} at ${new Date().toISOString()}`);
+
+    // Record attempt time so we respect the cooldown
+    user.lastRefreshAttempt = Date.now();
+    req.session.save(() => {}); // best-effort save
+    return false;
+  }
+}
+
+/**
+ * Middleware: proactively refresh Discord tokens approaching expiry.
+ * Runs only for authenticated users. Never blocks or errors out.
+ */
+app.use((req, res, next) => {
+  if (!req.user || !req.isAuthenticated || !req.isAuthenticated()) return next();
+
+  // Skip QA bypass users
+  if (req.user.accessToken === 'qa-bypass') return next();
+
+  const user = req.user;
+  const now = Date.now();
+
+  // Rate-limit: skip if we attempted recently
+  if (user.lastRefreshAttempt && (now - user.lastRefreshAttempt) < TOKEN_REFRESH_COOLDOWN_MS) {
+    return next();
+  }
+
+  // Determine if refresh is needed
+  let needsRefresh = false;
+  if (!user.tokenIssuedAt) {
+    // Existing session without timestamp — attempt one refresh to set it
+    needsRefresh = true;
+  } else if ((now - user.tokenIssuedAt) > TOKEN_REFRESH_AGE_MS) {
+    needsRefresh = true;
+  }
+
+  if (!needsRefresh) return next();
+
+  // Fire and forget — don't block the request
+  refreshDiscordToken(req).catch(() => {});
+  return next();
+});
 
 passport.serializeUser((user, done) => {
   done(null, user);
@@ -1823,9 +1917,11 @@ passport.use(new DiscordStrategy({
     scope: ['identify']
 },
 (accessToken, refreshToken, profile, done) => {
-    // Store the access token in the profile for later use
+    // Store tokens and issue timestamp for proactive refresh
     profile.accessToken = accessToken;
     profile.refreshToken = refreshToken;
+    profile.tokenIssuedAt = Date.now();
+    console.log(`[session] Created for discord_id=${profile.id} at ${new Date().toISOString()}`);
     return done(null, profile);
 }));
 
