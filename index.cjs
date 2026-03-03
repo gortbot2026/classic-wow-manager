@@ -9796,12 +9796,27 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
     const discordUser = identityRes.rows[0] || null;
     const altAuth = altAuthRes.rows[0] || null;
 
+    // Resolve username from multiple sources: discord_users > member_events > roster_overrides
+    const memberEventUsername = memberEventsRes.rows.length > 0 ? memberEventsRes.rows[0].username : null;
+    let rosterUsername = null;
+    if (!discordUser?.username && !memberEventUsername) {
+      const rosterFallback = await client.query(
+        `SELECT original_signup_name FROM roster_overrides
+         WHERE discord_user_id = $1 ORDER BY event_id DESC LIMIT 1`, [discordId]
+      );
+      rosterUsername = rosterFallback.rows[0]?.original_signup_name || null;
+    }
+    // Resolve avatar from member events if not in discord_users
+    const memberEventAvatar = memberEventsRes.rows.length > 0 ? memberEventsRes.rows[0].avatar_url : null;
+
     const identity = {
       discordId,
-      username: discordUser ? discordUser.username : null,
-      discriminator: discordUser ? discordUser.discriminator : null,
-      avatar: discordUser ? discordUser.avatar : null,
-      email: discordUser ? discordUser.email : (altAuth ? altAuth.email : null),
+      username: discordUser?.username || memberEventUsername || rosterUsername || null,
+      discriminator: discordUser?.discriminator || (memberEventsRes.rows[0]?.tag || null),
+      avatar: discordUser?.avatar
+        ? `https://cdn.discordapp.com/avatars/${discordId}/${discordUser.avatar}.png`
+        : (memberEventAvatar || null),
+      email: discordUser?.email || (altAuth ? altAuth.email : null),
       authProvider: altAuth ? altAuth.provider : (discordUser ? 'discord' : null),
       firstLogin: discordUser ? discordUser.first_login : null,
       lastLogin: discordUser ? discordUser.last_login : null
@@ -10574,9 +10589,19 @@ app.get('/api/guild-members', async (req, res) => {
         g.join_date,
         g.discord_id,
         CASE WHEN g.discord_id IS NOT NULL THEN true ELSE false END as has_discord_link,
-        du.username AS discord_username
+        COALESCE(du.username, dme.username, ro.signup_name) AS discord_username
       FROM guildies g
       LEFT JOIN discord_users du ON du.discord_id = g.discord_id
+      LEFT JOIN LATERAL (
+        SELECT username FROM discord_member_events
+        WHERE discord_id = g.discord_id
+        ORDER BY created_at DESC LIMIT 1
+      ) dme ON true
+      LEFT JOIN LATERAL (
+        SELECT original_signup_name AS signup_name FROM roster_overrides
+        WHERE discord_user_id = g.discord_id
+        ORDER BY event_id DESC LIMIT 1
+      ) ro ON true
       ORDER BY g.rank_name, g.character_name
     `);
     client.release();

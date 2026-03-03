@@ -1,68 +1,64 @@
-# Security: Admin Player Profile Page
+# Security: Admin Player Profile Page (/admin/player/:discordId)
 
-**Feature:** `/admin/player/:discordId` — comprehensive admin view of a player  
-**Status:** In Review (2026-03-03)
+_Reviewed by Security Gort — 2026-03-03_
 
----
+## Authentication Requirements
 
-## Authentication & Authorization
+- All API endpoints (`GET /api/admin/player/:discordId`, `PATCH /api/admin/player/:discordId/notes`) are protected by `requireManagement` middleware.
+- Frontend (`public/admin/player.html`) checks `fetch('/user')` → `hasManagementRole` and redirects non-admins to `/` on load.
+- Unauthenticated requests to the API receive 401; non-management users receive 403.
 
-- All API endpoints (`GET /api/admin/player/:discordId`, `PATCH /api/admin/player/:discordId/notes`) are protected by `requireManagement` middleware
-- Frontend checks `hasManagementRole` via `/user` endpoint and redirects non-admins to `/`
-- Discord ID URL parameter is validated as numeric-only, max 20 chars: `/^[0-9]{1,20}$/`
+## Authorization Rules
+
+- Only users with the `management` role (verified server-side via `requireManagement`) may access any player profile data or modify notes.
+- Guild-members API strips `discord_username` server-side (not just CSS) for non-management users to prevent data leakage.
 
 ## Input Validation
 
 ### Discord ID parameter
-- Validated with regex `/^[0-9]{1,20}$/` before any DB queries
-- Applied to both GET and PATCH endpoints
+- Both `GET /api/admin/player/:discordId` and `PATCH /api/admin/player/:discordId/notes` validate: `/^[0-9]{1,20}$/`
+- Rejects non-numeric or overly long Discord IDs with HTTP 400.
 
-### PATCH note editing (field allowlist)
-```js
-const ALLOWED_FIELDS = ['public_note', 'officer_note', 'custom_note'];
-if (!ALLOWED_FIELDS.includes(field)) return 400;
-```
-The field name is validated against the allowlist **before** being interpolated into the SQL statement as a column name. This is safe from SQL injection.
+### Note editing (`PATCH /api/admin/player/:discordId/notes`)
+- `field` parameter validated against allowlist: `['public_note', 'officer_note', 'custom_note']` before SQL interpolation.
+- `characterName` and `className` are passed as parameterized query arguments ($2, $3) — no injection risk.
+- Returns 400 for invalid field names, 404 if character not found.
 
-### Note value (PATCH body)
-- Passed to PostgreSQL as parameterized `$1` — safe from SQL injection
-- No length limit enforced — consider adding max length validation in future
+### WCL log_id in URL construction
+- Validated with `/^[a-zA-Z0-9]+$/` before use in URL construction. Null returned (no link rendered) if validation fails.
 
-## SQL Injection
+## XSS Prevention
 
-All backend queries use parameterized `$1`/`$2` placeholders. No raw string interpolation of user input.
+### Backend (index.cjs)
+- All API responses return JSON data; no HTML construction server-side for this feature.
 
-Exception: `field` column name in PATCH query is interpolated (`SET ${field} = $1`) but is validated against a 3-item allowlist first — **not user-controlled**.
+### Frontend (public/admin/player.js)
+- All user-supplied data rendered via `esc()` helper, which uses `div.textContent = str; return div.innerHTML` — textContent-based escaping, safe against XSS.
+- Applied to: username, discordId, email, authProvider, character names, class, race, faction, buff names, poll questions, event IDs, role keys, assignment text, etc.
+- No innerHTML assignments with raw unescaped user data anywhere in player.js.
 
-## XSS
+### Frontend (public/guild-members.html)
+- `escHtml()` helper (same textContent-based pattern) applied to all user data rendered via innerHTML: `character_name`, `discord_username`, `discord_id`.
 
-### ✅ `public/admin/player.js` (player profile page)
-- Uses a DOM-safe `esc()` function (sets `textContent`, reads `.innerHTML`) throughout all user data rendering
-- All data from API is passed through `esc()` before insertion into `innerHTML`
+## SQL Injection Prevention
 
-### ⚠️ `public/guild-members.html` (known issue — filed for fix)
-- `member.discord_username` is inserted into `innerHTML` via string concatenation **without escaping**
-- Fix: Create and use a shared `esc()` helper consistent with `player.js` pattern
-- `member.character_name` also unescaped in new admin-link code, though WoW character names are letters-only (low practical risk)
+- All database queries use parameterized placeholders (`$1`, `$2`, etc.) via the `pg` library.
+- The only column name interpolated into SQL is `field` in the PATCH notes endpoint, which is validated against a 3-item allowlist before use.
+- Poll votes query uses correct column `pv.voter_discord_id` (fixed from `pv.discord_id`).
 
-## Guild-Members API Information Exposure
+## Error Handling
 
-- `GET /api/guild-members` returns `discord_username` for all callers regardless of auth level
-- Display is hidden client-side via CSS/JS (`admin-col` columns)
-- Server-side filtering of `discord_username` field for non-management users should be considered
+- Role grant/revoke/list endpoints return generic error messages, not `e.message`, preventing stack trace/DB schema leakage.
+- PATCH notes endpoint returns generic "Error updating note" on 500.
+- `console.error` logs full error stack server-side for debugging without exposing to clients.
 
-## Known Functional Bug (Not Security)
+## Known Security Considerations
 
-The poll votes query in `GET /api/admin/player/:discordId` uses `pv.discord_id` instead of `pv.voter_discord_id`:
-```sql
-WHERE pv.discord_id = $1   -- WRONG: column is voter_discord_id
-```
-This causes a PostgreSQL error, making the entire admin player profile API return 500 for all requests.
+- **Pre-existing dependency CVEs** (not introduced by this feature): `fast-xml-parser` (critical, AWS SDK), `multer` (high, file uploads), `axios` (high), `minimatch` (high), `qs` (high), `lodash` (moderate). None are directly exploitable via this feature. Track for future sprint updates.
+- Player profile page is read-only (except note editing). No financial transactions, no auth state changes, low-blast-radius endpoint.
+- Role grant/revoke buttons on the profile page use existing, separately-secured management API endpoints.
 
 ## Audit Logging
 
-Role grant/revoke actions are logged in `role_audit` table with actor and timestamp. Note edits are NOT logged — consider adding an audit trail for officer/public note changes.
-
-## Dependency Notes
-
-`fast-xml-parser` (transitive via `@aws-sdk/*`) has known critical CVEs (DoS via entity expansion). Not directly exploitable through this feature, but should be tracked for resolution.
+- Role grants and revocations performed via the profile page are recorded in `role_audit` table via `auditRoleChange()`.
+- Note edits are not individually audited (low sensitivity), but `updated_at` timestamp is updated on each change.
