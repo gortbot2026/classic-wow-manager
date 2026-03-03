@@ -1486,16 +1486,35 @@ body.faq .content { background: transparent; box-shadow: none; }
         width: 50px !important;
         height: 50px !important;
     }
+
+    /* Reduce SANDBOX font on tablet to prevent overflow/clipping */
+    .top-bar .sandbox-logo {
+        font-size: 18px !important;
+        letter-spacing: 1px !important;
+    }
 }
 
 @media (max-width: 600px) {
     .top-bar {
         flex-direction: column;
         padding: 10px;
+        height: auto; /* Allow top-bar to grow when stacking */
+    }
+    .top-bar-left {
+        flex-direction: column;
+        align-items: center;
+        width: 100%;
     }
     .app-logo {
         margin-bottom: 10px;
         max-width: 140px;
+    }
+    /* Ensure SANDBOX label is visible and properly sized on mobile */
+    .top-bar .sandbox-logo {
+        font-size: 18px !important;
+        letter-spacing: 1px !important;
+        text-align: center;
+        width: 100%;
     }
     .top-nav { position: static; transform: none; }
     

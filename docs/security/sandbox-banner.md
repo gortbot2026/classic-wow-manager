@@ -1,85 +1,41 @@
-# Security: Sandbox Banner (top-bar.js)
+# Security: Sandbox Banner (Staging Environment Indicator)
 
-**Feature:** Replace logo with bold orange "SANDBOX" text on staging deployments  
-**Files:** `public/top-bar.js`, `public/style.css`  
-**Review date:** 2026-03-02  
-**Reviewed by:** Security Gort  
-**Verdict:** PASS
+**Feature:** Orange "SANDBOX" text replaces the 1Principles logo on staging deployments.
+**Files:** `public/top-bar.js`, `public/style.css`
+**Last reviewed:** 2026-03-03 by Security Gort
 
----
+## Authentication Requirements
+None — this is a purely visual, client-side feature with no auth involvement.
 
-## What It Does
+## Authorization Rules
+None — the banner is visible to all users on staging.
 
-`injectSandboxBanner()` in `public/top-bar.js` detects the staging environment by checking
-`window.location.hostname.includes('staging')`. If matched, it replaces the `.app-logo` `<img>`
-element inside `.top-bar` with a `<span class="sandbox-logo">SANDBOX</span>` element.
-
-The function runs **after** `normalizeTopBar()` in the `DOMContentLoaded` handler so the
-`<a class="logo-link">` anchor wrapping is already in place.
-
----
-
-## Authentication & Authorization
-
-- **No auth required** — purely cosmetic, client-side only.
-- No server-side endpoint touched. No session data accessed.
-
----
+## How Staging is Detected
+- Detection is purely client-side via `window.location.hostname.includes('staging')`
+- This is not user-controllable input; hostname is set by the server/DNS
+- Production site is unaffected — `staging` does not appear in its hostname
 
 ## Input Validation
-
-- **No user input processed.** `window.location.hostname` is a read-only browser API.
-- The text inserted into the DOM is the static literal string `'SANDBOX'` via `textContent`
-  (never `innerHTML`), so no user-supplied data can reach the DOM.
-
----
+No user input is involved. The injected text is the literal string `'SANDBOX'` (hardcoded, not user-supplied).
 
 ## XSS Considerations
+- `sandboxLabel.textContent = 'SANDBOX'` is used — **not** `innerHTML`
+- `textContent` is safe from XSS by design (content is treated as text, not HTML)
+- CSS color values are hex literals (`#FF6600`) — no dynamic evaluation
 
-| Risk | Status |
-|------|--------|
-| innerHTML injection | ❌ Not used — `textContent` only |
-| Dynamic string interpolation | ❌ Not used — static `'SANDBOX'` literal |
-| User-controlled content in DOM | ❌ None — hostname is read-only |
-
----
-
-## Fail-Safe Behavior
-
-The entire function is wrapped in `try/catch` with a no-op catch block. Any unexpected
-error (e.g., DOM not ready, `.app-logo` absent) silently no-ops without affecting
-production or localhost.
-
----
-
-## Scope Isolation
-
-| Environment | Behavior |
-|-------------|----------|
-| `classic-wow-manager-staging-*.herokuapp.com` | SANDBOX text shown ✅ |
-| `www.1principles.net` (production) | Logo unchanged ✅ |
-| `localhost` / `127.0.0.1` | Logo unchanged ✅ |
-
----
-
-## Dependency Notes
-
-As of 2026-03-02, `npm audit` reports **23 pre-existing vulnerabilities** (1 low, 1 moderate,
-20 high, 1 critical) in the project. These are **not introduced by this change** (confirmed via
-`git diff HEAD~1 package.json` — empty diff).
-
-Notable pre-existing issues for a future maintenance sprint:
-- `fast-xml-parser` — critical CVE (DoS via entity expansion)
-- `multer` — high CVE (DoS via resource exhaustion)
-- `axios` — high CVE (prototype pollution)
-- `qs` — high CVE (array limit bypass DoS)
-
-These should be addressed in a dedicated dependency-update sprint (not blocking this feature).
-
----
+## SQL Injection
+Not applicable — this is a front-end CSS/JS change with no database interaction.
 
 ## Known Security Considerations
+- The banner does NOT provide any security guarantee — it is purely informational
+- An attacker could spoof the banner by injecting CSS/JS on a compromised page, but this does not affect security posture
+- The `hostname.includes('staging')` check could theoretically match a custom domain containing "staging" — acceptable risk, as no sensitive logic is gated on this check
 
-- This feature has zero server-side footprint — attack surface is nil.
-- If someone spoofs `staging` into a hostname on a malicious site, they'd only ever see
-  "SANDBOX" text — no security impact.
+## Pre-existing Dependency Vulnerabilities (noted, not introduced by this change)
+- `multer <=2.0.2` — high severity DoS (file upload handling)
+- `qs 6.7.0-6.14.1` — high severity DoS (query string parsing)
+- `minimatch` — ReDoS vulnerability
+- Recommendation: Run `npm audit fix` in a dedicated sprint
+
+## Audit Logging
+Not applicable — no server-side changes made.
