@@ -860,9 +860,24 @@ async function initializeAuthTables() {
       )`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_provider_email ON alt_auth_users(provider, email)`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_provider_id ON alt_auth_users(provider, provider_id) WHERE provider_id IS NOT NULL`);
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_discord_id ON alt_auth_users(discord_id) WHERE discord_id IS NOT NULL`);
+    // Drop the old UNIQUE index and recreate as non-unique to allow multiple
+    // alt-auth providers (Google + email/password) to share the same discord_id
+    await pool.query(`DROP INDEX IF EXISTS idx_alt_auth_discord_id`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_alt_auth_discord_id ON alt_auth_users(discord_id) WHERE discord_id IS NOT NULL`);
 
-    console.log('✅ Auth tables initialized (discord_users, app_user_roles, alt_auth_users)');
+    // Discord link verification table — stores pending and completed DM verifications
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS discord_link_verifications (
+        id SERIAL PRIMARY KEY,
+        alt_auth_id INTEGER NOT NULL REFERENCES alt_auth_users(id) ON DELETE CASCADE,
+        discord_id VARCHAR(32) NOT NULL,
+        code CHAR(4) NOT NULL,
+        magic_token VARCHAR(64) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        completed_at TIMESTAMP
+      )`);
+
+    console.log('✅ Auth tables initialized (discord_users, app_user_roles, alt_auth_users, discord_link_verifications)');
   } catch (error) {
     console.error('❌ Error creating auth tables:', error);
   }
@@ -1914,9 +1929,9 @@ app.use((req, res, next) => {
   if (!provider || provider === 'discord') return next();
   // Alt-auth user — check if they have a valid Discord ID linked
   if (isValidDiscordId(String(req.user.id || ''))) return next();
-  // Allow auth routes, static assets, and the link-discord page itself
+  // Allow auth routes, API auth routes, static assets, and the link-discord page itself
   const p = req.path;
-  if (p.startsWith('/auth/') || p.startsWith('/public/') || p === '/logout') return next();
+  if (p.startsWith('/auth/') || p.startsWith('/api/auth/') || p.startsWith('/public/') || p === '/logout') return next();
   // Allow static file extensions
   if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)$/i.test(p)) return next();
   // Redirect to Discord ID linking page
@@ -3000,7 +3015,16 @@ app.get('/auth/link-discord', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'link-discord.html'));
 });
 
-app.post('/auth/link-discord', express.json(), express.urlencoded({ extended: true }), async (req, res) => {
+/**
+ * POST /api/auth/request-discord-verify
+ *
+ * Step 1 of Discord ID linking: sends a 4-digit verification code and
+ * magic link via Discord DM to prove ownership of the Discord account.
+ *
+ * @body {string} discordId - Discord snowflake ID (17-20 digits)
+ * @returns {{ ok: boolean, error?: string }}
+ */
+app.post('/api/auth/request-discord-verify', express.json(), async (req, res) => {
   try {
     if (!req.isAuthenticated || !req.isAuthenticated()) {
       return res.status(401).json({ ok: false, error: 'Not authenticated.' });
@@ -3013,21 +3037,135 @@ app.post('/auth/link-discord', express.json(), express.urlencoded({ extended: tr
     }
 
     const discordId = (req.body.discordId || '').trim();
+    if (!isValidDiscordId(discordId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid Discord ID. It should be a 17-20 digit number.' });
+    }
+
+    // Generate verification code (4 digits, 1000-9999) and magic token (64 hex chars)
+    const code = Math.floor(1000 + Math.random() * 9000).toString();
+    const magicToken = crypto.randomBytes(32).toString('hex');
+
+    // Remove any existing pending verification for this alt_auth_id + discord_id
+    await pool.query(
+      `DELETE FROM discord_link_verifications WHERE alt_auth_id = $1 AND discord_id = $2 AND completed_at IS NULL`,
+      [altAuthId, discordId]
+    );
+
+    // Insert new verification record
+    await pool.query(
+      `INSERT INTO discord_link_verifications (alt_auth_id, discord_id, code, magic_token) VALUES ($1, $2, $3, $4)`,
+      [altAuthId, discordId, code, magicToken]
+    );
+
+    // Send Discord DM with verification code and magic link
+    const botToken = process.env.DISCORD_BOT_TOKEN;
+    if (!botToken) {
+      return res.status(500).json({ ok: false, error: 'Discord bot is not configured. Please contact an administrator.' });
+    }
+
+    const appBaseUrl = (process.env.APP_BASE_URL || '').replace(/\/+$/, '');
+    const magicLink = appBaseUrl + '/auth/verify-discord?token=' + magicToken;
+
+    // Step 1: Create DM channel
+    const dmResponse = await discordFetch('https://discord.com/api/v10/users/@me/channels', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bot ' + botToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ recipient_id: discordId })
+    }, { maxRetries: 3, timeoutMs: 10000 });
+
+    if (!dmResponse.ok) {
+      return res.json({ ok: false, error: 'Could not send Discord DM. Make sure you are a member of the 1Principles Discord server and have DMs enabled.' });
+    }
+
+    const dmChannel = await dmResponse.json();
+    const channelId = dmChannel.id;
+
+    // Step 2: Send embed with verification code and magic link
+    const embed = {
+      title: 'Verify your Discord account \u2014 1Principles',
+      description: 'Someone is linking this Discord account to a 1Principles login. If this was you, use the code below or click the link to verify instantly.',
+      color: 0x5865F2,
+      fields: [
+        { name: 'Verification Code', value: '**' + code + '**', inline: true },
+        { name: 'Magic Link', value: '[Verify my account \u2192](' + magicLink + ')' }
+      ],
+      footer: { text: 'If you did not request this, ignore this message.' }
+    };
+
+    const msgResponse = await discordFetch('https://discord.com/api/v10/channels/' + channelId + '/messages', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bot ' + botToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ embeds: [embed] })
+    }, { maxRetries: 3, timeoutMs: 10000 });
+
+    if (!msgResponse.ok) {
+      return res.json({ ok: false, error: 'Could not send Discord DM. Make sure you are a member of the 1Principles Discord server and have DMs enabled.' });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[request-discord-verify] Error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to send verification. Please try again.' });
+  }
+});
+
+/**
+ * POST /api/auth/confirm-discord-verify
+ *
+ * Step 2 of Discord ID linking: validates the 4-digit code entered by
+ * the user, completes the verification, and links the Discord ID.
+ *
+ * @body {string} discordId - Discord snowflake ID
+ * @body {string} code - 4-digit verification code
+ * @returns {{ ok: boolean, redirect?: string, error?: string }}
+ */
+app.post('/api/auth/confirm-discord-verify', express.json(), async (req, res) => {
+  try {
+    if (!req.isAuthenticated || !req.isAuthenticated()) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
+
+    const user = req.user || {};
+    const altAuthId = user.altAuthId;
+    if (!altAuthId) {
+      return res.status(400).json({ ok: false, error: 'This action is only for alternative-auth users.' });
+    }
+
+    const discordId = (req.body.discordId || '').trim();
+    const code = (req.body.code || '').trim();
 
     if (!isValidDiscordId(discordId)) {
-      return res.status(400).json({ ok: false, error: 'Invalid Discord ID. It should be a 17-20 digit number. See the help link above for how to find yours.' });
+      return res.status(400).json({ ok: false, error: 'Invalid Discord ID format.' });
+    }
+    if (!/^\d{4}$/.test(code)) {
+      return res.status(400).json({ ok: false, error: 'Invalid code format. Please enter the 4-digit code.' });
     }
 
-    // Check if this Discord ID is already claimed by another alt-auth user
-    const claimed = await pool.query(
-      `SELECT id FROM alt_auth_users WHERE discord_id = $1 AND id != $2 LIMIT 1`,
-      [discordId, altAuthId]
+    // Look up the most recent pending verification for this alt_auth_id + discord_id
+    const result = await pool.query(
+      `SELECT id, code FROM discord_link_verifications WHERE alt_auth_id = $1 AND discord_id = $2 AND completed_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      [altAuthId, discordId]
     );
-    if (claimed.rowCount > 0) {
-      return res.status(409).json({ ok: false, error: 'This Discord ID is already linked to another account.' });
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ ok: false, error: 'No pending verification found. Please request a new code.' });
     }
 
-    // Update the alt_auth_users record
+    const row = result.rows[0];
+    if (row.code !== code) {
+      return res.status(400).json({ ok: false, error: 'Invalid code. Please try again.' });
+    }
+
+    // Mark verification as completed
+    await pool.query(`UPDATE discord_link_verifications SET completed_at = NOW() WHERE id = $1`, [row.id]);
+
+    // Update alt_auth_users with the verified Discord ID
     await pool.query(
       `UPDATE alt_auth_users SET discord_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
       [discordId, altAuthId]
@@ -3041,16 +3179,15 @@ app.post('/auth/link-discord', express.json(), express.urlencoded({ extended: tr
       DO UPDATE SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
     `, [discordId, user.username || 'Alt-Auth User']);
 
-    // Update session — set req.user.id to the Discord ID
+    // Update session — set req.user.id to the verified Discord ID
     req.user.id = discordId;
     const dest = req.session.altAuthReturnTo || '/';
     delete req.session.altAuthReturnTo;
 
-    // Await session save to avoid race condition
     await new Promise((resolve, reject) => {
       req.session.save((saveErr) => {
         if (saveErr) {
-          console.error('[link-discord] Session save error:', saveErr.message);
+          console.error('[confirm-discord-verify] Session save error:', saveErr.message);
           reject(saveErr);
         } else {
           resolve();
@@ -3058,11 +3195,72 @@ app.post('/auth/link-discord', express.json(), express.urlencoded({ extended: tr
       });
     });
 
-    console.log(`[alt-auth] Linked alt_auth_id=${altAuthId} to discord_id=${discordId}`);
+    console.log('[alt-auth] Verified and linked alt_auth_id=' + altAuthId + ' to discord_id=' + discordId);
     return res.json({ ok: true, redirect: dest });
   } catch (err) {
-    console.error('[link-discord] Error:', err.message);
-    return res.status(500).json({ ok: false, error: 'Failed to link Discord ID. Please try again.' });
+    console.error('[confirm-discord-verify] Error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to verify. Please try again.' });
+  }
+});
+
+/**
+ * GET /auth/verify-discord?token=TOKEN
+ *
+ * Magic link entry point — public route (no auth required).
+ * Looks up the magic token, restores the alt-auth session, and redirects
+ * to /auth/link-discord with pre-filled code + discord_id for confirmation.
+ */
+app.get('/auth/verify-discord', async (req, res) => {
+  try {
+    const token = (req.query.token || '').trim();
+    if (!token || token.length !== 64) {
+      return res.status(400).send('Invalid verification link.');
+    }
+
+    // Look up the pending verification by magic token
+    const result = await pool.query(
+      `SELECT v.alt_auth_id, v.discord_id, v.code, a.provider, a.email, a.provider_id
+       FROM discord_link_verifications v
+       JOIN alt_auth_users a ON a.id = v.alt_auth_id
+       WHERE v.magic_token = $1 AND v.completed_at IS NULL
+       LIMIT 1`,
+      [token]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).send('Invalid or expired verification link. Please request a new code from the link page.');
+    }
+
+    const row = result.rows[0];
+
+    // Restore alt-auth session so the confirm endpoint works
+    // (handles case where user opens the magic link in a different browser)
+    req.user = {
+      id: 'pending-' + row.alt_auth_id,
+      altAuthId: row.alt_auth_id,
+      authProvider: row.provider,
+      email: row.email,
+      username: row.email ? row.email.split('@')[0] : 'Alt-Auth User',
+      avatar: null,
+      accessToken: null
+    };
+
+    await new Promise((resolve, reject) => {
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error('[verify-discord] Session save error:', saveErr.message);
+          reject(saveErr);
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    // Redirect to link-discord page with pre-filled params
+    return res.redirect('/auth/link-discord?code=' + encodeURIComponent(row.code) + '&discord_id=' + encodeURIComponent(row.discord_id) + '&auto=1');
+  } catch (err) {
+    console.error('[verify-discord] Error:', err.message);
+    return res.status(500).send('Verification failed. Please try again.');
   }
 });
 
