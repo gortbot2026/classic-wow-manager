@@ -1,113 +1,99 @@
-# Security Documentation: Admin Player Profile Page
+# Security: Admin Player Profile Page (`/admin/player/:discordId`)
 
-**Feature:** `/admin/player/:discordId` — Aggregated player profile for management  
-**Reviewed:** 2026-03-03  
-**Status:** PASS
+_Last updated: 2026-03-03 by Security Gort_
 
----
+## Endpoints
+
+| Endpoint | Method | Middleware |
+|---|---|---|
+| `/admin/player/:discordId` | GET (HTML) | None (frontend auth redirect only) |
+| `/api/admin/player/:discordId` | GET | `requireManagement` |
+| `/api/admin/player/:discordId/notes` | PATCH | `requireManagement` |
 
 ## Authentication & Authorization
 
-- **Frontend:** `fetch('/user')` → checks `hasManagementRole` → redirects to `/` for non-admins
-- **Backend API (`GET /api/admin/player/:discordId`):** Protected by `requireManagement` middleware
-- **Backend API (`PATCH /api/admin/player/:discordId/notes`):** Protected by `requireManagement` middleware
-- **Backend API (`POST /api/admin/sync-discord-members`):** Protected by `requireManagement` middleware
-- All endpoints return `401 Unauthorized` for unauthenticated requests, `403 Forbidden` for insufficient role
-
----
+- All API endpoints are protected by `requireManagement` middleware
+- `requireManagement` checks: `req.isAuthenticated()` (Passport session) + DB lookup for management role
+- The static HTML route has **no server-side auth guard** — protection is frontend-only via `fetch('/user')` → redirect to `/` if not management
+  - This is consistent with all other admin pages in the codebase (e.g. `/admin`, `/admin/channels`)
+  - Risk accepted: the page HTML is not sensitive; all data requires the API which IS guarded
+- Frontend double-checks `hasManagementRole` in player.js before rendering any content
 
 ## Input Validation
 
-### Discord ID Parameter
-- Both API endpoints validate: `/^[0-9]{1,20}$/`
-- Rejects non-numeric input and IDs exceeding 20 characters
-- Applied **before** any DB query
+### `discordId` URL parameter
+- Regex: `/^[0-9]{1,20}$/` — numeric only, max 20 chars (Discord snowflake max length)
+- Applied in **both** GET and PATCH handlers before any DB query
+- Returns HTTP 400 with generic error message on failure
 
-### Note PATCH Field Allowlist
-- The `field` parameter is validated against `ALLOWED_FIELDS = ['public_note', 'officer_note', 'custom_note']`
-- Field name is checked **server-side before SQL interpolation**
-- Validated before any string interpolation into the SQL query: `UPDATE guildies SET ${field} = $1 ...`
-
----
+### Notes PATCH body
+- `field` validated against strict allowlist: `['public_note', 'officer_note', 'custom_note']`
+- Returns HTTP 400 listing allowed fields on failure
+- `characterName` and `className` required (HTTP 400 if missing)
+- `value` sanitized via `|| ''` (null/undefined → empty string)
 
 ## SQL Injection Prevention
 
-- All DB queries use parameterized `$1`, `$2`, ... placeholders (raw `pg` driver)
-- The only interpolated value (`field` in PATCH notes) is validated against a 3-item allowlist
-- Character-name lookups in subqueries (`LOWER(character_name) IN (...)`) are fully parameterized
+All queries use parameterized placeholders (`$1`, `$2`, etc.) via `pg` pool.
 
----
+**Notable case — PATCH notes SQL interpolation:**
+```sql
+UPDATE guildies SET ${field} = $1, updated_at = NOW() WHERE character_name = $2 AND class = $3
+```
+- `field` is string-interpolated into the SQL column name
+- Safe because `field` is validated against a hardcoded allowlist before use
+- All other values use parameterized placeholders
 
-## XSS Prevention
+**Subquery patterns used (safe):**
+```sql
+WHERE LOWER(character_name) IN (
+  SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
+  UNION
+  SELECT LOWER(character_name) FROM players WHERE discord_id = $1
+)
+```
+All values passed as parameters.
 
-### Backend (API response)
-- Raw DB values returned as JSON — no HTML construction server-side
+## XSS Prevention (Frontend)
 
-### Frontend (player.js)
-- `esc()` function uses `div.textContent = String(str); return div.innerHTML;` — DOM-based escaping
-- All user-supplied data uses `esc()` before `innerHTML` insertion
-- WCL log links validated server-side: `/^[a-zA-Z0-9]+$/` before URL construction
-- Avatar URLs placed in `src` attributes (not `href`) — no JS execution risk
+- `esc()` helper uses `div.textContent = str; return div.innerHTML` — browser-native escaping
+- Applied to ALL dynamic data inserted via `innerHTML` across every render function
+- Exception review: numeric values (level, damage numbers) are used without `esc()` — acceptable as they come from DB columns with numeric types
+- WCL log URLs: validated with `/^[a-zA-Z0-9]+$/` before URL construction; then `esc()` on the final URL in the `href` attribute
 
-### Frontend (guild-members.html)
-- `escHtml()` function (same textContent pattern) used for all `discord_username`, `discord_id`, and `character_name` in `innerHTML`
+## Data Exposure
 
-### Known Limitation (LOW)
-- The `revokeRole()` inline onclick handler passes `role_key` via string concatenation without single-quote escaping. Since role_keys are admin-inserted system values (management/raidleader/officer), practical risk is negligible. Recommend switching to `addEventListener` pattern in a future refactor.
+- Email addresses are returned to management users only (behind `requireManagement`)
+- Discord IDs are returned — these are non-sensitive identifiers
+- `officer_note` (guild officer notes) are exposed to management role users — appropriate for admin page
+- Error messages are generic (`'Error fetching player data'`) — no stack traces or query details leaked
 
----
+## Gold Earned Calculation
 
-## Sensitive Data Handling
+```sql
+rse.shared_gold_pot::NUMERIC / NULLIF(cnt.raider_count, 0) AS share
+```
+- `NULLIF(raider_count, 0)` prevents division-by-zero
+- `shared_gold_pot IS NOT NULL AND shared_gold_pot > 0` guards against null/zero pot entries
+- `GROUP BY` on `raid_id` prevents duplicate row multiplication
 
-- `discord_username` is stripped from `/api/guild-members` response for non-management users **server-side** (object destructuring, not CSS-only)
-- `email` only included in player profile (management-only endpoint)
-- `officer_note` and `custom_note` only returned through management-gated endpoint
-- 500 errors return generic message (`'Error fetching player data'`), no stack traces to client
+## Reward Points Deduplication
 
----
+```sql
+SELECT DISTINCT id, ... FROM rewards_and_deductions_points
+WHERE discord_user_id = $1 OR LOWER(character_name) IN (...)
+```
+- `DISTINCT id` deduplicates on the primary key — safe against double-counting when both conditions match the same row
 
-## Discord Sync Function (`syncDiscordGuildMembers`)
+## Dependency Audit Notes
 
-- Called on startup (15s delay) and every 6h
-- Manual trigger: `POST /api/admin/sync-discord-members` (requireManagement)
-- Handles Discord API rate limiting (429 → retry-after)
-- Upserts `COALESCE(EXCLUDED.username, discord_users.username)` — never overwrites with null
-- Skips bot accounts (`if (user.bot) continue`)
-- No rate limiting on manual trigger endpoint — LOW risk (management-only)
+As of 2026-03-03, `npm audit` reports 23 pre-existing vulnerabilities:
+- **1 critical**: `fast-xml-parser` (via `@aws-sdk/client-s3`) — DoS/entity expansion
+- **20 high**: axios (proto pollution DoS), multer (DoS), qs (DoS), aws-sdk chain
+- **1 low/moderate**: minimatch ReDoS
 
----
+These vulnerabilities are **pre-existing** and **not introduced by the admin player profile feature**. Recommend scheduling an `npm audit fix` pass in a future sprint. The critical `fast-xml-parser` issue only affects S3/AWS SDK usage (image uploads), not the player profile endpoints.
 
-## Session Security
+## CSRF Consideration
 
-- `sameSite: 'lax'` — mitigates CSRF for state-changing POST/PATCH endpoints
-- `secure: true` in production
-- `httpOnly: true` (express-session default)
-- Session secret from `process.env.SESSION_SECRET`
-
----
-
-## Pre-existing Dependency Vulnerabilities (Not introduced by this feature)
-
-| Package | Severity | Direct | Notes |
-|---------|----------|--------|-------|
-| fast-xml-parser | Critical | No (via @aws-sdk) | Pre-existing, unrelated to this feature |
-| multer | High | Yes | Pre-existing file upload dep |
-| @aws-sdk/client-s3 | High | Yes | Pre-existing S3 dep |
-| minimatch | High | No | Pre-existing transitive dep |
-| lodash | Moderate | No | Pre-existing transitive dep |
-
-No new packages were added by this feature (`git diff HEAD~1 package.json` — no changes).
-
----
-
-## Checklist
-
-- [x] Auth/authz on all endpoints
-- [x] Input validation (Discord ID, field allowlist)
-- [x] No SQL injection (parameterized queries, allowlist for dynamic field name)
-- [x] No XSS (esc()/escHtml() on all user data in innerHTML)
-- [x] No hardcoded secrets
-- [x] Admin-only data stripped server-side
-- [x] Error messages don't leak internals
-- [x] WCL URLs sanitized before construction
-- [x] poll_votes uses correct column (voter_discord_id)
+No CSRF token is used on the PATCH notes endpoint or role grant/revoke calls. This is consistent with the existing codebase pattern for admin-only actions (same as `/api/management/app-roles/grant`, etc.). The session cookie uses `sameSite: 'lax'` (verify in session config) which mitigates most CSRF vectors. Recommend adding explicit CSRF protection if this app ever expands beyond admin-only writes.

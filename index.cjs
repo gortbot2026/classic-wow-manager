@@ -14,7 +14,7 @@ const disposableDomains = require('disposable-email-domains');
 const { Pool } = require('pg');
 const path = require('path');
 const axios = require('axios');
-const { S3Client, PutObjectCommand, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const multer = require('multer');
 const fs = require('fs');
 const cloudinary = require('cloudinary').v2;
@@ -4590,7 +4590,9 @@ async function ensureWclIngestTables(client) {
       start_time BIGINT NOT NULL,
       end_time BIGINT NOT NULL,
       next_cursor BIGINT,
-      events JSONB NOT NULL,
+      events JSONB,
+      r2_key TEXT,
+      event_count INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(event_id, report_code, start_time, end_time)
     );
@@ -4601,6 +4603,10 @@ async function ensureWclIngestTables(client) {
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_wcl_event_pages_report_time ON wcl_event_pages(report_code, start_time);
   `);
+  // Phase 1: Add r2_key and event_count columns if they don't exist (migration support)
+  await client.query(`ALTER TABLE wcl_event_pages ADD COLUMN IF NOT EXISTS r2_key TEXT;`);
+  await client.query(`ALTER TABLE wcl_event_pages ADD COLUMN IF NOT EXISTS event_count INTEGER;`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_wcl_event_pages_r2_key ON wcl_event_pages(r2_key);`);
   await client.query(`
     CREATE TABLE IF NOT EXISTS wcl_report_meta (
       report_code TEXT PRIMARY KEY,
@@ -4629,6 +4635,216 @@ if (R2_ENABLED) {
   } catch (e) {
     console.warn('⚠️ Failed to initialize R2 client:', e && e.message ? e.message : e);
   }
+}
+
+// =============================================================================
+// R2 PRIMARY STORAGE HELPERS — wcl-events/{report_code}/{start_time}_{end_time}.json
+// Separate from the archival R2 export system (events/ prefix).
+// =============================================================================
+
+/**
+ * Generates the R2 object key for a WCL event page.
+ *
+ * @param {string} reportCode - WCL report code
+ * @param {number|string} startTime - Page start timestamp
+ * @param {number|string} endTime - Page end timestamp
+ * @returns {string} R2 key in the format wcl-events/{reportCode}/{startTime}_{endTime}.json
+ */
+function wclR2Key(reportCode, startTime, endTime) {
+  return `wcl-events/${reportCode}/${startTime}_${endTime}.json`;
+}
+
+/**
+ * Uploads an events array to R2 as a JSON blob.
+ *
+ * @param {string} reportCode - WCL report code
+ * @param {number|string} startTime - Page start timestamp
+ * @param {number|string} endTime - Page end timestamp
+ * @param {Array} events - The events array to store
+ * @returns {Promise<{r2Key: string, eventCount: number}>} The R2 key and event count
+ * @throws {Error} If R2 is not configured or upload fails
+ */
+async function uploadEventsToR2(reportCode, startTime, endTime, events) {
+  if (!R2_ENABLED || !r2Client) {
+    throw new Error('R2 is not configured — cannot upload events');
+  }
+  const r2Key = wclR2Key(reportCode, startTime, endTime);
+  const body = JSON.stringify(events);
+  await r2Client.send(new PutObjectCommand({
+    Bucket: process.env.R2_BUCKET,
+    Key: r2Key,
+    ContentType: 'application/json',
+    Body: body
+  }));
+  return { r2Key, eventCount: Array.isArray(events) ? events.length : 0 };
+}
+
+/**
+ * Fetches a single event page's JSON blob from R2.
+ *
+ * @param {string} r2Key - The R2 object key
+ * @returns {Promise<Array>} Parsed events array
+ * @throws {Error} If fetch fails or data is corrupt
+ */
+async function fetchEventsFromR2(r2Key) {
+  if (!R2_ENABLED || !r2Client) {
+    throw new Error('R2 is not configured — cannot fetch events');
+  }
+  const resp = await r2Client.send(new GetObjectCommand({
+    Bucket: process.env.R2_BUCKET,
+    Key: r2Key
+  }));
+  const raw = await resp.Body.transformToString('utf-8');
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/**
+ * Loads event pages from the database, fetching event data from R2 when r2_key
+ * is present, falling back to the Postgres events column when it's not.
+ * Supports both event_id and report_code filtering.
+ * Returns arrays of events in start_time order, matching the pre-migration shape.
+ *
+ * @param {'event_id'|'report_code'} filterColumn - Column to filter by
+ * @param {string} filterValue - Value to filter on
+ * @returns {Promise<Array<Array>>} Array of event arrays, one per page, ordered by start_time
+ */
+async function loadEventPagesFromR2(filterColumn, filterValue) {
+  // Validate filterColumn to prevent SQL injection (only two valid values)
+  if (filterColumn !== 'event_id' && filterColumn !== 'report_code') {
+    throw new Error(`Invalid filterColumn: ${filterColumn}`);
+  }
+  const result = await pool.query(
+    `SELECT r2_key, events FROM wcl_event_pages WHERE ${filterColumn} = $1 ORDER BY start_time ASC`,
+    [filterValue]
+  );
+  if (result.rows.length === 0) return [];
+
+  // Separate rows into R2-backed and Postgres-backed
+  const pages = new Array(result.rows.length);
+  const r2Fetches = []; // { index, r2Key }
+
+  for (let i = 0; i < result.rows.length; i++) {
+    const row = result.rows[i];
+    if (row.r2_key) {
+      r2Fetches.push({ index: i, r2Key: row.r2_key });
+    } else {
+      // Backward compatibility: use Postgres events column
+      pages[i] = Array.isArray(row.events) ? row.events : [];
+    }
+  }
+
+  // Fetch R2-backed pages in parallel with concurrency limit of 10
+  if (r2Fetches.length > 0) {
+    const CONCURRENCY = 10;
+    for (let start = 0; start < r2Fetches.length; start += CONCURRENCY) {
+      const batch = r2Fetches.slice(start, start + CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async ({ index, r2Key }) => {
+          try {
+            const events = await fetchEventsFromR2(r2Key);
+            return { index, events };
+          } catch (err) {
+            throw new Error(`Failed to fetch events from R2 key "${r2Key}": ${err.message}`);
+          }
+        })
+      );
+      for (const { index, events } of results) {
+        pages[index] = events;
+      }
+    }
+  }
+
+  return pages;
+}
+
+/**
+ * Loads event pages with metadata (start_time, end_time) alongside events.
+ * Used by endpoints that need timestamp info (e.g., /api/wcl/summary/raid/:eventId).
+ *
+ * @param {'event_id'|'report_code'} filterColumn - Column to filter by
+ * @param {string} filterValue - Value to filter on
+ * @returns {Promise<Array<{start_time: number, end_time: number, events: Array}>>}
+ */
+async function loadEventPagesWithMetaFromR2(filterColumn, filterValue) {
+  if (filterColumn !== 'event_id' && filterColumn !== 'report_code') {
+    throw new Error(`Invalid filterColumn: ${filterColumn}`);
+  }
+  const result = await pool.query(
+    `SELECT start_time, end_time, r2_key, events FROM wcl_event_pages WHERE ${filterColumn} = $1 ORDER BY start_time ASC`,
+    [filterValue]
+  );
+  if (result.rows.length === 0) return [];
+
+  const pages = new Array(result.rows.length);
+  const r2Fetches = [];
+
+  for (let i = 0; i < result.rows.length; i++) {
+    const row = result.rows[i];
+    if (row.r2_key) {
+      r2Fetches.push({ index: i, r2Key: row.r2_key, start_time: row.start_time, end_time: row.end_time });
+    } else {
+      pages[i] = { start_time: row.start_time, end_time: row.end_time, events: Array.isArray(row.events) ? row.events : [] };
+    }
+  }
+
+  if (r2Fetches.length > 0) {
+    const CONCURRENCY = 10;
+    for (let start = 0; start < r2Fetches.length; start += CONCURRENCY) {
+      const batch = r2Fetches.slice(start, start + CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async ({ index, r2Key, start_time, end_time }) => {
+          try {
+            const events = await fetchEventsFromR2(r2Key);
+            return { index, start_time, end_time, events };
+          } catch (err) {
+            throw new Error(`Failed to fetch events from R2 key "${r2Key}": ${err.message}`);
+          }
+        })
+      );
+      for (const { index, start_time, end_time, events } of results) {
+        pages[index] = { start_time, end_time, events };
+      }
+    }
+  }
+
+  return pages;
+}
+
+/**
+ * Deletes all R2 objects for a given report_code's event pages.
+ * Queries Postgres for r2_key values, then deletes each from R2.
+ *
+ * @param {string} reportCode - The report code whose R2 objects should be deleted
+ * @returns {Promise<number>} Number of R2 objects deleted
+ */
+async function deleteR2EventPages(reportCode) {
+  if (!R2_ENABLED || !r2Client) return 0;
+  const result = await pool.query(
+    'SELECT r2_key FROM wcl_event_pages WHERE report_code = $1 AND r2_key IS NOT NULL',
+    [reportCode]
+  );
+  if (result.rows.length === 0) return 0;
+
+  let deleted = 0;
+  const CONCURRENCY = 10;
+  for (let start = 0; start < result.rows.length; start += CONCURRENCY) {
+    const batch = result.rows.slice(start, start + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (row) => {
+        try {
+          await r2Client.send(new DeleteObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: row.r2_key
+          }));
+          deleted++;
+        } catch (err) {
+          console.error(`[R2] Failed to delete ${row.r2_key}: ${err.message}`);
+        }
+      })
+    );
+  }
+  return deleted;
 }
 
 async function ensureEventFolderMarkers(eventId, reportCode) {
@@ -5056,13 +5272,24 @@ app.post('/api/wcl/events/ingest', express.json({ limit: '1mb' }), async (req, r
       }
 
       const nextCursor = page.nextPageTimestamp != null ? page.nextPageTimestamp : end;
-      // Store this page (idempotent by unique key)
+      // Store this page — upload events to R2 first, then insert metadata row
       try {
-        await client.query(`
-          INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, events)
-          VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
-        `, [eventId, reportCode, lastCursor, end, nextCursor, JSON.stringify(page.events || [])]);
+        const eventsArr = page.events || [];
+        if (R2_ENABLED && r2Client) {
+          const { r2Key, eventCount } = await uploadEventsToR2(reportCode, lastCursor, end, eventsArr);
+          await client.query(`
+            INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, r2_key, event_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
+          `, [eventId, reportCode, lastCursor, end, nextCursor, r2Key, eventCount]);
+        } else {
+          // Fallback: store in Postgres if R2 is not configured
+          await client.query(`
+            INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, events, event_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
+          `, [eventId, reportCode, lastCursor, end, nextCursor, JSON.stringify(eventsArr), eventsArr.length]);
+        }
         pagesStored += 1;
       } catch (err) {
         return res.status(500).json({ ok: false, error: 'Failed to store events page', details: String(err && err.message ? err.message : err) });
@@ -5225,16 +5452,14 @@ app.get('/api/wcl/summary/raid/:eventId', async (req, res) => {
     client = await pool.connect();
     await ensureWclIngestTables(client);
     const meta = await loadReportMetaForEvent(client, eventId);
-    const pages = await client.query(`
-      SELECT start_time, end_time, events FROM wcl_event_pages WHERE event_id = $1 ORDER BY start_time ASC
-    `, [eventId]);
+    const pages = await loadEventPagesWithMetaFromR2('event_id', eventId);
 
     const bySource = {}; // name -> { dmg, heal, deaths }
     let totalEvents = 0;
     let minTs = null;
     let maxTs = null;
 
-    for (const row of pages.rows) {
+    for (const row of pages) {
       const arr = Array.isArray(row.events) ? row.events : [];
       totalEvents += arr.length;
       for (const ev of arr) {
@@ -5283,12 +5508,9 @@ app.get('/api/wcl/summary/players/:eventId', async (req, res) => {
     client = await pool.connect();
     await ensureWclIngestTables(client);
     const meta = await loadReportMetaForEvent(client, eventId);
-    const pages = await client.query(`
-      SELECT events FROM wcl_event_pages WHERE event_id = $1 ORDER BY start_time ASC
-    `, [eventId]);
+    const pages = await loadEventPagesFromR2('event_id', eventId);
     const players = {}; // name -> { dmg, heal, deaths }
-    for (const row of pages.rows) {
-      const arr = Array.isArray(row.events) ? row.events : [];
+    for (const arr of pages) {
       for (const ev of arr) {
         const type = (ev && ev.type || '').toLowerCase();
         if (type === 'damage' || type === 'heal') {
@@ -5331,13 +5553,10 @@ app.get('/api/wcl/summary/fights/:eventId', async (req, res) => {
     client = await pool.connect();
     await ensureWclIngestTables(client);
     const meta = await loadReportMetaForEvent(client, eventId);
-    const pages = await client.query(`
-      SELECT events FROM wcl_event_pages WHERE event_id = $1 ORDER BY start_time ASC
-    `, [eventId]);
+    const pages = await loadEventPagesFromR2('event_id', eventId);
     const fights = [];
     let current = null;
-    for (const row of pages.rows) {
-      const arr = Array.isArray(row.events) ? row.events : [];
+    for (const arr of pages) {
       for (const ev of arr) {
         const type = (ev && ev.type || '').toLowerCase();
         if (type === 'encounterstart') {
@@ -5383,13 +5602,10 @@ app.get('/api/wcl/summary/deaths/:eventId', async (req, res) => {
     client = await pool.connect();
     await ensureWclIngestTables(client);
     const meta = await loadReportMetaForEvent(client, eventId);
-    const pages = await client.query(`
-      SELECT events FROM wcl_event_pages WHERE event_id = $1 ORDER BY start_time ASC
-    `, [eventId]);
+    const pages = await loadEventPagesFromR2('event_id', eventId);
     const deaths = {};
     const list = [];
-    for (const row of pages.rows) {
-      const arr = Array.isArray(row.events) ? row.events : [];
+    for (const arr of pages) {
       for (const ev of arr) {
         const type = (ev && ev.type || '').toLowerCase();
         if (type !== 'death') continue;
@@ -5415,9 +5631,7 @@ app.get('/api/wcl/summary/abilities/:eventId', async (req, res) => {
     client = await pool.connect();
     await ensureWclIngestTables(client);
     const meta = await loadReportMetaForEvent(client, eventId);
-    const pages = await client.query(`
-      SELECT events FROM wcl_event_pages WHERE event_id = $1 ORDER BY start_time ASC
-    `, [eventId]);
+    const pages = await loadEventPagesFromR2('event_id', eventId);
     const damage = new Map();
     const healing = new Map();
     function add(map, abilityName, amount){
@@ -5427,8 +5641,7 @@ app.get('/api/wcl/summary/abilities/:eventId', async (req, res) => {
       rec.hits += 1;
       map.set(key, rec);
     }
-    for (const row of pages.rows) {
-      const arr = Array.isArray(row.events) ? row.events : [];
+    for (const arr of pages) {
       for (const ev of arr) {
         const type = (ev && ev.type || '').toLowerCase();
         if (type !== 'damage' && type !== 'heal') continue;
@@ -5461,17 +5674,14 @@ app.get('/api/wcl/summary/targets/:eventId', async (req, res) => {
     client = await pool.connect();
     await ensureWclIngestTables(client);
     const meta = await loadReportMetaForEvent(client, eventId);
-    const pages = await client.query(`
-      SELECT events FROM wcl_event_pages WHERE event_id = $1 ORDER BY start_time ASC
-    `, [eventId]);
+    const pages = await loadEventPagesFromR2('event_id', eventId);
     const dmgTargets = new Map();
     const healTargets = new Map();
     function add(map, name, amount){
       const key = name || 'Unknown';
       map.set(key, (map.get(key)||0) + amount);
     }
-    for (const row of pages.rows) {
-      const arr = Array.isArray(row.events) ? row.events : [];
+    for (const arr of pages) {
       for (const ev of arr) {
         const type = (ev && ev.type || '').toLowerCase();
         if (type !== 'damage' && type !== 'heal') continue;
@@ -5502,13 +5712,22 @@ app.get('/api/wcl/raw/event-pages/:eventId', async (req, res) => {
     const eventId = req.params.eventId;
     client = await pool.connect();
     await ensureWclIngestTables(client);
-    const rows = await client.query(`
-      SELECT id, event_id, report_code, start_time, end_time, next_cursor, events, created_at
+    // Fetch metadata rows (without events blob — those live in R2 now)
+    const metaRows = await client.query(`
+      SELECT id, event_id, report_code, start_time, end_time, next_cursor, r2_key, event_count, created_at
       FROM wcl_event_pages
       WHERE event_id = $1
       ORDER BY start_time ASC
     `, [eventId]);
-    res.json({ ok: true, count: rows.rows.length, rows: rows.rows });
+    // If ?include_events=true, fetch actual events from R2 (expensive)
+    const includeEvents = req.query.include_events === 'true';
+    if (includeEvents) {
+      const pages = await loadEventPagesFromR2('event_id', eventId);
+      const rows = metaRows.rows.map((row, i) => ({ ...row, events: pages[i] || [] }));
+      res.json({ ok: true, count: rows.length, rows });
+    } else {
+      res.json({ ok: true, count: metaRows.rows.length, rows: metaRows.rows, note: 'Events stored in R2. Add ?include_events=true to fetch full event data.' });
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err && err.message ? err.message : err) });
   } finally {
@@ -5671,12 +5890,9 @@ async function runAllAnalyzersInSinglePass(reportCode, fights, meta, tankNames =
   const startTime = Date.now();
   
   // Get all event pages for this report (LOADED ONCE)
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
   
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     console.log('[SINGLE-PASS] No event pages found');
     return {
       bloodrages: { badBloodrages: [], totalBloodrages: 0, combatSegmentCount: 0, damageEventCount: 0 },
@@ -5692,7 +5908,7 @@ async function runAllAnalyzersInSinglePass(reportCode, fights, meta, tankNames =
     };
   }
   
-  console.log(`[SINGLE-PASS] Processing ${pagesResult.rows.length} event pages...`);
+  console.log(`[SINGLE-PASS] Processing ${pagesResult.length} event pages...`);
   
   // ===== Pre-compute useful lookups =====
   const playerActorIds = new Set();
@@ -5807,8 +6023,7 @@ async function runAllAnalyzersInSinglePass(reportCode, fights, meta, tankNames =
   // ===== SINGLE PASS THROUGH ALL EVENTS =====
   let totalEventsProcessed = 0;
   
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     
     for (const ev of events) {
       totalEventsProcessed++;
@@ -6327,12 +6542,9 @@ async function analyzeBloodragesFromDB(reportCode, fights, meta) {
   const MIN_COMBAT_DURATION_MS = 5000; // Ignore combat segments shorter than 5 seconds
   
   // Get all event pages for this report
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
   
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { badBloodrages: [], totalBloodrages: 0, combatSegmentCount: 0, damageEventCount: 0 };
   }
   
@@ -6340,8 +6552,7 @@ async function analyzeBloodragesFromDB(reportCode, fights, meta) {
   const damageTimestamps = [];
   const bloodrageEvents = [];
   
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       
@@ -6387,8 +6598,7 @@ async function analyzeBloodragesFromDB(reportCode, fights, meta) {
   let metaHits = 0;
   let metaMisses = 0;
   
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       if (type === 'damage' && ev.timestamp != null) {
@@ -6578,19 +6788,15 @@ async function analyzeChargesFromDB(reportCode, tankNames, meta) {
   ];
   
   // Get all event pages for this report
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
   
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { charges: [], totalCharges: 0 };
   }
   
   // Collect all events
   const allEvents = [];
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       // Enrich with names and class info
       const enriched = { ...ev };
@@ -6707,20 +6913,16 @@ async function analyzeChargesFromDB(reportCode, tankNames, meta) {
 
 // Analyze spell interrupts from ALL events in database - aggregated by player
 async function analyzeInterruptsFromDB(reportCode, meta) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
 
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { playerStats: [], totalInterrupts: 0 };
   }
 
   const playerCounts = {}; // { sourceName: { count, sourceSubType, spells: {}, events: [] } }
   let totalInterrupts = 0;
 
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       if (type !== 'interrupt') continue;
@@ -6772,12 +6974,9 @@ async function analyzeInterruptsFromDB(reportCode, meta) {
 
 // Analyze decurses from ALL events in database - aggregated by player
 async function analyzeDecursesFromDB(reportCode, meta) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
 
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { playerStats: [], totalDecurses: 0 };
   }
 
@@ -6787,8 +6986,7 @@ async function analyzeDecursesFromDB(reportCode, meta) {
   const playerCounts = {}; // { sourceName: { count, sourceSubType, curses: {}, events: [] } }
   let totalDecurses = 0;
 
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       if (type !== 'dispel') continue;
@@ -6853,12 +7051,9 @@ async function analyzeDecursesFromDB(reportCode, meta) {
 
 // Analyze effective Sunder Armor applications from ALL events in database - aggregated by player
 async function analyzeSundersFromDB(reportCode, meta) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
 
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { playerStats: [], effectiveSunders: 0, totalSunders: 0 };
   }
 
@@ -6866,8 +7061,7 @@ async function analyzeSundersFromDB(reportCode, meta) {
   let totalEffective = 0;
   let totalCasts = 0;
 
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
 
@@ -6942,12 +7136,9 @@ async function analyzeSundersFromDB(reportCode, meta) {
 // Note: In Classic WoW, the debuff from Improved Scorch is spell ID 22959
 // The debuff is called "Fire Vulnerability" and stacks up to 5 times
 async function analyzeScorchesFromDB(reportCode, meta) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
   
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { playerStats: [], effectiveScorches: 0, totalScorches: 0 };
   }
   
@@ -6962,8 +7153,7 @@ async function analyzeScorchesFromDB(reportCode, meta) {
   // Track all debuff names for debugging
   const debugDebuffs = new Map(); // abilityId -> { name, count }
   
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       
@@ -7075,20 +7265,16 @@ async function analyzeScorchesFromDB(reportCode, meta) {
 
 // Analyze Disarm applications from ALL events in database - aggregated by player
 async function analyzeDisarmsFromDB(reportCode, meta) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
 
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { playerStats: [], totalDisarms: 0 };
   }
 
   const playerCounts = {}; // { sourceName: { count, sourceSubType, targets: {}, events: [] } }
   let totalDisarms = 0;
 
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       if (type !== 'applydebuff') continue;
@@ -7152,12 +7338,9 @@ async function analyzeDisarmsFromDB(reportCode, meta) {
 // Analyze mage damage done while curses are active on friendly players
 // Curses tracked: Veil of Darkness, Curse of the Plaguebringer, Life Drain
 async function analyzeMageDamageWhileCurseUp(reportCode, meta) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
 
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { playerStats: [], totalDamage: 0, curseWindows: 0 };
   }
 
@@ -7182,8 +7365,7 @@ async function analyzeMageDamageWhileCurseUp(reportCode, meta) {
   const curseEvents = []; // { type: 'apply'|'remove', targetId, timestamp, curseName }
   const damageEvents = []; // { sourceId, sourceName, timestamp, amount }
 
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       
@@ -7327,12 +7509,9 @@ async function analyzeMageDamageWhileCurseUp(reportCode, meta) {
 
 // Analyze Loatheb spore distribution - who got Fungal Bloom from each spore
 async function analyzeLoathebSpores(reportCode, meta, fights) {
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
 
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { sporeGroups: [], totalSpores: 0 };
   }
 
@@ -7373,8 +7552,7 @@ async function analyzeLoathebSpores(reportCode, meta, fights) {
   const sporeCasts = []; // Cast events marking spore explosions
   const debuffApplications = []; // All Fungal Creep debuff applications
 
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     for (const ev of events) {
       const type = String(ev.type || '').toLowerCase();
       
@@ -7553,12 +7731,9 @@ async function fetchPlayerStatsFromWCL(reportCode) {
 // Analyze player damage and healing stats from ALL events in database (fallback)
 async function analyzePlayerStatsFromDB(reportCode, meta) {
   // Get all event pages for this report
-  const pagesResult = await pool.query(
-    'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-    [reportCode]
-  );
+  const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
   
-  if (pagesResult.rows.length === 0) {
+  if (pagesResult.length === 0) {
     return { damage: [], healing: [] };
   }
   
@@ -7574,8 +7749,7 @@ async function analyzePlayerStatsFromDB(reportCode, meta) {
   
   let duplicateCount = 0;
   
-  for (const row of pagesResult.rows) {
-    const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
+  for (const events of pagesResult) {
     
     for (const ev of events) {
       // Deduplicate events
@@ -7862,7 +8036,12 @@ app.get('/api/wcl/stream-import', async (req, res) => {
     activeLiveSession = { sessionId, reportCode, startTime: Date.now(), hostName, hostId };
     
     // Clear existing event pages for this report to avoid duplicates on re-import
+    // Delete R2 objects first, then remove Postgres rows
     try {
+      const r2Deleted = await deleteR2EventPages(reportCode);
+      if (r2Deleted > 0) {
+        console.log(`[LIVE] Deleted ${r2Deleted} R2 objects for report ${reportCode}`);
+      }
       const deleteResult = await pool.query(
         'DELETE FROM wcl_event_pages WHERE report_code = $1',
         [reportCode]
@@ -7953,7 +8132,7 @@ app.get('/api/wcl/stream-import', async (req, res) => {
     // Check if we already have data (for informational purposes)
     try {
       const existing = await safeQuery(`
-        SELECT COUNT(*) as page_count, COALESCE(SUM(jsonb_array_length(events)), 0) as event_count
+        SELECT COUNT(*) as page_count, COALESCE(SUM(COALESCE(event_count, 0)), 0) as event_count
         FROM wcl_event_pages 
         WHERE report_code = $1
       `, [reportCode]);
@@ -7993,13 +8172,32 @@ app.get('/api/wcl/stream-import', async (req, res) => {
       const events = page.events || [];
       const nextCursor = page.nextPageTimestamp != null ? page.nextPageTimestamp : end;
       
-      // Store this page
+      // Store this page — upload to R2 if available, fallback to Postgres
       if (events.length > 0) {
-        const storeResult = await safeQuery(`
-          INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, events)
-          VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
-        `, [sessionId, reportCode, lastCursor, end, nextCursor, JSON.stringify(events)]);
+        let storeResult;
+        if (R2_ENABLED && r2Client) {
+          try {
+            const { r2Key, eventCount } = await uploadEventsToR2(reportCode, lastCursor, end, events);
+            storeResult = await safeQuery(`
+              INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, r2_key, event_count)
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+              ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
+            `, [sessionId, reportCode, lastCursor, end, nextCursor, r2Key, eventCount]);
+          } catch (r2Err) {
+            console.error(`[LIVE] R2 upload failed, falling back to Postgres: ${r2Err.message}`);
+            storeResult = await safeQuery(`
+              INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, events, event_count)
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+              ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
+            `, [sessionId, reportCode, lastCursor, end, nextCursor, JSON.stringify(events), events.length]);
+          }
+        } else {
+          storeResult = await safeQuery(`
+            INSERT INTO wcl_event_pages (event_id, report_code, start_time, end_time, next_cursor, events, event_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (event_id, report_code, start_time, end_time) DO NOTHING;
+          `, [sessionId, reportCode, lastCursor, end, nextCursor, JSON.stringify(events), events.length]);
+        }
         if (storeResult) pagesStored++;
       }
       
@@ -8295,10 +8493,7 @@ app.get('/api/debug/compare/:reportCode/:playerName', async (req, res) => {
     };
     
     // Get all events for this player
-    const pagesResult = await pool.query(
-      'SELECT events FROM wcl_event_pages WHERE report_code = $1 ORDER BY start_time',
-      [reportCode]
-    );
+    const pagesResult = await loadEventPagesFromR2('report_code', reportCode);
     
     const playerNameLower = playerName.toLowerCase();
     let ourTotal = 0;
@@ -8312,9 +8507,8 @@ app.get('/api/debug/compare/:reportCode/:playerName', async (req, res) => {
       return `${ev.timestamp}-${ev.sourceID}-${ev.targetID}-${ev.type}-${ev.abilityGameID || ev.ability?.guid || ''}-${ev.amount || 0}`;
     }
     
-    for (const row of pagesResult.rows) {
-      const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
-      
+    for (const events of pagesResult) {
+        
       for (const ev of events) {
         // Deduplicate
         const eventKey = getEventKey(ev);
@@ -8409,9 +8603,8 @@ app.get('/api/debug/compare/:reportCode/:playerName', async (req, res) => {
     const healSeenEvents = new Set();
     const healIncludedSample = [];
     
-    for (const row of pagesResult.rows) {
-      const events = typeof row.events === 'string' ? JSON.parse(row.events) : row.events;
-      
+    for (const events of pagesResult) {
+        
       for (const ev of events) {
         // Deduplicate
         const eventKey = getEventKey(ev);
