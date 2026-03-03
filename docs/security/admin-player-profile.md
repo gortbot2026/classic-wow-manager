@@ -70,12 +70,34 @@ All values passed as parameters.
 
 ## Gold Earned Calculation
 
-```sql
-rse.shared_gold_pot::NUMERIC / NULLIF(cnt.raider_count, 0) AS share
+_Updated 2026-03-03: Replaced naive equal-split SQL with points-weighted per-raid JS calculation._
+
+The `totalGoldEarned` field is computed post-Promise.all using a JavaScript implementation mirroring `computeTotalsFromSnapshot()` from `public/gold.js`. Security properties:
+
+**Input sources — all from DB, not user-controlled:**
+- `charNamesArray`: built from `charactersRes` + `playersRes` rows (already-trusted DB data)
+- `eventIds`: built from the attended raids query result
+
+**Query parameterization:**
+```js
+// All three batch queries use $1 parameterized placeholders
+client.query(`... WHERE LOWER(pcl.character_name) = ANY($1)`, [charNamesArray])
+client.query(`... WHERE event_id = ANY($1)`, [eventIds])
+client.query(`... WHERE raid_id = ANY($1)`, [eventIds])
 ```
-- `NULLIF(raider_count, 0)` prevents division-by-zero
-- `shared_gold_pot IS NOT NULL AND shared_gold_pot > 0` guards against null/zero pot entries
-- `GROUP BY` on `raid_id` prevents duplicate row multiplication
+No string interpolation of any user-controlled or external value into SQL.
+
+**aux_json handling:**
+- `aux_json` is a JSONB column returned by pg as a parsed JS object
+- Read-only: `const aux = r.aux_json || {};`
+- Only `aux.is_gold` is accessed; handles boolean `true` and string `'true'`
+
+**Edge cases handled securely:**
+- `goldPerPoint === 0` when `adjustedPot === 0` or `totalPointsAll === 0` — no division-by-zero, no NaN
+- Negative points clamped via `Math.max(0, points)` before calculation
+- `adjustedPot = Math.max(0, sharedPot - manualGoldPayoutTotal)` — no negative pot
+
+**Read-only code path:** The entire gold calculation performs only SELECT queries. No DB writes occur.
 
 ## Reward Points Deduplication
 
