@@ -369,6 +369,19 @@ function isValidDiscordId(id) {
   return /^\d{17,20}$/.test(id);
 }
 
+/**
+ * Validates a returnTo path to prevent open redirects.
+ * Only allows paths starting with a single slash (not protocol-relative //evil.com).
+ * @param {string|undefined} value - The returnTo value to validate
+ * @returns {string} Safe path or '/' if invalid
+ */
+function safeReturnTo(value) {
+  if (typeof value === 'string' && /^\/(?!\/)/.test(value)) {
+    return value;
+  }
+  return '/';
+}
+
 const app = express();
 
 // --- Simple in-memory SSE broadcaster ---
@@ -847,7 +860,7 @@ async function initializeAuthTables() {
       )`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_provider_email ON alt_auth_users(provider, email)`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_provider_id ON alt_auth_users(provider, provider_id) WHERE provider_id IS NOT NULL`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_alt_auth_discord_id ON alt_auth_users(discord_id)`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_discord_id ON alt_auth_users(discord_id) WHERE discord_id IS NOT NULL`);
 
     console.log('✅ Auth tables initialized (discord_users, app_user_roles, alt_auth_users)');
   } catch (error) {
@@ -2732,7 +2745,7 @@ app.get('/auth/discord', (req, res, next) => {
 	// Build a safe return path to embed in the OAuth state parameter
 	const returnToParam = typeof req.query.returnTo === 'string' ? req.query.returnTo : null;
 	let safeReturnTo = '/';
-	if (returnToParam && returnToParam.startsWith('/')) {
+	if (returnToParam && /^\/(?!\/)/.test(returnToParam)) {
 		safeReturnTo = returnToParam;
 	} else if (typeof req.headers.referer === 'string') {
 		try {
@@ -2782,7 +2795,7 @@ app.get('/auth/discord/callback',
         let destination = '/';
         try {
           const decoded = decodeURIComponent(state || '');
-          if (decoded && decoded.startsWith('/')) destination = decoded;
+          if (decoded && /^\/(?!\/)/.test(decoded)) destination = decoded;
         } catch (_) {}
         res.redirect(destination);
       }
@@ -2797,13 +2810,31 @@ app.get('/auth/login', (req, res) => {
 
 // --- Google OAuth Routes ---
 app.get('/auth/google', (req, res, next) => {
+  // Guard: if Google strategy is not configured, return a user-friendly error
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    return res.status(503).send(`
+      <!DOCTYPE html><html><head><title>Google Login Unavailable</title>
+      <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0;}
+      .card{background:#16213e;padding:2rem;border-radius:12px;text-align:center;max-width:400px;}
+      a{color:#7289da;text-decoration:none;}</style></head>
+      <body><div class="card"><h2>Google Login Unavailable</h2>
+      <p>Google login is not currently configured. Please use Discord or Email/Password instead.</p>
+      <a href="/auth/login">&larr; Back to Login</a></div></body></html>
+    `);
+  }
   // Preserve returnTo through Google OAuth via session
-  const returnTo = typeof req.query.returnTo === 'string' && req.query.returnTo.startsWith('/') ? req.query.returnTo : '/';
+  const returnTo = safeReturnTo(req.query.returnTo);
   req.session.altAuthReturnTo = returnTo;
   next();
 }, passport.authenticate('google', { scope: ['profile', 'email'] }));
 
-app.get('/auth/google/callback',
+app.get('/auth/google/callback', (req, res, next) => {
+  // Guard: if Google strategy is not configured, redirect to login
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    return res.redirect('/auth/login');
+  }
+  next();
+},
   passport.authenticate('google', { failureRedirect: '/auth/login' }),
   (req, res) => {
     const user = req.user || {};
@@ -2882,7 +2913,7 @@ app.post('/auth/local/register', express.json(), express.urlencoded({ extended: 
 // --- Email/Password Login ---
 app.post('/auth/local/login', express.json(), express.urlencoded({ extended: true }), (req, res, next) => {
   // Preserve returnTo
-  const returnTo = typeof req.body.returnTo === 'string' && req.body.returnTo.startsWith('/') ? req.body.returnTo : '/';
+  const returnTo = safeReturnTo(req.body.returnTo);
   req.session.altAuthReturnTo = returnTo;
 
   passport.authenticate('local', (err, user, info) => {
@@ -3012,14 +3043,22 @@ app.post('/auth/link-discord', express.json(), express.urlencoded({ extended: tr
 
     // Update session — set req.user.id to the Discord ID
     req.user.id = discordId;
-    req.session.save((saveErr) => {
-      if (saveErr) console.error('[link-discord] Session save error:', saveErr.message);
+    const dest = req.session.altAuthReturnTo || '/';
+    delete req.session.altAuthReturnTo;
+
+    // Await session save to avoid race condition
+    await new Promise((resolve, reject) => {
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error('[link-discord] Session save error:', saveErr.message);
+          reject(saveErr);
+        } else {
+          resolve();
+        }
+      });
     });
 
     console.log(`[alt-auth] Linked alt_auth_id=${altAuthId} to discord_id=${discordId}`);
-
-    const dest = req.session.altAuthReturnTo || '/';
-    delete req.session.altAuthReturnTo;
     return res.json({ ok: true, redirect: dest });
   } catch (err) {
     console.error('[link-discord] Error:', err.message);
