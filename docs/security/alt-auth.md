@@ -1,7 +1,7 @@
 # Security Documentation: Alternative Authentication (Google + Email/Password)
 
 **Feature:** Alternative login methods for region-restricted users  
-**Last updated:** 2026-03-03 (Round 2 — all MEDIUM findings resolved)  
+**Last updated:** 2026-03-03 (Round 3 — keepSessionInfo: true reviewed)  
 **Status:** ✅ PASS — approved for QA
 
 ---
@@ -93,6 +93,33 @@ No rate limiting on registration/login endpoints. Acceptable for v1 guild tool. 
 
 ---
 
+### Session Fixation Protection: keepSessionInfo: true (MEDIUM — accepted tradeoff)
+
+**Context (Round 3 fix):** Passport 0.7.0+ calls `req.session.regenerate()` inside `req.logIn()`, which destroys `req.session.altAuthReturnTo`. Dev Gort fixed this by passing `{ keepSessionInfo: true }` to all alt-auth `req.logIn()` calls, which skips session regeneration.
+
+**Security implication:** Session regeneration on login is an OWASP-recommended control against session fixation attacks. Skipping it theoretically allows an attacker who pre-set a session ID to hijack a session post-authentication.
+
+**Mitigating factors that reduce practical risk:**
+- `httpOnly: true` (express-session default) — JS cannot read/write session cookies
+- `sameSite: 'lax'` — cross-site requests cannot attach session cookies
+- `secure: true` in production — cookies only sent over HTTPS
+- Closed community (guild tool) — not public-facing attack surface
+
+**Recommended future fix (v2):** Use save-before/restore-after pattern instead of `keepSessionInfo`:
+```javascript
+const savedReturnTo = req.session.altAuthReturnTo;
+req.logIn(user, (err) => {
+  if (err) return next(err);
+  if (savedReturnTo) req.session.altAuthReturnTo = savedReturnTo;
+  // ... rest of handler
+});
+```
+This preserves returnTo while re-enabling session regeneration protection.
+
+**Decision:** Accepted MEDIUM risk for v1. Re-evaluate in v2 when implementing password reset.
+
+---
+
 ## Future Enhancements (v2)
 
 - Password reset flow
@@ -100,3 +127,4 @@ No rate limiting on registration/login endpoints. Acceptable for v1 guild tool. 
 - CAPTCHA on registration
 - Admin UI for managing alt-auth users
 - Normalize email enumeration response
+- Replace `keepSessionInfo: true` with save-before/restore-after pattern for returnTo (restores session fixation protection)
