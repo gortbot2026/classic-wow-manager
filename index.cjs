@@ -2835,7 +2835,7 @@ app.get('/auth/google/callback', (req, res, next) => {
   }
   next();
 },
-  passport.authenticate('google', { failureRedirect: '/auth/login' }),
+  passport.authenticate('google', { failureRedirect: '/auth/login', keepSessionInfo: true }),
   (req, res) => {
     const user = req.user || {};
     // If user already has a linked Discord ID, redirect to returnTo
@@ -2920,10 +2920,10 @@ app.post('/auth/local/login', express.json(), express.urlencoded({ extended: tru
     if (err) return res.status(500).json({ ok: false, error: 'Login failed. Please try again.' });
     if (!user) return res.status(401).json({ ok: false, error: (info && info.message) || 'Invalid email or password.' });
 
-    req.logIn(user, (loginErr) => {
+    req.logIn(user, { keepSessionInfo: true }, (loginErr) => {
       if (loginErr) return res.status(500).json({ ok: false, error: 'Login failed. Please try again.' });
 
-      // Determine redirect
+      // Determine redirect — keepSessionInfo preserves altAuthReturnTo across session regeneration
       if (isValidDiscordId(String(user.id || ''))) {
         const dest = req.session.altAuthReturnTo || '/';
         delete req.session.altAuthReturnTo;
@@ -2975,7 +2975,7 @@ app.get('/auth/local/verify/:token', async (req, res) => {
       refreshToken: null
     };
 
-    req.logIn(userObj, (err) => {
+    req.logIn(userObj, { keepSessionInfo: true }, (err) => {
       if (err) {
         console.error('[verify] Login after verify failed:', err.message);
         return res.redirect('/auth/login');

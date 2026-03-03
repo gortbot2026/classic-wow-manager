@@ -1,99 +1,102 @@
-# Security: Alternative Authentication (Google OAuth + Email/Password)
+# Security Documentation: Alternative Authentication (Google + Email/Password)
 
-_Reviewed by: Security Gort — 2026-03-03_
+**Feature:** Alternative login methods for region-restricted users  
+**Last updated:** 2026-03-03 (Round 2 — all MEDIUM findings resolved)  
+**Status:** ✅ PASS — approved for QA
+
+---
 
 ## Overview
 
-Feature adds Google OAuth and Email/Password as alternative login methods for guild members in regions where Discord is blocked. All alt-auth users must link a Discord ID before accessing authenticated features.
+Adds Google OAuth and Email/Password as supplementary login methods alongside Discord OAuth. All alt-auth users must link their Discord ID before accessing any authenticated endpoint, ensuring `req.user.id` is always a valid Discord snowflake ID.
+
+---
 
 ## Authentication Requirements
 
-- Discord OAuth remains the primary and recommended login method
-- Google OAuth requires `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` env vars (never hardcoded)
-- Email/Password requires `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM` env vars
-- Google OAuth requires callback URIs configured in Google Cloud Console for both prod and staging
+- Discord OAuth remains the primary/recommended method
+- Google OAuth and Email/Password are for users in Discord-restricted regions
+- All alt-auth users must link a Discord ID before accessing any protected routes
+- The Discord ID gate middleware enforces this constraint globally
+
+---
 
 ## Authorization Rules
 
-- Alt-auth users **must** link a Discord ID before accessing any authenticated endpoint
-- Discord ID gate middleware runs after `passport.session()` and redirects unlinked users to `/auth/link-discord`
-- The gate skips: `/auth/*` routes, `/public/*`, static assets (js/css/images), `/logout`
-- Once Discord ID is linked, `req.user.id` is set to the Discord ID — identical to Discord OAuth sessions
-- All role checks, polls, character lookups use `req.user.id` (Discord ID) consistently
+- `req.user.id` MUST always resolve to a Discord snowflake (17-20 digits)
+- Alt-auth sessions are normalized at login/link-discord to set `req.user.id = discordId`
+- Discord token refresh middleware skips users without `req.user.refreshToken` — alt-auth users are safe
+- Role checks, polls, character lookups all use `req.user.id` unchanged
+
+---
 
 ## Input Validation Rules
 
-| Input | Validation |
+| Field | Validation |
 |-------|-----------|
-| Email address | Regex: `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` + disposable domain blocklist |
+| Email | RFC-format, not in disposable-email-domains blocklist |
 | Password | Minimum 8 characters |
-| Discord ID | Regex: `/^\d{17,20}$/` (Discord snowflake format) |
-| `returnTo` parameter | Must start with `/` (blocks absolute URLs) |
+| Discord ID | 17–20 digit numeric string (snowflake format) |
+| returnTo param | `/^\/(?!\/)/.test(value)` — rejects protocol-relative `//evil.com` |
 
-## Password Security
+---
 
-- Bcrypt with cost factor **12** (server-side, not configurable at runtime)
-- Verification tokens: `crypto.randomBytes(32).toString('hex')` — 64 hex chars, 24h expiry
-- Tokens cleared from DB after successful verification (one-time use)
+## Database Security
+
+### alt_auth_users table
+- `password_hash`: bcrypt with cost factor 12
+- `verification_token`: 32 bytes `crypto.randomBytes`, hex-encoded, 24h expiry
+- `discord_id`: UNIQUE INDEX (WHERE NOT NULL) — prevents race conditions on duplicate linking
+- `(provider, email)`: UNIQUE INDEX
+- `(provider, provider_id)`: UNIQUE INDEX WHERE NOT NULL
+
+---
 
 ## Known Security Considerations
 
-### MEDIUM: Open Redirect via Protocol-Relative returnTo
-- **Issue:** `returnTo` validation uses `startsWith('/')`, which permits `//evil.com`
-- **Affected routes:** `GET /auth/google`, `POST /auth/local/login`
-- **Risk:** Phishing — attacker crafts login link that redirects to malicious site after successful login
-- **Fix (v2):** Change check to `/^\/(?!\/)/.test(returnTo)` to block protocol-relative URLs
-- **Workaround:** Users must not click untrusted login links
+### Open Redirect Prevention ✅ (fixed Round 2)
+`safeReturnTo()` helper at index.cjs line ~378 uses `/^\/(?!\/)/.test(value)` to reject all non-path values including protocol-relative URLs. Applied at all 4 returnTo handling locations.
 
-### MEDIUM: Discord ID Uniqueness (Application-Level Only)
-- **Issue:** `alt_auth_users.discord_id` has only an index, not a UNIQUE constraint
-- **Risk:** Race condition — two concurrent users could link to the same Discord ID
-- **Fix (v2):** Add `ALTER TABLE alt_auth_users ADD CONSTRAINT unique_discord_id UNIQUE (discord_id)` and handle constraint errors
-- **Mitigation:** Application-level check before update reduces likelihood; exploit requires precise timing
+### Discord ID Race Condition ✅ (fixed Round 2)
+DB-level UNIQUE constraint on `discord_id WHERE NOT NULL` (line ~863) prevents duplicate linking even under concurrent requests.
 
-### LOW: Session Save Race Condition in /auth/link-discord
-- **Issue:** Response sent before `session.save()` completes — very fast redirect could use stale session
-- **Fix (v2):** Await session save before sending JSON response
-- **Mitigation:** Client JS has 800ms delay before redirect; in practice not exploitable
+### Session Save Race Condition ✅ (fixed Round 2)
+`/auth/link-discord POST` now awaits `session.save()` via Promise wrapper before responding (line ~3049).
 
-### LOW: Email Enumeration
-- **Issue:** Registration endpoint returns `409` if email already registered and verified
-- **Risk:** Attacker can enumerate valid email addresses
-- **Acceptable:** Low-value target (guild site, not financial); consistent error messages for wrong password
+### Email Enumeration (LOW — accepted risk)
+Registration endpoint returns "email already registered" error. For this use case (guild management, closed community), this is an accepted LOW risk. Recommendation: normalize to "If this email is not registered, a verification link will be sent" in a future sprint.
 
-## Dependency Audit
+### Rate Limiting (OUT OF SCOPE v1)
+No rate limiting on registration/login endpoints. Acceptable for v1 guild tool. Add in v2.
 
-As of 2026-03-03 — new packages introduced by this feature are **all clean**:
-- `passport-google-oauth20` — no CVEs
-- `passport-local` — no CVEs
-- `bcrypt` — no CVEs
-- `nodemailer` — no CVEs
-- `disposable-email-domains` — no CVEs
+---
 
-Pre-existing vulnerabilities (not introduced by this feature):
-- `fast-xml-parser` CRITICAL (via @aws-sdk) — DoS/RCE via XML parsing
-- `multer` HIGH — DoS via incomplete cleanup
-- `minimatch` HIGH — ReDoS
-- `axios` HIGH — DoS via proto key
-- `lodash` MODERATE — prototype pollution
+## Pre-existing Dependency CVEs (NOT introduced by this PR)
 
-These pre-existing CVEs should be addressed in a separate dependency upgrade sprint.
+| Package | Severity | Note |
+|---------|----------|------|
+| fast-xml-parser | CRITICAL | Pre-existing, not used in auth flow |
+| multer | HIGH | Pre-existing file upload library |
+| minimatch | HIGH | Pre-existing glob matching |
+| axios | HIGH | Pre-existing HTTP client |
+| @aws-sdk/* | HIGH | Pre-existing S3 integration |
+
+**New packages added by this PR:** passport-google-oauth20, passport-local, bcrypt, nodemailer, disposable-email-domains — **zero CVEs**.
+
+---
 
 ## Audit Logging
 
-Session creation logged:
-- `[session] Created for google alt-auth id=X discord_id=Y`
-- `[session] Created for local alt-auth id=X discord_id=Y`
-- `[alt-auth] Linked alt_auth_id=X to discord_id=Y`
+- Successful Google logins logged: `[alt-auth] Google login for profile ${profile.id}`
+- Discord ID linking logged: `[alt-auth] Linked alt_auth_id=${id} to discord_id=${discordId}`
+- Session save errors logged as errors
 
-Token refresh skip logged implicitly (no action taken for alt-auth users).
+---
 
 ## Future Enhancements (v2)
 
-1. Fix open redirect — use `/^\/(?!\/)/.test(returnTo)` check
-2. Add DB UNIQUE constraint on `alt_auth_users.discord_id`
-3. Await `session.save()` before responding in `/auth/link-discord`
-4. Rate limiting on `/auth/local/register` and `/auth/local/login`
-5. CAPTCHA on registration
-6. Password reset flow
-7. Address pre-existing dependency CVEs
+- Password reset flow
+- Rate limiting on registration/login endpoints
+- CAPTCHA on registration
+- Admin UI for managing alt-auth users
+- Normalize email enumeration response
