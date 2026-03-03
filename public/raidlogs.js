@@ -15,7 +15,7 @@ class RaidLogsManager {
             if (gate) gate.style.display='block';
             if (container) container.style.display='none';
             const btn = document.getElementById('rlAuthLoginBtn');
-            if (btn){ const rt=encodeURIComponent(location.pathname+location.search+location.hash); btn.addEventListener('click',()=>{ location.href=`/auth/discord?returnTo=${rt}`; }); }
+            if (btn){ const rt=encodeURIComponent(location.pathname+location.search+location.hash); btn.addEventListener('click',()=>{ location.href=`/auth/login?returnTo=${rt}`; }); }
             return false;
         }catch{ return true; }
     }

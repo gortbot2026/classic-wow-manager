@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const btn = document.getElementById('lootAuthLoginBtn');
       if (btn) {
         const rt = encodeURIComponent(location.pathname + location.search + location.hash);
-        btn.addEventListener('click', ()=>{ location.href = `/auth/discord?returnTo=${rt}`; });
+        btn.addEventListener('click', ()=>{ location.href = `/auth/login?returnTo=${rt}`; });
       }
     }
   } catch {}

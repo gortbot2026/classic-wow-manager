@@ -55,9 +55,19 @@ async function updateAuthUI() {
     const user = await getUserStatus();
 
     if (user.loggedIn && user.username) {
-        const avatarUrl = user.avatar
-            ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=32`
-            : `https://cdn.discordapp.com/embed/avatars/${parseInt(user.discriminator) % 5}.png`;
+        let avatarUrl;
+        const authProvider = user.authProvider || 'discord';
+        if (authProvider === 'google' && user.avatar && user.avatar.startsWith('http')) {
+            // Google avatars are already full URLs
+            avatarUrl = user.avatar;
+        } else if (user.avatar) {
+            avatarUrl = `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=32`;
+        } else if (authProvider === 'local') {
+            // Generate initials-based default for email/password users
+            avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.username || 'U')}&background=5865F2&color=fff&size=32`;
+        } else {
+            avatarUrl = `https://cdn.discordapp.com/embed/avatars/${parseInt(user.discriminator || '0') % 5}.png`;
+        }
 
         // Build dropdown menu items based on user permissions
         let dropdownItems = `<a href="/user-settings" class="dropdown-item">User settings</a>`;
@@ -101,9 +111,9 @@ async function updateAuthUI() {
         const currentPath = window.location.pathname + window.location.search + window.location.hash;
         const encodedReturnTo = encodeURIComponent(currentPath);
         authContainer.innerHTML = `
-            <button class="discord-button" onclick="window.location.href='/auth/discord?returnTo=${encodedReturnTo}'">
+            <button class="discord-button" onclick="window.location.href='/auth/login?returnTo=${encodedReturnTo}'">
                 <i class="fab fa-discord discord-icon"></i>
-                Sign in with Discord
+                Sign in
             </button>
         `;
     }

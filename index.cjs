@@ -5,6 +5,12 @@ const express = require('express');
 const session = require('express-session');
 const passport = require('passport');
 const DiscordStrategy = require('passport-discord').Strategy;
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const LocalStrategy = require('passport-local').Strategy;
+const bcrypt = require('bcrypt');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
+const disposableDomains = require('disposable-email-domains');
 const { Pool } = require('pg');
 const path = require('path');
 const axios = require('axios');
@@ -302,6 +308,65 @@ async function fetchWclFights(params) {
   }
   const fights = body && body.data && body.data.reportData && body.data.reportData.report && body.data.reportData.report.fights;
   return Array.isArray(fights) ? fights : [];
+}
+
+// --- Email Transport (for alt-auth verification emails) ---
+const emailTransporter = (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS)
+  ? nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT || '465', 10),
+      secure: parseInt(process.env.EMAIL_PORT || '465', 10) === 465,
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+    })
+  : null;
+
+/**
+ * Send a verification email to a newly registered alt-auth user.
+ *
+ * @param {string} email - Recipient email address
+ * @param {string} token - Hex verification token
+ * @returns {Promise<void>}
+ */
+async function sendVerificationEmail(email, token) {
+  if (!emailTransporter) {
+    console.warn('[alt-auth] EMAIL_HOST/USER/PASS not configured — skipping verification email');
+    return;
+  }
+  const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
+  const verifyUrl = `${baseUrl}/auth/local/verify/${token}`;
+  const fromAddress = process.env.EMAIL_FROM || process.env.EMAIL_USER;
+  await emailTransporter.sendMail({
+    from: fromAddress,
+    to: email,
+    subject: '1Principles — Verify your email',
+    html: `<p>Welcome to 1Principles!</p>
+           <p>Click the link below to verify your email address:</p>
+           <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+           <p>This link expires in 24 hours.</p>
+           <p>If you did not sign up, you can safely ignore this email.</p>`
+  });
+}
+
+/**
+ * Check if an email domain is on the disposable-email blocklist.
+ *
+ * @param {string} email - Email address to check
+ * @returns {boolean} true if the domain is disposable
+ */
+function isDisposableEmail(email) {
+  const domain = (email || '').split('@')[1];
+  if (!domain) return false;
+  return disposableDomains.includes(domain.toLowerCase());
+}
+
+/**
+ * Validate Discord snowflake ID format (17-20 digit numeric string).
+ *
+ * @param {string} id - Value to validate
+ * @returns {boolean} true if valid Discord ID format
+ */
+function isValidDiscordId(id) {
+  return /^\d{17,20}$/.test(id);
 }
 
 const app = express();
@@ -765,7 +830,26 @@ async function initializeAuthTables() {
       )`);
 
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_user_roles_role ON app_user_roles(role_key)`);
-    console.log('✅ Auth tables initialized (discord_users, app_user_roles)');
+    // Alternative auth users table for Google OAuth and Email/Password login
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS alt_auth_users (
+        id SERIAL PRIMARY KEY,
+        provider VARCHAR(20) NOT NULL,
+        provider_id VARCHAR(255),
+        email VARCHAR(255),
+        password_hash VARCHAR(255),
+        email_verified BOOLEAN DEFAULT false,
+        verification_token VARCHAR(64),
+        verification_expires TIMESTAMP,
+        discord_id VARCHAR(32),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_provider_email ON alt_auth_users(provider, email)`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alt_auth_provider_id ON alt_auth_users(provider, provider_id) WHERE provider_id IS NOT NULL`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_alt_auth_discord_id ON alt_auth_users(discord_id)`);
+
+    console.log('✅ Auth tables initialized (discord_users, app_user_roles, alt_auth_users)');
   } catch (error) {
     console.error('❌ Error creating auth tables:', error);
   }
@@ -1809,6 +1893,23 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// --- Alt-Auth Discord ID Gate ---
+// Redirect alt-auth users who haven't linked their Discord ID yet
+app.use((req, res, next) => {
+  if (!req.user || !req.isAuthenticated || !req.isAuthenticated()) return next();
+  const provider = req.user.authProvider;
+  if (!provider || provider === 'discord') return next();
+  // Alt-auth user — check if they have a valid Discord ID linked
+  if (isValidDiscordId(String(req.user.id || ''))) return next();
+  // Allow auth routes, static assets, and the link-discord page itself
+  const p = req.path;
+  if (p.startsWith('/auth/') || p.startsWith('/public/') || p === '/logout') return next();
+  // Allow static file extensions
+  if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)$/i.test(p)) return next();
+  // Redirect to Discord ID linking page
+  return res.redirect('/auth/link-discord');
+});
+
 // --- Discord Token Refresh ---
 
 /** How often (ms) to proactively refresh Discord tokens — 6 days (1 day buffer before 7-day expiry). */
@@ -1878,6 +1979,9 @@ app.use((req, res, next) => {
   // Skip QA bypass users
   if (req.user.accessToken === 'qa-bypass') return next();
 
+  // Skip alt-auth users (no Discord tokens to refresh)
+  if (req.user.authProvider === 'google' || req.user.authProvider === 'local') return next();
+
   const user = req.user;
   const now = Date.now();
 
@@ -1923,6 +2027,117 @@ passport.use(new DiscordStrategy({
     profile.tokenIssuedAt = Date.now();
     console.log(`[session] Created for discord_id=${profile.id} at ${new Date().toISOString()}`);
     return done(null, profile);
+}));
+
+// --- Google OAuth Strategy ---
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: `${process.env.APP_BASE_URL}/auth/google/callback`,
+    passReqToCallback: true
+  }, async (req, accessToken, refreshToken, profile, done) => {
+    try {
+      const googleId = profile.id;
+      const email = (profile.emails && profile.emails[0]) ? profile.emails[0].value : null;
+      const displayName = profile.displayName || (email ? email.split('@')[0] : 'User');
+      const avatarUrl = (profile.photos && profile.photos[0]) ? profile.photos[0].value : null;
+
+      // Look up existing alt-auth record
+      const existing = await pool.query(
+        `SELECT * FROM alt_auth_users WHERE provider = 'google' AND provider_id = $1 LIMIT 1`,
+        [googleId]
+      );
+
+      let altUser;
+      if (existing.rowCount > 0) {
+        altUser = existing.rows[0];
+        // Update email/timestamp
+        await pool.query(
+          `UPDATE alt_auth_users SET email = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+          [email, altUser.id]
+        );
+      } else {
+        // Create new record
+        const ins = await pool.query(
+          `INSERT INTO alt_auth_users (provider, provider_id, email, email_verified) VALUES ('google', $1, $2, true) RETURNING *`,
+          [googleId, email]
+        );
+        altUser = ins.rows[0];
+      }
+
+      // Build the user object matching Discord strategy shape
+      const userObj = {
+        id: altUser.discord_id || `alt_google_${altUser.id}`,
+        username: displayName,
+        avatar: avatarUrl,
+        email: email,
+        authProvider: 'google',
+        altAuthId: altUser.id,
+        accessToken: null,
+        refreshToken: null
+      };
+
+      console.log(`[session] Created for google alt-auth id=${altUser.id} discord_id=${altUser.discord_id || 'unlinked'}`);
+      return done(null, userObj);
+    } catch (err) {
+      console.error('[google-auth] Strategy error:', err.message);
+      return done(err);
+    }
+  }));
+  console.log('[init] Google OAuth strategy registered');
+} else {
+  console.warn('[init] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — Google OAuth disabled');
+}
+
+// --- Local (Email/Password) Strategy ---
+passport.use(new LocalStrategy({
+  usernameField: 'email',
+  passwordField: 'password',
+  passReqToCallback: true
+}, async (req, email, password, done) => {
+  try {
+    const normalizedEmail = (email || '').toLowerCase().trim();
+    const result = await pool.query(
+      `SELECT * FROM alt_auth_users WHERE provider = 'local' AND email = $1 LIMIT 1`,
+      [normalizedEmail]
+    );
+
+    if (result.rowCount === 0) {
+      return done(null, false, { message: 'Invalid email or password.' });
+    }
+
+    const altUser = result.rows[0];
+
+    if (!altUser.email_verified) {
+      return done(null, false, { message: 'Please verify your email before logging in. Check your inbox for the verification link.' });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, altUser.password_hash);
+    if (!passwordMatch) {
+      return done(null, false, { message: 'Invalid email or password.' });
+    }
+
+    // Update last login
+    await pool.query(`UPDATE alt_auth_users SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [altUser.id]);
+
+    const userObj = {
+      id: altUser.discord_id || `alt_local_${altUser.id}`,
+      username: normalizedEmail.split('@')[0],
+      avatar: null,
+      email: normalizedEmail,
+      authProvider: 'local',
+      altAuthId: altUser.id,
+      accessToken: null,
+      refreshToken: null
+    };
+
+    console.log(`[session] Created for local alt-auth id=${altUser.id} discord_id=${altUser.discord_id || 'unlinked'}`);
+    return done(null, userObj);
+  } catch (err) {
+    console.error('[local-auth] Strategy error:', err.message);
+    return done(err);
+  }
 }));
 
 // --- Role-Based Access Control Functions ---
@@ -2574,6 +2789,243 @@ app.get('/auth/discord/callback',
     })();
   }
 );
+
+// --- Login Method Selection Page ---
+app.get('/auth/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// --- Google OAuth Routes ---
+app.get('/auth/google', (req, res, next) => {
+  // Preserve returnTo through Google OAuth via session
+  const returnTo = typeof req.query.returnTo === 'string' && req.query.returnTo.startsWith('/') ? req.query.returnTo : '/';
+  req.session.altAuthReturnTo = returnTo;
+  next();
+}, passport.authenticate('google', { scope: ['profile', 'email'] }));
+
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: '/auth/login' }),
+  (req, res) => {
+    const user = req.user || {};
+    // If user already has a linked Discord ID, redirect to returnTo
+    if (isValidDiscordId(String(user.id || ''))) {
+      const dest = req.session.altAuthReturnTo || '/';
+      delete req.session.altAuthReturnTo;
+      return res.redirect(dest);
+    }
+    // Otherwise redirect to link Discord ID
+    res.redirect('/auth/link-discord');
+  }
+);
+
+// --- Email/Password Registration ---
+app.post('/auth/local/register', express.json(), express.urlencoded({ extended: true }), async (req, res) => {
+  try {
+    const email = (req.body.email || '').toLowerCase().trim();
+    const password = req.body.password || '';
+
+    // Validate email format
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ ok: false, error: 'Please enter a valid email address.' });
+    }
+
+    // Check disposable email
+    if (isDisposableEmail(email)) {
+      return res.status(400).json({ ok: false, error: 'Disposable email addresses are not allowed. Please use a permanent email.' });
+    }
+
+    // Validate password
+    if (password.length < 8) {
+      return res.status(400).json({ ok: false, error: 'Password must be at least 8 characters long.' });
+    }
+
+    // Check if email already registered
+    const existing = await pool.query(
+      `SELECT id, email_verified FROM alt_auth_users WHERE provider = 'local' AND email = $1 LIMIT 1`,
+      [email]
+    );
+    if (existing.rowCount > 0) {
+      if (existing.rows[0].email_verified) {
+        return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please log in instead.' });
+      }
+      // Re-send verification for unverified accounts
+      const token = crypto.randomBytes(32).toString('hex');
+      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+      const hash = await bcrypt.hash(password, 12);
+      await pool.query(
+        `UPDATE alt_auth_users SET password_hash = $1, verification_token = $2, verification_expires = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
+        [hash, token, expires, existing.rows[0].id]
+      );
+      await sendVerificationEmail(email, token);
+      return res.json({ ok: true, message: 'Verification email sent. Please check your inbox.' });
+    }
+
+    // Hash password and create record
+    const hash = await bcrypt.hash(password, 12);
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await pool.query(
+      `INSERT INTO alt_auth_users (provider, email, password_hash, email_verified, verification_token, verification_expires)
+       VALUES ('local', $1, $2, false, $3, $4)`,
+      [email, hash, token, expires]
+    );
+
+    await sendVerificationEmail(email, token);
+    return res.json({ ok: true, message: 'Registration successful! Please check your email to verify your account.' });
+  } catch (err) {
+    console.error('[local-register] Error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Registration failed. Please try again.' });
+  }
+});
+
+// --- Email/Password Login ---
+app.post('/auth/local/login', express.json(), express.urlencoded({ extended: true }), (req, res, next) => {
+  // Preserve returnTo
+  const returnTo = typeof req.body.returnTo === 'string' && req.body.returnTo.startsWith('/') ? req.body.returnTo : '/';
+  req.session.altAuthReturnTo = returnTo;
+
+  passport.authenticate('local', (err, user, info) => {
+    if (err) return res.status(500).json({ ok: false, error: 'Login failed. Please try again.' });
+    if (!user) return res.status(401).json({ ok: false, error: (info && info.message) || 'Invalid email or password.' });
+
+    req.logIn(user, (loginErr) => {
+      if (loginErr) return res.status(500).json({ ok: false, error: 'Login failed. Please try again.' });
+
+      // Determine redirect
+      if (isValidDiscordId(String(user.id || ''))) {
+        const dest = req.session.altAuthReturnTo || '/';
+        delete req.session.altAuthReturnTo;
+        return res.json({ ok: true, redirect: dest });
+      }
+      return res.json({ ok: true, redirect: '/auth/link-discord' });
+    });
+  })(req, res, next);
+});
+
+// --- Email Verification ---
+app.get('/auth/local/verify/:token', async (req, res) => {
+  try {
+    const token = req.params.token;
+    if (!token || token.length !== 64) {
+      return res.status(400).send('Invalid verification link.');
+    }
+
+    const result = await pool.query(
+      `SELECT * FROM alt_auth_users WHERE provider = 'local' AND verification_token = $1 LIMIT 1`,
+      [token]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(400).send('Invalid or expired verification link.');
+    }
+
+    const altUser = result.rows[0];
+
+    if (altUser.verification_expires && new Date(altUser.verification_expires) < new Date()) {
+      return res.status(400).send('This verification link has expired. Please register again or log in to receive a new link.');
+    }
+
+    // Mark as verified and clear token
+    await pool.query(
+      `UPDATE alt_auth_users SET email_verified = true, verification_token = NULL, verification_expires = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [altUser.id]
+    );
+
+    // Auto-login the user
+    const userObj = {
+      id: altUser.discord_id || `alt_local_${altUser.id}`,
+      username: (altUser.email || '').split('@')[0],
+      avatar: null,
+      email: altUser.email,
+      authProvider: 'local',
+      altAuthId: altUser.id,
+      accessToken: null,
+      refreshToken: null
+    };
+
+    req.logIn(userObj, (err) => {
+      if (err) {
+        console.error('[verify] Login after verify failed:', err.message);
+        return res.redirect('/auth/login');
+      }
+      // Redirect to link Discord ID
+      if (isValidDiscordId(String(userObj.id || ''))) {
+        return res.redirect('/');
+      }
+      return res.redirect('/auth/link-discord');
+    });
+  } catch (err) {
+    console.error('[verify] Error:', err.message);
+    return res.status(500).send('Verification failed. Please try again.');
+  }
+});
+
+// --- Discord ID Linking Page ---
+app.get('/auth/link-discord', (req, res) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.redirect('/auth/login');
+  }
+  res.sendFile(path.join(__dirname, 'public', 'link-discord.html'));
+});
+
+app.post('/auth/link-discord', express.json(), express.urlencoded({ extended: true }), async (req, res) => {
+  try {
+    if (!req.isAuthenticated || !req.isAuthenticated()) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
+
+    const user = req.user || {};
+    const altAuthId = user.altAuthId;
+    if (!altAuthId) {
+      return res.status(400).json({ ok: false, error: 'This action is only for alternative-auth users.' });
+    }
+
+    const discordId = (req.body.discordId || '').trim();
+
+    if (!isValidDiscordId(discordId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid Discord ID. It should be a 17-20 digit number. See the help link above for how to find yours.' });
+    }
+
+    // Check if this Discord ID is already claimed by another alt-auth user
+    const claimed = await pool.query(
+      `SELECT id FROM alt_auth_users WHERE discord_id = $1 AND id != $2 LIMIT 1`,
+      [discordId, altAuthId]
+    );
+    if (claimed.rowCount > 0) {
+      return res.status(409).json({ ok: false, error: 'This Discord ID is already linked to another account.' });
+    }
+
+    // Update the alt_auth_users record
+    await pool.query(
+      `UPDATE alt_auth_users SET discord_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [discordId, altAuthId]
+    );
+
+    // Upsert into discord_users so FK constraints and role lookups work
+    await pool.query(`
+      INSERT INTO discord_users (discord_id, username, last_login_at, updated_at)
+      VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (discord_id)
+      DO UPDATE SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    `, [discordId, user.username || 'Alt-Auth User']);
+
+    // Update session — set req.user.id to the Discord ID
+    req.user.id = discordId;
+    req.session.save((saveErr) => {
+      if (saveErr) console.error('[link-discord] Session save error:', saveErr.message);
+    });
+
+    console.log(`[alt-auth] Linked alt_auth_id=${altAuthId} to discord_id=${discordId}`);
+
+    const dest = req.session.altAuthReturnTo || '/';
+    delete req.session.altAuthReturnTo;
+    return res.json({ ok: true, redirect: dest });
+  } catch (err) {
+    console.error('[link-discord] Error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to link Discord ID. Please try again.' });
+  }
+});
 
 // --- Discord test API endpoints ---
 // Sends a DM saying "Hello world" to a hard-coded Discord user ID for testing
@@ -3658,6 +4110,7 @@ app.get('/user', async (req, res) => {
         discriminator: req.user.discriminator,
         avatar: req.user.avatar,
         email: req.user.email,
+        authProvider: req.user.authProvider || 'discord',
         hasManagementRole: isManagement,
         hasHelperRole: isHelper,
         characters: characters,
@@ -3675,6 +4128,7 @@ app.get('/user', async (req, res) => {
         discriminator: req.user.discriminator,
         avatar: req.user.avatar,
         email: req.user.email,
+        authProvider: req.user.authProvider || 'discord',
         hasManagementRole: false,
         hasHelperRole: false,
         characters: [],
@@ -25316,9 +25770,16 @@ app.get('/api/auth/whoami', (req, res) => {
     const u = req.user || {};
     const userId = String(u.id || '') || null;
     const userName = u.global_name || u.username || 'Unknown';
-    const avatarUrl = u.avatar ? `https://cdn.discordapp.com/avatars/${userId}/${u.avatar}.png` : null;
+    const authProvider = u.authProvider || 'discord';
+    let avatarUrl = null;
+    if (authProvider === 'google' && u.avatar) {
+      // Google avatars are full URLs
+      avatarUrl = u.avatar;
+    } else if (u.avatar && userId) {
+      avatarUrl = `https://cdn.discordapp.com/avatars/${userId}/${u.avatar}.png`;
+    }
     const roles = [];
-    return res.json({ ok: true, userId, userName, avatarUrl, roles });
+    return res.json({ ok: true, userId, userName, avatarUrl, authProvider, roles });
   } catch (err) {
     res.status(500).json({ ok: false, error: err && err.message ? err.message : String(err) });
   }

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Discord ID — 1Principles</title>
+    <link rel="stylesheet" href="/style.css?v=alt-auth-1">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        .link-page { display:flex; justify-content:center; align-items:center; min-height:100vh; padding:20px; }
+        .link-container { background:#1a1d23; border-radius:12px; padding:40px; max-width:480px; width:100%; box-shadow:0 4px 24px rgba(0,0,0,0.4); }
+        .link-logo { text-align:center; margin-bottom:24px; }
+        .link-logo img { width:140px; }
+        .link-title { color:#e5e7eb; text-align:center; font-size:20px; margin-bottom:8px; }
+        .link-subtitle { color:#9ca3af; text-align:center; font-size:14px; margin-bottom:28px; line-height:1.5; }
+
+        .link-form { display:flex; flex-direction:column; gap:12px; }
+        .link-form input { padding:14px; background:#111827; border:1px solid #374151; border-radius:8px; color:#e5e7eb; font-size:16px; text-align:center; letter-spacing:1px; outline:none; }
+        .link-form input:focus { border-color:#5865F2; }
+        .link-form input::placeholder { color:#6b7280; letter-spacing:normal; }
+
+        .btn-link { padding:14px 20px; background:#5865F2; color:#fff; border:none; border-radius:8px; font-size:16px; font-weight:600; cursor:pointer; transition:background 0.2s; }
+        .btn-link:hover { background:#4752C4; }
+        .btn-link:disabled { opacity:0.6; cursor:not-allowed; }
+
+        .link-message { padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:12px; display:none; }
+        .link-message.error { display:block; background:#7f1d1d; border:1px solid #991b1b; color:#fca5a5; }
+        .link-message.success { display:block; background:#14532d; border:1px solid #166534; color:#86efac; }
+
+        .help-section { margin-top:24px; background:#1f2937; border:1px solid #374151; border-radius:8px; padding:16px; }
+        .help-title { color:#e5e7eb; font-size:14px; font-weight:600; margin-bottom:10px; }
+        .help-steps { color:#9ca3af; font-size:13px; line-height:1.7; padding-left:18px; }
+        .help-steps li { margin-bottom:4px; }
+        .help-link { color:#5865F2; text-decoration:none; }
+        .help-link:hover { text-decoration:underline; }
+
+        .link-footer { text-align:center; margin-top:20px; }
+        .link-footer a { color:#6b7280; font-size:13px; text-decoration:none; }
+        .link-footer a:hover { color:#9ca3af; }
+    </style>
+</head>
+<body class="home">
+    <div class="link-page">
+        <div class="link-container">
+            <div class="link-logo">
+                <img src="/images/1p_logo.png" alt="1Principles" width="140" height="40">
+            </div>
+            <h1 class="link-title">Link Your Discord ID</h1>
+            <p class="link-subtitle">
+                To access guild features, we need your Discord User ID.<br>
+                This links your account to your guild identity.
+            </p>
+
+            <div id="linkMessage" class="link-message"></div>
+
+            <form id="linkForm" class="link-form">
+                <input type="text" id="discordIdInput" name="discordId"
+                       placeholder="e.g. 492023474437619732"
+                       pattern="\d{17,20}" inputmode="numeric"
+                       required autocomplete="off">
+                <button type="submit" id="linkSubmitBtn" class="btn-link">
+                    <i class="fab fa-discord"></i> Link Discord ID
+                </button>
+            </form>
+
+            <div class="help-section">
+                <div class="help-title">How to find your Discord User ID</div>
+                <ol class="help-steps">
+                    <li>Open Discord (desktop or mobile app)</li>
+                    <li>Go to <strong>Settings</strong> → <strong>Advanced</strong></li>
+                    <li>Enable <strong>Developer Mode</strong></li>
+                    <li>Go back and click your username/avatar</li>
+                    <li>Click <strong>Copy User ID</strong></li>
+                    <li>Paste it in the field above</li>
+                </ol>
+                <p style="margin-top:8px; font-size:12px; color:#6b7280;">
+                    <a class="help-link" href="https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID" target="_blank" rel="noopener">
+                        Discord help article →
+                    </a>
+                </p>
+            </div>
+
+            <div class="link-footer">
+                <a href="/logout">Log out and choose a different method</a>
+            </div>
+        </div>
+    </div>
+    <script src="/link-discord.js"></script>
+</body>
+</html>
