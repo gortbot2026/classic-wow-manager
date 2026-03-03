@@ -98,6 +98,7 @@ The following pre-existing CVEs (not introduced by this PR) should be tracked fo
 | `axios` | High | DoS via `__proto__` key in mergeConfig |
 | `minimatch` | High | ReDoS via wildcards |
 | `multer` | High | DoS via incomplete cleanup |
+| `qs` | High | DoS via arrayLimit bypass in comma parsing (Express query string parsing) |
 
 None of these CVEs are in the new R2 migration code path. Schedule updates in a future sprint.
 
