@@ -9740,7 +9740,7 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
          FROM poll_votes pv
          LEFT JOIN polls p ON p.poll_id = pv.poll_id
          LEFT JOIN poll_options po ON po.poll_id = pv.poll_id AND po.option_key = pv.option_key
-         WHERE pv.discord_id = $1
+         WHERE pv.voter_discord_id = $1
          ORDER BY pv.voted_at DESC`, [discordId]
       ),
       // Raid history: confirmed logs + roster overrides + event cache + log data
@@ -9944,7 +9944,7 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
         roleThatNight: r.role_detected,
         damageDealt: r.damage_amount ? parseInt(r.damage_amount, 10) : null,
         healingDone: r.healing_amount ? parseInt(r.healing_amount, 10) : null,
-        wclLogLink: r.log_id ? `https://classic.warcraftlogs.com/reports/${r.log_id}` : null
+        wclLogLink: r.log_id && /^[a-zA-Z0-9]+$/.test(r.log_id) ? `https://classic.warcraftlogs.com/reports/${r.log_id}` : null
       };
     });
 
@@ -10116,7 +10116,8 @@ app.get('/api/management/app-roles', requireManagement, async (req, res) => {
     `);
     res.json({ ok: true, roles: rows });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+    console.error('❌ [app-roles list] Error:', e.stack || e);
+    res.status(500).json({ ok: false, error: 'Failed to list roles' });
   }
 });
 
@@ -10161,7 +10162,8 @@ app.post('/api/management/app-roles/grant', requireManagement, express.json(), a
     try { const c = await pool.connect(); await auditRoleChange(c, 'grant', discordId, roleKey, req.user && req.user.id); c.release(); } catch(_) {}
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+    console.error('❌ [app-roles/grant] Error:', e.stack || e);
+    res.status(500).json({ ok: false, error: 'Failed to grant role' });
   }
 });
 
@@ -10192,7 +10194,8 @@ app.post('/api/management/app-roles/revoke', requireManagement, express.json(), 
     try { const c = await pool.connect(); await auditRoleChange(c, 'revoke', discordId, roleKey, req.user && req.user.id); c.release(); } catch(_) {}
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+    console.error('❌ [app-roles/revoke] Error:', e.stack || e);
+    res.status(500).json({ ok: false, error: 'Failed to revoke role' });
   }
 });
 
@@ -10577,18 +10580,26 @@ app.get('/api/guild-members', async (req, res) => {
       ORDER BY g.rank_name, g.character_name
     `);
     client.release();
+
+    // Strip admin-only fields (discord_username) for non-management users
+    let isAdmin = false;
+    if (req.user && req.user.id) {
+      try { isAdmin = await hasManagementRoleById(req.user.id); } catch (_) {}
+    }
+    const members = isAdmin
+      ? result.rows
+      : result.rows.map(({ discord_username, ...rest }) => rest);
     
     res.json({ 
       success: true,
-      members: result.rows,
-      count: result.rows.length
+      members,
+      count: members.length
     });
   } catch (error) {
     console.error('Error fetching guild members:', error.stack);
     res.status(500).json({ 
       success: false,
-      message: 'Error fetching guild members',
-      error: error.message 
+      message: 'Error fetching guild members'
     });
   }
 });
