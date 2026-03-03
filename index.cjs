@@ -9996,22 +9996,9 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
          )
          ORDER BY spf.event_id DESC, spf.character_name`, [discordId]
       ),
-      // Gold earned: player's share of shared_gold_pot for each attended raid
-      client.query(
-        `SELECT COALESCE(SUM(share), 0) AS total_gold_earned
-         FROM (
-           SELECT rse.shared_gold_pot::NUMERIC / NULLIF(cnt.raider_count, 0) AS share
-           FROM player_confirmed_logs pcl
-           JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
-             AND rse.shared_gold_pot IS NOT NULL AND rse.shared_gold_pot > 0
-           JOIN (
-             SELECT raid_id, COUNT(DISTINCT discord_id) AS raider_count
-             FROM player_confirmed_logs GROUP BY raid_id
-           ) cnt ON cnt.raid_id = pcl.raid_id
-           WHERE pcl.discord_id = $1
-           GROUP BY pcl.raid_id, rse.shared_gold_pot, cnt.raider_count
-         ) sub`, [discordId]
-      )
+      // Gold earned: placeholder — actual calculation done post-Promise.all
+      // using points-weighted per-raid logic mirroring computeTotalsFromSnapshot()
+      Promise.resolve({ rows: [] })
     ]);
 
     // ── Build identity ────────────────────────────────────────────────────
@@ -10128,8 +10115,171 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
     // Gold spent from loot
     const totalGoldSpent = lootRes.rows.reduce((sum, item) => sum + (parseInt(item.gold_amount, 10) || 0), 0);
 
-    // Gold earned from GDKP raids (player's share of shared_gold_pot)
-    const totalGoldEarned = Math.round(parseFloat(goldEarnedRes.rows[0]?.total_gold_earned) || 0);
+    // Gold earned from GDKP raids — points-weighted per-raid calculation
+    // Mirrors public/gold.js → computeTotalsFromSnapshot() logic
+    const totalGoldEarned = await (async () => {
+      // Collect all character names for this player (case-insensitive)
+      const playerCharNames = new Set();
+      for (const row of charactersRes.rows) {
+        if (row.character_name) playerCharNames.add(row.character_name.toLowerCase());
+      }
+      for (const row of playersRes.rows) {
+        if (row.character_name) playerCharNames.add(row.character_name.toLowerCase());
+      }
+      if (playerCharNames.size === 0) return 0;
+
+      // Helper: normalize snapshot name (mirrors gold.js normalizeSnapshotName)
+      const normalizeSnapshotName = (name) => {
+        try {
+          let s = String(name || '').trim();
+          s = s.replace(/^[\s•\u2022\u00B7\-\u2013\u2014]+/, '');
+          s = s.replace(/\s*\((?:tank\s*)?gr(?:ou)?p\s*\d*\)\s*$/i, '');
+          return s.trim();
+        } catch { return String(name || '').trim(); }
+      };
+
+      // Helper: validate WoW character name (mirrors gold.js isValidWoWName)
+      const isValidWoWName = (name) => {
+        const s = String(name || '');
+        if (/\d/.test(s)) return false;
+        if (/\s/.test(s)) return false;
+        return true;
+      };
+
+      // Get all published raids this player attended with shared_gold_pot > 0
+      const charNamesArray = Array.from(playerCharNames);
+      const attendedRaidsRes = await client.query(
+        `SELECT DISTINCT pcl.raid_id AS event_id, rse.shared_gold_pot
+         FROM player_confirmed_logs pcl
+         JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
+           AND rse.published = TRUE
+           AND rse.shared_gold_pot IS NOT NULL AND rse.shared_gold_pot > 0
+         WHERE LOWER(pcl.character_name) = ANY($1)`,
+        [charNamesArray]
+      );
+
+      if (attendedRaidsRes.rows.length === 0) return 0;
+
+      const eventIds = attendedRaidsRes.rows.map(r => r.event_id);
+      const sharedPotByEvent = new Map();
+      for (const r of attendedRaidsRes.rows) {
+        sharedPotByEvent.set(r.event_id, Number(r.shared_gold_pot) || 0);
+      }
+
+      // Batch-fetch all snapshot entries and confirmed players for these events
+      const [snapshotRes, confirmedRes] = await Promise.all([
+        client.query(
+          `SELECT event_id, character_name, panel_key,
+                  COALESCE(point_value_edited, point_value_original) AS point_value,
+                  aux_json
+           FROM rewards_and_deductions_points
+           WHERE event_id = ANY($1)`,
+          [eventIds]
+        ),
+        client.query(
+          `SELECT DISTINCT raid_id AS event_id, character_name
+           FROM player_confirmed_logs
+           WHERE raid_id = ANY($1)`,
+          [eventIds]
+        )
+      ]);
+
+      // Group snapshot entries and confirmed players by event
+      const snapshotByEvent = new Map();
+      for (const r of snapshotRes.rows) {
+        if (!snapshotByEvent.has(r.event_id)) snapshotByEvent.set(r.event_id, []);
+        snapshotByEvent.get(r.event_id).push(r);
+      }
+      const confirmedByEvent = new Map();
+      for (const r of confirmedRes.rows) {
+        if (!confirmedByEvent.has(r.event_id)) confirmedByEvent.set(r.event_id, []);
+        confirmedByEvent.get(r.event_id).push(r);
+      }
+
+      let totalGold = 0;
+
+      // Per-raid gold calculation (mirrors computeTotalsFromSnapshot 6-step formula)
+      for (const eventId of eventIds) {
+        const sharedPot = sharedPotByEvent.get(eventId) || 0;
+        const entries = snapshotByEvent.get(eventId) || [];
+        const confirmed = confirmedByEvent.get(eventId) || [];
+
+        // Seed player map from confirmed players
+        const lower = s => String(s || '').toLowerCase();
+        const nameToPlayer = new Map();
+        for (const p of confirmed) {
+          const normalized = normalizeSnapshotName(p.character_name);
+          if (!isValidWoWName(normalized)) continue;
+          const key = lower(normalized);
+          if (!nameToPlayer.has(key)) {
+            nameToPlayer.set(key, { points: 0, gold: 0 });
+          }
+        }
+
+        // Step A: Sum panel points (excluding manual_points)
+        for (const r of entries) {
+          const normalized = normalizeSnapshotName(r.character_name || '');
+          if (!isValidWoWName(normalized)) continue;
+          const key = lower(normalized);
+          const v = nameToPlayer.get(key);
+          if (!v) continue;
+          if (String(r.panel_key || '') === 'manual_points') continue;
+          v.points += (Number(r.point_value) || 0);
+        }
+
+        // Step B: If no base panel exists, add 100 base points to everyone
+        const hasBasePoints = entries.some(r => String(r.panel_key || '') === 'base');
+        if (!hasBasePoints) {
+          nameToPlayer.forEach(v => { v.points += 100; });
+        }
+
+        // Step C: Process manual_points entries
+        let manualGoldPayoutTotal = 0;
+        for (const r of entries) {
+          if (String(r.panel_key || '') !== 'manual_points') continue;
+          const normalized = normalizeSnapshotName(r.character_name || '');
+          if (!isValidWoWName(normalized)) continue;
+          const key = lower(normalized);
+          const v = nameToPlayer.get(key);
+          if (!v) continue;
+
+          const aux = r.aux_json || {};
+          const isGold = !!(aux.is_gold === true || aux.is_gold === 'true');
+          const amt = Number(r.point_value) || 0;
+
+          if (isGold) {
+            if (amt > 0) {
+              manualGoldPayoutTotal += amt;
+              v.gold = Math.max(0, (Number(v.gold) || 0) + amt);
+            }
+          } else {
+            v.points += amt;
+          }
+        }
+
+        // Step D: Adjusted pot
+        const adjustedPot = Math.max(0, sharedPot - manualGoldPayoutTotal);
+
+        // Step E: Total points across all confirmed players (clamped to 0)
+        let totalPointsAll = 0;
+        nameToPlayer.forEach(v => { totalPointsAll += Math.max(0, Number(v.points) || 0); });
+
+        // Step F: Gold per point and per-player gold
+        const goldPerPoint = (adjustedPot > 0 && totalPointsAll > 0) ? adjustedPot / totalPointsAll : 0;
+        nameToPlayer.forEach(v => {
+          const effPts = Math.max(0, Number(v.points) || 0);
+          v.gold = Math.max(0, Math.floor(effPts * goldPerPoint) + (Number(v.gold) || 0));
+        });
+
+        // Sum gold for the target player's characters in this raid
+        for (const charName of playerCharNames) {
+          const v = nameToPlayer.get(charName);
+          if (v) totalGold += v.gold;
+        }
+      }
+
+      return totalGold;
+    })();
 
     // Frost resistance compliance
     const frostByEvent = {};
