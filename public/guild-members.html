@@ -372,15 +372,18 @@
         let currentSort = { column: 'character_name', direction: 'asc' };
         let isAdmin = false;
 
-        document.addEventListener('DOMContentLoaded', () => {
-            // Check if user has management role for admin-only features
-            fetch('/user').then(r => r.ok ? r.json() : null).then(u => {
-                if (u && u.hasManagementRole) {
-                    isAdmin = true;
-                    // Show admin-only column headers
-                    document.querySelectorAll('.admin-col').forEach(el => el.style.display = '');
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Resolve admin status BEFORE loading data so admin columns render correctly
+            try {
+                const userRes = await fetch('/user');
+                if (userRes.ok) {
+                    const u = await userRes.json();
+                    if (u && u.hasManagementRole) {
+                        isAdmin = true;
+                        document.querySelectorAll('.admin-col').forEach(el => el.style.display = '');
+                    }
                 }
-            }).catch(() => {});
+            } catch (_) {}
             loadGuildMembers();
             
             // Add search filter
