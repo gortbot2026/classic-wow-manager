@@ -10104,6 +10104,17 @@ app.patch('/api/admin/player/:discordId/notes', requireManagement, express.json(
   }
 });
 
+// ── POST /api/admin/sync-discord-members — Manually trigger Discord member sync ──
+app.post('/api/admin/sync-discord-members', requireManagement, async (req, res) => {
+  try {
+    await syncDiscordGuildMembers();
+    res.json({ success: true, message: 'Discord guild member sync completed' });
+  } catch (error) {
+    console.error('❌ [POST /api/admin/sync-discord-members] Error:', error.stack || error);
+    res.status(500).json({ success: false, message: 'Failed to sync Discord members' });
+  }
+});
+
 // Management-only endpoint for user data
 app.get('/api/management/users', requireManagement, async (req, res) => {
   try {
@@ -25872,6 +25883,92 @@ async function getDiscordUserIdentity(userId) {
     }
 }
 
+/**
+ * Bulk-sync Discord guild members into discord_users table.
+ * 
+ * Fetches all members from the Discord API (paginated, max 1000 per request)
+ * and upserts their username and avatar into discord_users.
+ * This ensures guild-members page can display Discord Username/ID for all
+ * linked characters — not just users who have logged in via OAuth.
+ * 
+ * Called on startup (delayed) and periodically (every 6 hours).
+ */
+async function syncDiscordGuildMembers() {
+    if (!discordBotToken || !discordGuildId) {
+        console.log('⏭️ [DISCORD SYNC] Skipping guild member sync — no bot token or guild ID');
+        return;
+    }
+    console.log('🔄 [DISCORD SYNC] Starting bulk guild member sync...');
+    const allMembers = [];
+    let after = '0';
+    const limit = 1000;
+
+    try {
+        // Paginate through all guild members
+        while (true) {
+            const url = `https://discord.com/api/v10/guilds/${discordGuildId}/members?limit=${limit}&after=${after}`;
+            const r = await fetch(url, {
+                headers: { 'Authorization': `Bot ${discordBotToken}` }
+            });
+            if (r.status === 429) {
+                const retryAfter = Number(r.headers.get('retry-after'));
+                const waitMs = isNaN(retryAfter) ? 5000 : Math.ceil(retryAfter * 1000);
+                console.log(`⏳ [DISCORD SYNC] Rate limited, waiting ${waitMs}ms...`);
+                await new Promise(resolve => setTimeout(resolve, waitMs));
+                continue; // Retry same page
+            }
+            if (!r.ok) {
+                console.error(`❌ [DISCORD SYNC] Discord API error: ${r.status} ${r.statusText}`);
+                break;
+            }
+            const batch = await r.json();
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            allMembers.push(...batch);
+            // Discord returns members sorted by ID; use last ID as cursor
+            after = batch[batch.length - 1].user.id;
+            if (batch.length < limit) break; // Last page
+        }
+
+        if (allMembers.length === 0) {
+            console.log('⚠️ [DISCORD SYNC] No members fetched from Discord API');
+            return;
+        }
+
+        console.log(`📥 [DISCORD SYNC] Fetched ${allMembers.length} guild members from Discord API`);
+
+        // Upsert into discord_users (only update username/avatar/discriminator, preserve other fields)
+        const client = await pool.connect();
+        try {
+            let upserted = 0;
+            for (const member of allMembers) {
+                const user = member.user || {};
+                if (user.bot) continue; // Skip bots
+                const discordId = user.id;
+                const username = user.username || null;
+                const discriminator = user.discriminator || '0';
+                const avatar = user.avatar || null;
+                const globalName = user.global_name || null;
+
+                await client.query(`
+                    INSERT INTO discord_users (discord_id, username, discriminator, avatar, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, NOW(), NOW())
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        username = COALESCE(EXCLUDED.username, discord_users.username),
+                        discriminator = COALESCE(EXCLUDED.discriminator, discord_users.discriminator),
+                        avatar = COALESCE(EXCLUDED.avatar, discord_users.avatar),
+                        updated_at = NOW()
+                `, [discordId, username, discriminator, avatar]);
+                upserted++;
+            }
+            console.log(`✅ [DISCORD SYNC] Upserted ${upserted} Discord users into discord_users table`);
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error('❌ [DISCORD SYNC] Error syncing guild members:', error.message || error);
+    }
+}
+
 const discordCharsCache = new Map(); // userId -> { chars: [], expiresAt }
 const DISCORD_CHARS_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -26408,6 +26505,15 @@ setInterval(async () => {
     }
 }, 24 * 60 * 60 * 1000); // 24 hours in milliseconds
 
+// Periodic Discord guild member sync (every 6 hours)
+setInterval(async () => {
+    try {
+        await syncDiscordGuildMembers();
+    } catch (error) {
+        console.error('❌ [SCHEDULED] Error during Discord guild member sync:', error);
+    }
+}, 6 * 60 * 60 * 1000); // 6 hours
+
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   
@@ -26420,6 +26526,15 @@ const server = app.listen(PORT, () => {
           console.error('❌ [STARTUP] Error during initial cache cleanup:', error);
       }
   }, 5000); // Wait 5 seconds after startup
+
+  // Sync Discord guild members on startup (delayed to let DB init complete)
+  setTimeout(async () => {
+      try {
+          await syncDiscordGuildMembers();
+      } catch (error) {
+          console.error('❌ [STARTUP] Error during Discord guild member sync:', error);
+      }
+  }, 15000); // Wait 15 seconds after startup
 });
 
 // Set server timeout to 5 minutes (300 seconds) for long-running operations
