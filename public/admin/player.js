@@ -156,11 +156,11 @@
     const cards = [
       { label: 'Raids Attended', value: fmtNum(s.totalRaids), icon: 'fa-dungeon' },
       { label: 'Attendance Rate', value: s.attendanceRate != null ? s.attendanceRate + '%' : 'N/A', icon: 'fa-chart-line' },
+      { label: 'Gold Earned', value: fmtNum(s.totalGoldEarned) + 'g', icon: 'fa-hand-holding-usd' },
       { label: 'Gold Spent', value: fmtNum(s.totalGoldSpent) + 'g', icon: 'fa-coins' },
       { label: 'Reward Points', value: fmtNum(s.totalRewardPoints), icon: 'fa-star' },
       { label: 'Avg DPS', value: s.avgDPS != null ? fmtNum(s.avgDPS) : 'N/A', icon: 'fa-sword' },
       { label: 'Avg HPS', value: s.avgHPS != null ? fmtNum(s.avgHPS) : 'N/A', icon: 'fa-heart' },
-      { label: 'Buff Compliance', value: s.worldBuffComplianceRate != null ? s.worldBuffComplianceRate + '%' : 'N/A', icon: 'fa-magic' },
       { label: 'Frost Res Compliance', value: s.frostResComplianceRate != null ? s.frostResComplianceRate + '%' : 'N/A', icon: 'fa-snowflake' }
     ];
 
@@ -274,8 +274,9 @@
       '<div class="characters-grid">' +
       chars.map(function (c) {
         var slug = classSlug(c.class);
+        var guildBadge = c.inGuild === false ? ' <span class="not-in-guild">Not in Guild</span>' : '';
         return '<div class="char-card ' + slug + '">' +
-          '<h3>' + esc(c.characterName) + ' <span class="class-badge">' + esc(c.class) + '</span></h3>' +
+          '<h3>' + esc(c.characterName) + ' <span class="class-badge">' + esc(c.class) + '</span>' + guildBadge + '</h3>' +
           '<div class="detail-row"><span>Race</span><strong>' + esc(c.race || 'Unknown') + '</strong></div>' +
           '<div class="detail-row"><span>Level</span><strong>' + (c.level || '?') + '</strong></div>' +
           '<div class="detail-row"><span>Faction</span><strong>' + esc(c.faction || 'Unknown') + '</strong></div>' +
@@ -513,7 +514,7 @@
     document.getElementById('reward-points-body').innerHTML = html;
   }
 
-  // ── Render: World Buffs ───────────────────────────────────────────────
+  // ── Render: World Buffs (grouped by event, buff columns) ─────────────
   function renderWorldBuffs() {
     var buffs = playerData.worldBuffs;
     if (!buffs || buffs.length === 0) {
@@ -521,36 +522,73 @@
       return;
     }
 
-    // Compliance progress bar
-    var rate = playerData.stats.worldBuffComplianceRate;
-    var html = '';
-    if (rate != null) {
-      html += '<div style="margin-bottom:12px">Compliance: <strong>' + rate + '%</strong>' +
-        '<div class="progress-bar"><div class="fill" style="width:' + rate + '%;background:' + (rate >= 80 ? 'var(--success)' : rate >= 50 ? 'var(--warning)' : 'var(--danger)') + '"></div></div></div>';
-    }
-
-    html += '<table class="data-table"><thead><tr>' +
-      '<th>Event</th><th>Character</th><th>Buff</th><th>Value</th><th>Status</th>' +
-    '</tr></thead><tbody>';
+    // Group by eventId -> characterName -> { buffName: { value, colorStatus } }
+    var eventMap = {};   // eventId -> { chars: { charName -> { buffName -> { value, colorStatus } } } }
+    var allBuffNames = [];
+    var buffNameSet = {};
+    // Track percentage info per buff name (from amount_summary/score_summary)
+    var buffPctMap = {};
 
     buffs.forEach(function (b) {
-      var statusClass = '';
-      if (b.colorStatus) {
-        var cs = b.colorStatus.toLowerCase();
-        if (cs.includes('green')) statusClass = 'buff-green';
-        else if (cs.includes('yellow') || cs.includes('orange')) statusClass = 'buff-yellow';
-        else if (cs.includes('red')) statusClass = 'buff-red';
+      if (!eventMap[b.eventId]) eventMap[b.eventId] = {};
+      if (!eventMap[b.eventId][b.characterName]) eventMap[b.eventId][b.characterName] = {};
+      eventMap[b.eventId][b.characterName][b.buffName] = {
+        value: b.buffValue,
+        colorStatus: b.colorStatus
+      };
+      if (!buffNameSet[b.buffName]) {
+        buffNameSet[b.buffName] = true;
+        allBuffNames.push(b.buffName);
       }
-      html += '<tr>' +
-        '<td>' + esc(b.eventId) + '</td>' +
-        '<td>' + esc(b.characterName) + '</td>' +
-        '<td>' + esc(b.buffName) + '</td>' +
-        '<td>' + esc(b.buffValue || '-') + '</td>' +
-        '<td><span class="buff-cell ' + statusClass + '">' + esc(b.colorStatus || 'Unknown') + '</span></td>' +
-      '</tr>';
+      // Capture percentage from amount_summary or score_summary (first non-null wins)
+      if (b.buffName && !buffPctMap[b.buffName]) {
+        var pct = b.scoreSummary || b.amountSummary;
+        if (pct) buffPctMap[b.buffName] = pct;
+      }
     });
 
-    html += '</tbody></table>';
+    // Build column headers: Event | Character | [Buff1] | [Buff2] | ...
+    var html = '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' +
+      '<th>Event</th><th>Character</th>';
+    allBuffNames.forEach(function (bn) {
+      var pct = buffPctMap[bn] ? ' (' + esc(buffPctMap[bn]) + ')' : '';
+      html += '<th>' + esc(bn) + pct + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+
+    // Render rows grouped by event
+    var eventIds = Object.keys(eventMap);
+    eventIds.forEach(function (eventId) {
+      var chars = eventMap[eventId];
+      var charNames = Object.keys(chars);
+      charNames.forEach(function (charName, idx) {
+        html += '<tr>';
+        // Merge event cell for first character row
+        if (idx === 0) {
+          html += '<td' + (charNames.length > 1 ? ' rowspan="' + charNames.length + '"' : '') +
+            ' style="vertical-align:middle;font-weight:600">' + esc(eventId) + '</td>';
+        }
+        html += '<td>' + esc(charName) + '</td>';
+        allBuffNames.forEach(function (bn) {
+          var buffData = chars[charName][bn];
+          if (buffData) {
+            var cls = '';
+            if (buffData.colorStatus) {
+              var cs = buffData.colorStatus.toLowerCase();
+              if (cs.includes('green')) cls = 'buff-green';
+              else if (cs.includes('yellow') || cs.includes('orange')) cls = 'buff-yellow';
+              else if (cs.includes('red')) cls = 'buff-red';
+            }
+            html += '<td><span class="buff-cell ' + cls + '">' + esc(buffData.value || '-') + '</span></td>';
+          } else {
+            html += '<td>-</td>';
+          }
+        });
+        html += '</tr>';
+      });
+    });
+
+    html += '</tbody></table></div>';
     document.getElementById('world-buffs-body').innerHTML = html;
   }
 

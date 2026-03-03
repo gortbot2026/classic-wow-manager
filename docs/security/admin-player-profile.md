@@ -1,64 +1,113 @@
-# Security: Admin Player Profile Page (/admin/player/:discordId)
+# Security Documentation: Admin Player Profile Page
 
-_Reviewed by Security Gort — 2026-03-03_
+**Feature:** `/admin/player/:discordId` — Aggregated player profile for management  
+**Reviewed:** 2026-03-03  
+**Status:** PASS
 
-## Authentication Requirements
+---
 
-- All API endpoints (`GET /api/admin/player/:discordId`, `PATCH /api/admin/player/:discordId/notes`) are protected by `requireManagement` middleware.
-- Frontend (`public/admin/player.html`) checks `fetch('/user')` → `hasManagementRole` and redirects non-admins to `/` on load.
-- Unauthenticated requests to the API receive 401; non-management users receive 403.
+## Authentication & Authorization
 
-## Authorization Rules
+- **Frontend:** `fetch('/user')` → checks `hasManagementRole` → redirects to `/` for non-admins
+- **Backend API (`GET /api/admin/player/:discordId`):** Protected by `requireManagement` middleware
+- **Backend API (`PATCH /api/admin/player/:discordId/notes`):** Protected by `requireManagement` middleware
+- **Backend API (`POST /api/admin/sync-discord-members`):** Protected by `requireManagement` middleware
+- All endpoints return `401 Unauthorized` for unauthenticated requests, `403 Forbidden` for insufficient role
 
-- Only users with the `management` role (verified server-side via `requireManagement`) may access any player profile data or modify notes.
-- Guild-members API strips `discord_username` server-side (not just CSS) for non-management users to prevent data leakage.
+---
 
 ## Input Validation
 
-### Discord ID parameter
-- Both `GET /api/admin/player/:discordId` and `PATCH /api/admin/player/:discordId/notes` validate: `/^[0-9]{1,20}$/`
-- Rejects non-numeric or overly long Discord IDs with HTTP 400.
+### Discord ID Parameter
+- Both API endpoints validate: `/^[0-9]{1,20}$/`
+- Rejects non-numeric input and IDs exceeding 20 characters
+- Applied **before** any DB query
 
-### Note editing (`PATCH /api/admin/player/:discordId/notes`)
-- `field` parameter validated against allowlist: `['public_note', 'officer_note', 'custom_note']` before SQL interpolation.
-- `characterName` and `className` are passed as parameterized query arguments ($2, $3) — no injection risk.
-- Returns 400 for invalid field names, 404 if character not found.
+### Note PATCH Field Allowlist
+- The `field` parameter is validated against `ALLOWED_FIELDS = ['public_note', 'officer_note', 'custom_note']`
+- Field name is checked **server-side before SQL interpolation**
+- Validated before any string interpolation into the SQL query: `UPDATE guildies SET ${field} = $1 ...`
 
-### WCL log_id in URL construction
-- Validated with `/^[a-zA-Z0-9]+$/` before use in URL construction. Null returned (no link rendered) if validation fails.
-
-## XSS Prevention
-
-### Backend (index.cjs)
-- All API responses return JSON data; no HTML construction server-side for this feature.
-
-### Frontend (public/admin/player.js)
-- All user-supplied data rendered via `esc()` helper, which uses `div.textContent = str; return div.innerHTML` — textContent-based escaping, safe against XSS.
-- Applied to: username, discordId, email, authProvider, character names, class, race, faction, buff names, poll questions, event IDs, role keys, assignment text, etc.
-- No innerHTML assignments with raw unescaped user data anywhere in player.js.
-
-### Frontend (public/guild-members.html)
-- `escHtml()` helper (same textContent-based pattern) applied to all user data rendered via innerHTML: `character_name`, `discord_username`, `discord_id`.
+---
 
 ## SQL Injection Prevention
 
-- All database queries use parameterized placeholders (`$1`, `$2`, etc.) via the `pg` library.
-- The only column name interpolated into SQL is `field` in the PATCH notes endpoint, which is validated against a 3-item allowlist before use.
-- Poll votes query uses correct column `pv.voter_discord_id` (fixed from `pv.discord_id`).
+- All DB queries use parameterized `$1`, `$2`, ... placeholders (raw `pg` driver)
+- The only interpolated value (`field` in PATCH notes) is validated against a 3-item allowlist
+- Character-name lookups in subqueries (`LOWER(character_name) IN (...)`) are fully parameterized
 
-## Error Handling
+---
 
-- Role grant/revoke/list endpoints return generic error messages, not `e.message`, preventing stack trace/DB schema leakage.
-- PATCH notes endpoint returns generic "Error updating note" on 500.
-- `console.error` logs full error stack server-side for debugging without exposing to clients.
+## XSS Prevention
 
-## Known Security Considerations
+### Backend (API response)
+- Raw DB values returned as JSON — no HTML construction server-side
 
-- **Pre-existing dependency CVEs** (not introduced by this feature): `fast-xml-parser` (critical, AWS SDK), `multer` (high, file uploads), `axios` (high), `minimatch` (high), `qs` (high), `lodash` (moderate). None are directly exploitable via this feature. Track for future sprint updates.
-- Player profile page is read-only (except note editing). No financial transactions, no auth state changes, low-blast-radius endpoint.
-- Role grant/revoke buttons on the profile page use existing, separately-secured management API endpoints.
+### Frontend (player.js)
+- `esc()` function uses `div.textContent = String(str); return div.innerHTML;` — DOM-based escaping
+- All user-supplied data uses `esc()` before `innerHTML` insertion
+- WCL log links validated server-side: `/^[a-zA-Z0-9]+$/` before URL construction
+- Avatar URLs placed in `src` attributes (not `href`) — no JS execution risk
 
-## Audit Logging
+### Frontend (guild-members.html)
+- `escHtml()` function (same textContent pattern) used for all `discord_username`, `discord_id`, and `character_name` in `innerHTML`
 
-- Role grants and revocations performed via the profile page are recorded in `role_audit` table via `auditRoleChange()`.
-- Note edits are not individually audited (low sensitivity), but `updated_at` timestamp is updated on each change.
+### Known Limitation (LOW)
+- The `revokeRole()` inline onclick handler passes `role_key` via string concatenation without single-quote escaping. Since role_keys are admin-inserted system values (management/raidleader/officer), practical risk is negligible. Recommend switching to `addEventListener` pattern in a future refactor.
+
+---
+
+## Sensitive Data Handling
+
+- `discord_username` is stripped from `/api/guild-members` response for non-management users **server-side** (object destructuring, not CSS-only)
+- `email` only included in player profile (management-only endpoint)
+- `officer_note` and `custom_note` only returned through management-gated endpoint
+- 500 errors return generic message (`'Error fetching player data'`), no stack traces to client
+
+---
+
+## Discord Sync Function (`syncDiscordGuildMembers`)
+
+- Called on startup (15s delay) and every 6h
+- Manual trigger: `POST /api/admin/sync-discord-members` (requireManagement)
+- Handles Discord API rate limiting (429 → retry-after)
+- Upserts `COALESCE(EXCLUDED.username, discord_users.username)` — never overwrites with null
+- Skips bot accounts (`if (user.bot) continue`)
+- No rate limiting on manual trigger endpoint — LOW risk (management-only)
+
+---
+
+## Session Security
+
+- `sameSite: 'lax'` — mitigates CSRF for state-changing POST/PATCH endpoints
+- `secure: true` in production
+- `httpOnly: true` (express-session default)
+- Session secret from `process.env.SESSION_SECRET`
+
+---
+
+## Pre-existing Dependency Vulnerabilities (Not introduced by this feature)
+
+| Package | Severity | Direct | Notes |
+|---------|----------|--------|-------|
+| fast-xml-parser | Critical | No (via @aws-sdk) | Pre-existing, unrelated to this feature |
+| multer | High | Yes | Pre-existing file upload dep |
+| @aws-sdk/client-s3 | High | Yes | Pre-existing S3 dep |
+| minimatch | High | No | Pre-existing transitive dep |
+| lodash | Moderate | No | Pre-existing transitive dep |
+
+No new packages were added by this feature (`git diff HEAD~1 package.json` — no changes).
+
+---
+
+## Checklist
+
+- [x] Auth/authz on all endpoints
+- [x] Input validation (Discord ID, field allowlist)
+- [x] No SQL injection (parameterized queries, allowlist for dynamic field name)
+- [x] No XSS (esc()/escHtml() on all user data in innerHTML)
+- [x] No hardcoded secrets
+- [x] Admin-only data stripped server-side
+- [x] Error messages don't leak internals
+- [x] WCL URLs sanitized before construction
+- [x] poll_votes uses correct column (voter_discord_id)

@@ -9644,7 +9644,8 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       pollVotesRes,
       raidHistoryRes,
       worldBuffsRes,
-      frostResRes
+      frostResRes,
+      goldEarnedRes
     ] = await Promise.all([
       // Identity from discord_users
       client.query(
@@ -9691,10 +9692,16 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       client.query(
         `SELECT COUNT(DISTINCT raid_id) AS total FROM player_confirmed_logs WHERE discord_id = $1`, [discordId]
       ),
-      // Total reward points
+      // Total reward points (match by discord_user_id OR character_name, deduplicated)
       client.query(
         `SELECT COALESCE(SUM(COALESCE(point_value_edited, point_value_original, 0)), 0) AS total
-         FROM rewards_and_deductions_points WHERE discord_user_id = $1`, [discordId]
+         FROM rewards_and_deductions_points
+         WHERE discord_user_id = $1
+            OR LOWER(character_name) IN (
+              SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
+              UNION
+              SELECT LOWER(character_name) FROM players WHERE discord_id = $1
+            )`, [discordId]
       ),
       // Average DPS
       client.query(
@@ -9721,11 +9728,17 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
          FROM manual_rewards_deductions WHERE discord_id = $1
          ORDER BY created_at DESC`, [discordId]
       ),
-      // Reward points by event
+      // Reward points by event (match by discord_user_id OR character_name, deduplicated via DISTINCT)
       client.query(
-        `SELECT event_id, panel_name, ranking_number_original, point_value_original,
-                point_value_edited, edited_by_name
-         FROM rewards_and_deductions_points WHERE discord_user_id = $1
+        `SELECT DISTINCT id, event_id, panel_name, ranking_number_original, point_value_original,
+                point_value_edited, edited_by_name, character_name
+         FROM rewards_and_deductions_points
+         WHERE discord_user_id = $1
+            OR LOWER(character_name) IN (
+              SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
+              UNION
+              SELECT LOWER(character_name) FROM players WHERE discord_id = $1
+            )
          ORDER BY event_id DESC, panel_name`, [discordId]
       ),
       // Raid assignments
@@ -9767,10 +9780,10 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
          WHERE pcl.discord_id = $1
          ORDER BY pcl.confirmed_at DESC`, [discordId]
       ),
-      // World buffs (for player's characters)
+      // World buffs (for player's characters) — include amount_summary/score_summary for column headers
       client.query(
         `SELECT spb.event_id, spb.character_name, spb.buff_name, spb.buff_value,
-                spb.color_status, spb.background_color
+                spb.color_status, spb.background_color, spb.amount_summary, spb.score_summary
          FROM sheet_players_buffs spb
          WHERE LOWER(spb.character_name) IN (
            SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
@@ -9789,6 +9802,22 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
            SELECT LOWER(character_name) FROM players WHERE discord_id = $1
          )
          ORDER BY spf.event_id DESC, spf.character_name`, [discordId]
+      ),
+      // Gold earned: player's share of shared_gold_pot for each attended raid
+      client.query(
+        `SELECT COALESCE(SUM(share), 0) AS total_gold_earned
+         FROM (
+           SELECT rse.shared_gold_pot::NUMERIC / NULLIF(cnt.raider_count, 0) AS share
+           FROM player_confirmed_logs pcl
+           JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
+             AND rse.shared_gold_pot IS NOT NULL AND rse.shared_gold_pot > 0
+           JOIN (
+             SELECT raid_id, COUNT(DISTINCT discord_id) AS raider_count
+             FROM player_confirmed_logs GROUP BY raid_id
+           ) cnt ON cnt.raid_id = pcl.raid_id
+           WHERE pcl.discord_id = $1
+           GROUP BY pcl.raid_id, rse.shared_gold_pot, cnt.raider_count
+         ) sub`, [discordId]
       )
     ]);
 
@@ -9875,9 +9904,28 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
         officerNote: c.officer_note,
         customNote: c.custom_note,
         specName: specInfo.specName || null,
-        primaryRole: specInfo.primaryRole || null
+        primaryRole: specInfo.primaryRole || null,
+        inGuild: true
       };
     });
+
+    // Merge non-guild characters from the players table
+    const guildCharNames = new Set(characters.map(c => c.characterName.toLowerCase()));
+    for (const p of playersRes.rows) {
+      if (!guildCharNames.has(p.character_name.toLowerCase())) {
+        const specInfo = specMap[p.character_name.toLowerCase()] || {};
+        characters.push({
+          characterName: p.character_name,
+          class: p.class,
+          race: null, sex: null, level: null, faction: null,
+          mainAlt: null, playerAlts: null, joinDate: null, promoDate: null,
+          lastOnlineDays: null, publicNote: null, officerNote: null, customNote: null,
+          specName: specInfo.specName || null,
+          primaryRole: specInfo.primaryRole || null,
+          inGuild: false
+        });
+      }
+    }
 
     // ── Stats ─────────────────────────────────────────────────────────────
     const totalRaidsAll = parseInt(totalRaidsRes.rows[0].total, 10) || 0;
@@ -9887,23 +9935,8 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
     // Gold spent from loot
     const totalGoldSpent = lootRes.rows.reduce((sum, item) => sum + (parseInt(item.gold_amount, 10) || 0), 0);
 
-    // World buff compliance
-    const buffsByEvent = {};
-    for (const row of worldBuffsRes.rows) {
-      if (!buffsByEvent[row.event_id]) buffsByEvent[row.event_id] = [];
-      buffsByEvent[row.event_id].push(row);
-    }
-    const buffEventIds = Object.keys(buffsByEvent);
-    let compliantBuffEvents = 0;
-    for (const eid of buffEventIds) {
-      const allGreen = buffsByEvent[eid].every(b =>
-        b.color_status && b.color_status.toLowerCase().includes('green')
-      );
-      if (allGreen) compliantBuffEvents++;
-    }
-    const worldBuffComplianceRate = buffEventIds.length > 0
-      ? Math.round((compliantBuffEvents / buffEventIds.length) * 10000) / 100
-      : null;
+    // Gold earned from GDKP raids (player's share of shared_gold_pot)
+    const totalGoldEarned = Math.round(parseFloat(goldEarnedRes.rows[0]?.total_gold_earned) || 0);
 
     // Frost resistance compliance
     const frostByEvent = {};
@@ -9926,11 +9959,11 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
     const stats = {
       totalRaids: playerRaids,
       attendanceRate,
+      totalGoldEarned,
       totalGoldSpent,
       totalRewardPoints: parseInt(rewardPointsTotalRes.rows[0].total, 10) || 0,
       avgDPS: avgDpsRes.rows[0].avg_dps ? Math.round(parseFloat(avgDpsRes.rows[0].avg_dps)) : null,
       avgHPS: avgHpsRes.rows[0].avg_hps ? Math.round(parseFloat(avgHpsRes.rows[0].avg_hps)) : null,
-      worldBuffComplianceRate,
       frostResComplianceRate
     };
 
@@ -9996,7 +10029,8 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
         rankingOriginal: rp.ranking_number_original,
         pointsOriginal: rp.point_value_original,
         pointsEdited: rp.point_value_edited,
-        editedBy: rp.edited_by_name
+        editedBy: rp.edited_by_name,
+        characterName: rp.character_name
       }))
     };
 
@@ -10007,7 +10041,9 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       buffName: wb.buff_name,
       buffValue: wb.buff_value,
       colorStatus: wb.color_status,
-      backgroundColor: wb.background_color
+      backgroundColor: wb.background_color,
+      amountSummary: wb.amount_summary || null,
+      scoreSummary: wb.score_summary || null
     }));
 
     // ── Frost res detail ──────────────────────────────────────────────────
