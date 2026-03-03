@@ -348,6 +348,12 @@
                                 <th onclick="sortTable('has_discord_link')">
                                     Discord <i class="fas fa-sort"></i>
                                 </th>
+                                <th class="admin-col" style="display:none" onclick="sortTable('discord_username')">
+                                    Discord Username <i class="fas fa-sort"></i>
+                                </th>
+                                <th class="admin-col" style="display:none" onclick="sortTable('discord_id')">
+                                    Discord ID <i class="fas fa-sort"></i>
+                                </th>
                             </tr>
                         </thead>
                         <tbody id="members-tbody">
@@ -364,8 +370,17 @@
         let allMembers = [];
         let filteredMembers = [];
         let currentSort = { column: 'character_name', direction: 'asc' };
+        let isAdmin = false;
 
         document.addEventListener('DOMContentLoaded', () => {
+            // Check if user has management role for admin-only features
+            fetch('/user').then(r => r.ok ? r.json() : null).then(u => {
+                if (u && u.hasManagementRole) {
+                    isAdmin = true;
+                    // Show admin-only column headers
+                    document.querySelectorAll('.admin-col').forEach(el => el.style.display = '');
+                }
+            }).catch(() => {});
             loadGuildMembers();
             
             // Add search filter
@@ -513,15 +528,29 @@
 
         function renderTable() {
             const tbody = document.getElementById('members-tbody');
+            const colSpan = isAdmin ? 9 : 7;
             
             if (filteredMembers.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #7f8c8d;">No members found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="' + colSpan + '" style="text-align: center; padding: 40px; color: #7f8c8d;">No members found</td></tr>';
                 return;
             }
 
-            tbody.innerHTML = filteredMembers.map(member => `
-                <tr>
-                    <td><strong>${member.character_name}</strong></td>
+            tbody.innerHTML = filteredMembers.map(member => {
+                const nameCell = isAdmin && member.discord_id
+                    ? `<td><a href="/admin/player/${member.discord_id}" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor"><strong>${member.character_name}</strong></a></td>`
+                    : `<td><strong>${member.character_name}</strong></td>`;
+
+                const adminCols = isAdmin
+                    ? `<td class="admin-col">${member.discord_username && member.discord_id
+                        ? '<a href="/admin/player/' + member.discord_id + '" style="color:#3498db">' + (member.discord_username || '-') + '</a>'
+                        : (member.discord_username || '-')}</td>` +
+                      `<td class="admin-col">${member.discord_id
+                        ? '<a href="/admin/player/' + member.discord_id + '" style="color:#3498db;font-family:monospace;font-size:0.85em">' + member.discord_id + '</a>'
+                        : '-'}</td>`
+                    : '';
+
+                return `<tr>
+                    ${nameCell}
                     <td>
                         <span class="class-badge ${member.class.toLowerCase()}">
                             ${member.class}
@@ -541,8 +570,9 @@
                             '<i class="fas fa-times-circle discord-unlinked" title="Not Linked"></i>'
                         }
                     </td>
-                </tr>
-            `).join('');
+                    ${adminCols}
+                </tr>`;
+            }).join('');
         }
 
         function getRankClass(rankName) {

@@ -2617,6 +2617,10 @@ app.get('/admin/raid-channels', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin-raid-channels.html'));
 });
 
+app.get('/admin/player/:discordId', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin', 'player.html'));
+});
+
 app.get('/voice-check', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'voice-check.html'));
 });
@@ -9598,6 +9602,493 @@ app.get('/api/events/:eventId/raidleader', async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Admin Player Profile API — GET /api/admin/player/:discordId
+// Aggregates identity, roles, characters, stats, raid history, loot, rewards,
+// world buffs, frost resistance, assignments, and poll votes for a single player.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** Frost resistance compliance threshold (minimum FR to count as "compliant") */
+const FROST_RES_THRESHOLD = 100;
+
+app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
+  const discordId = req.params.discordId;
+
+  // Sanitize: Discord IDs are numeric strings, max 20 chars
+  if (!discordId || !/^[0-9]{1,20}$/.test(discordId)) {
+    return res.status(400).json({ success: false, message: 'Invalid Discord ID format' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+
+    // ── Parallel independent queries ──────────────────────────────────────
+    const [
+      identityRes,
+      altAuthRes,
+      memberEventsRes,
+      rolesRes,
+      roleAuditRes,
+      charactersRes,
+      playersRes,
+      totalRaidsRes,
+      playerRaidsRes,
+      rewardPointsTotalRes,
+      avgDpsRes,
+      avgHpsRes,
+      lootRes,
+      manualRewardsRes,
+      rewardPointsByEventRes,
+      assignmentsRes,
+      pollVotesRes,
+      raidHistoryRes,
+      worldBuffsRes,
+      frostResRes
+    ] = await Promise.all([
+      // Identity from discord_users
+      client.query(
+        `SELECT discord_id, username, discriminator, avatar, email, created_at AS first_login, last_login_at AS last_login
+         FROM discord_users WHERE discord_id = $1`, [discordId]
+      ),
+      // Alt auth info
+      client.query(
+        `SELECT provider, email FROM alt_auth_users WHERE discord_id = $1`, [discordId]
+      ),
+      // Member events (join/leave)
+      client.query(
+        `SELECT event_type, username, tag, avatar_url, created_at
+         FROM discord_member_events WHERE discord_id = $1
+         ORDER BY created_at DESC`, [discordId]
+      ),
+      // Current app roles
+      client.query(
+        `SELECT role_key, granted_at, granted_by
+         FROM app_user_roles WHERE discord_id = $1
+         ORDER BY granted_at`, [discordId]
+      ),
+      // Role audit history
+      client.query(
+        `SELECT action, role_key, actor_discord_id, created_at
+         FROM role_audit WHERE discord_id = $1
+         ORDER BY created_at DESC`, [discordId]
+      ),
+      // Characters from guildies
+      client.query(
+        `SELECT character_name, class, race, sex, level, faction, main_alt, player_alts,
+                join_date, promo_date, rank_history, last_online_days, rank_name,
+                public_note, officer_note, custom_note
+         FROM guildies WHERE discord_id = $1
+         ORDER BY level DESC, character_name`, [discordId]
+      ),
+      // Characters from players table
+      client.query(
+        `SELECT character_name, class FROM players WHERE discord_id = $1`, [discordId]
+      ),
+      // Total raids in system (for attendance rate)
+      client.query(`SELECT COUNT(DISTINCT raid_id) AS total FROM player_confirmed_logs`),
+      // Player's raids
+      client.query(
+        `SELECT COUNT(DISTINCT raid_id) AS total FROM player_confirmed_logs WHERE discord_id = $1`, [discordId]
+      ),
+      // Total reward points
+      client.query(
+        `SELECT COALESCE(SUM(COALESCE(point_value_edited, point_value_original, 0)), 0) AS total
+         FROM rewards_and_deductions_points WHERE discord_user_id = $1`, [discordId]
+      ),
+      // Average DPS
+      client.query(
+        `SELECT AVG(damage_amount) AS avg_dps FROM log_data WHERE discord_id = $1 AND damage_amount > 0`, [discordId]
+      ),
+      // Average HPS
+      client.query(
+        `SELECT AVG(healing_amount) AS avg_hps FROM log_data WHERE discord_id = $1 AND healing_amount > 0`, [discordId]
+      ),
+      // Loot items (resolve through character names from both guildies + players)
+      client.query(
+        `SELECT li.item_name, li.gold_amount, li.wowhead_link, li.icon_link, li.event_id, li.created_at
+         FROM loot_items li
+         WHERE LOWER(li.player_name) IN (
+           SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
+           UNION
+           SELECT LOWER(character_name) FROM players WHERE discord_id = $1
+         )
+         ORDER BY li.created_at DESC`, [discordId]
+      ),
+      // Manual rewards/deductions
+      client.query(
+        `SELECT description, points, is_gold, created_by, icon_url, event_id, created_at
+         FROM manual_rewards_deductions WHERE discord_id = $1
+         ORDER BY created_at DESC`, [discordId]
+      ),
+      // Reward points by event
+      client.query(
+        `SELECT event_id, panel_name, ranking_number_original, point_value_original,
+                point_value_edited, edited_by_name
+         FROM rewards_and_deductions_points WHERE discord_user_id = $1
+         ORDER BY event_id DESC, panel_name`, [discordId]
+      ),
+      // Raid assignments
+      client.query(
+        `SELECT event_id, boss, assignment, character_name, accept_status, accept_set_by
+         FROM raid_assignment_entries WHERE character_discord_id = $1
+         ORDER BY event_id DESC, boss`, [discordId]
+      ),
+      // Poll votes
+      client.query(
+        `SELECT pv.poll_id, p.question, pv.option_key, po.option_text, pv.voted_at
+         FROM poll_votes pv
+         LEFT JOIN polls p ON p.poll_id = pv.poll_id
+         LEFT JOIN poll_options po ON po.poll_id = pv.poll_id AND po.option_key = pv.option_key
+         WHERE pv.discord_id = $1
+         ORDER BY pv.voted_at DESC`, [discordId]
+      ),
+      // Raid history: confirmed logs + roster overrides + event cache + log data
+      client.query(
+        `SELECT
+           pcl.raid_id AS event_id,
+           pcl.character_name AS character_used,
+           pcl.character_class,
+           pcl.confirmed_at,
+           ro.original_signup_name,
+           ro.party_id,
+           ro.slot_id,
+           ro.in_raid,
+           ro.assigned_char_spec AS spec_name,
+           ld.damage_amount,
+           ld.healing_amount,
+           ld.log_id,
+           ld.role_detected,
+           rhec.event_data
+         FROM player_confirmed_logs pcl
+         LEFT JOIN roster_overrides ro ON ro.event_id = pcl.raid_id AND ro.discord_user_id = pcl.discord_id
+         LEFT JOIN log_data ld ON ld.event_id = pcl.raid_id AND ld.discord_id = pcl.discord_id
+         LEFT JOIN raid_helper_events_cache rhec ON rhec.event_id = pcl.raid_id
+         WHERE pcl.discord_id = $1
+         ORDER BY pcl.confirmed_at DESC`, [discordId]
+      ),
+      // World buffs (for player's characters)
+      client.query(
+        `SELECT spb.event_id, spb.character_name, spb.buff_name, spb.buff_value,
+                spb.color_status, spb.background_color
+         FROM sheet_players_buffs spb
+         WHERE LOWER(spb.character_name) IN (
+           SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
+           UNION
+           SELECT LOWER(character_name) FROM players WHERE discord_id = $1
+         )
+         ORDER BY spb.event_id DESC, spb.character_name`, [discordId]
+      ),
+      // Frost resistance (for player's characters)
+      client.query(
+        `SELECT spf.event_id, spf.character_name, spf.frost_resistance
+         FROM sheet_players_frostres spf
+         WHERE LOWER(spf.character_name) IN (
+           SELECT LOWER(character_name) FROM guildies WHERE discord_id = $1
+           UNION
+           SELECT LOWER(character_name) FROM players WHERE discord_id = $1
+         )
+         ORDER BY spf.event_id DESC, spf.character_name`, [discordId]
+      )
+    ]);
+
+    // ── Build identity ────────────────────────────────────────────────────
+    const discordUser = identityRes.rows[0] || null;
+    const altAuth = altAuthRes.rows[0] || null;
+
+    const identity = {
+      discordId,
+      username: discordUser ? discordUser.username : null,
+      discriminator: discordUser ? discordUser.discriminator : null,
+      avatar: discordUser ? discordUser.avatar : null,
+      email: discordUser ? discordUser.email : (altAuth ? altAuth.email : null),
+      authProvider: altAuth ? altAuth.provider : (discordUser ? 'discord' : null),
+      firstLogin: discordUser ? discordUser.first_login : null,
+      lastLogin: discordUser ? discordUser.last_login : null
+    };
+
+    // ── Roles ─────────────────────────────────────────────────────────────
+    // Get guild rank from guildies (first character's rank)
+    const guildRankRow = charactersRes.rows[0];
+    const roles = {
+      current: rolesRes.rows.map(r => ({
+        role_key: r.role_key,
+        granted_at: r.granted_at,
+        granted_by: r.granted_by
+      })),
+      guildRankName: guildRankRow ? guildRankRow.rank_name : null,
+      rankHistory: guildRankRow ? guildRankRow.rank_history : null,
+      promoDate: guildRankRow ? guildRankRow.promo_date : null,
+      audit: roleAuditRes.rows.map(r => ({
+        action: r.action,
+        role_key: r.role_key,
+        actor_discord_id: r.actor_discord_id,
+        created_at: r.created_at
+      }))
+    };
+
+    // ── Characters ────────────────────────────────────────────────────────
+    // Get most recent spec/role from log_data for each character
+    const specQuery = await client.query(
+      `SELECT DISTINCT ON (character_name) character_name, spec_name, role_detected
+       FROM log_data WHERE discord_id = $1
+       ORDER BY character_name, created_at DESC`, [discordId]
+    );
+    const specMap = {};
+    for (const row of specQuery.rows) {
+      specMap[row.character_name.toLowerCase()] = {
+        specName: row.spec_name,
+        primaryRole: row.role_detected
+      };
+    }
+
+    const characters = charactersRes.rows.map(c => {
+      const specInfo = specMap[c.character_name.toLowerCase()] || {};
+      return {
+        characterName: c.character_name,
+        class: c.class,
+        race: c.race,
+        sex: c.sex,
+        level: c.level,
+        faction: c.faction,
+        mainAlt: c.main_alt,
+        playerAlts: c.player_alts,
+        joinDate: c.join_date,
+        promoDate: c.promo_date,
+        lastOnlineDays: c.last_online_days,
+        publicNote: c.public_note,
+        officerNote: c.officer_note,
+        customNote: c.custom_note,
+        specName: specInfo.specName || null,
+        primaryRole: specInfo.primaryRole || null
+      };
+    });
+
+    // ── Stats ─────────────────────────────────────────────────────────────
+    const totalRaidsAll = parseInt(totalRaidsRes.rows[0].total, 10) || 0;
+    const playerRaids = parseInt(playerRaidsRes.rows[0].total, 10) || 0;
+    const attendanceRate = totalRaidsAll > 0 ? Math.round((playerRaids / totalRaidsAll) * 10000) / 100 : 0;
+
+    // Gold spent from loot
+    const totalGoldSpent = lootRes.rows.reduce((sum, item) => sum + (parseInt(item.gold_amount, 10) || 0), 0);
+
+    // World buff compliance
+    const buffsByEvent = {};
+    for (const row of worldBuffsRes.rows) {
+      if (!buffsByEvent[row.event_id]) buffsByEvent[row.event_id] = [];
+      buffsByEvent[row.event_id].push(row);
+    }
+    const buffEventIds = Object.keys(buffsByEvent);
+    let compliantBuffEvents = 0;
+    for (const eid of buffEventIds) {
+      const allGreen = buffsByEvent[eid].every(b =>
+        b.color_status && b.color_status.toLowerCase().includes('green')
+      );
+      if (allGreen) compliantBuffEvents++;
+    }
+    const worldBuffComplianceRate = buffEventIds.length > 0
+      ? Math.round((compliantBuffEvents / buffEventIds.length) * 10000) / 100
+      : null;
+
+    // Frost resistance compliance
+    const frostByEvent = {};
+    for (const row of frostResRes.rows) {
+      if (!frostByEvent[row.event_id]) frostByEvent[row.event_id] = [];
+      frostByEvent[row.event_id].push(row);
+    }
+    const frostEventIds = Object.keys(frostByEvent);
+    let compliantFrostEvents = 0;
+    for (const eid of frostEventIds) {
+      const meetsThreshold = frostByEvent[eid].every(f =>
+        parseInt(f.frost_resistance, 10) >= FROST_RES_THRESHOLD
+      );
+      if (meetsThreshold) compliantFrostEvents++;
+    }
+    const frostResComplianceRate = frostEventIds.length > 0
+      ? Math.round((compliantFrostEvents / frostEventIds.length) * 10000) / 100
+      : null;
+
+    const stats = {
+      totalRaids: playerRaids,
+      attendanceRate,
+      totalGoldSpent,
+      totalRewardPoints: parseInt(rewardPointsTotalRes.rows[0].total, 10) || 0,
+      avgDPS: avgDpsRes.rows[0].avg_dps ? Math.round(parseFloat(avgDpsRes.rows[0].avg_dps)) : null,
+      avgHPS: avgHpsRes.rows[0].avg_hps ? Math.round(parseFloat(avgHpsRes.rows[0].avg_hps)) : null,
+      worldBuffComplianceRate,
+      frostResComplianceRate
+    };
+
+    // ── Raid history ──────────────────────────────────────────────────────
+    const raidHistory = raidHistoryRes.rows.map(r => {
+      let eventName = null;
+      let eventDate = null;
+      if (r.event_data) {
+        try {
+          const ed = typeof r.event_data === 'string' ? JSON.parse(r.event_data) : r.event_data;
+          eventName = ed.title || ed.name || null;
+          eventDate = ed.startTime ? new Date(ed.startTime * 1000).toISOString() : null;
+        } catch (_) { /* ignore parse errors */ }
+      }
+      return {
+        eventId: r.event_id,
+        eventName,
+        eventDate: eventDate || (r.confirmed_at ? r.confirmed_at : null),
+        characterUsed: r.character_used,
+        confirmed: true,
+        inRaid: r.in_raid || false,
+        partyId: r.party_id,
+        slotId: r.slot_id,
+        originalSignupName: r.original_signup_name,
+        specName: r.spec_name,
+        roleThatNight: r.role_detected,
+        damageDealt: r.damage_amount ? parseInt(r.damage_amount, 10) : null,
+        healingDone: r.healing_amount ? parseInt(r.healing_amount, 10) : null,
+        wclLogLink: r.log_id ? `https://classic.warcraftlogs.com/reports/${r.log_id}` : null
+      };
+    });
+
+    // ── Loot ──────────────────────────────────────────────────────────────
+    const loot = {
+      totalGoldSpent,
+      items: lootRes.rows.map(li => ({
+        itemName: li.item_name,
+        goldAmount: parseInt(li.gold_amount, 10) || 0,
+        wowheadLink: li.wowhead_link,
+        iconLink: li.icon_link,
+        eventId: li.event_id,
+        createdAt: li.created_at
+      }))
+    };
+
+    // ── Manual rewards ────────────────────────────────────────────────────
+    const manualRewards = manualRewardsRes.rows.map(mr => ({
+      description: mr.description,
+      points: parseFloat(mr.points),
+      isGold: mr.is_gold || false,
+      createdBy: mr.created_by,
+      iconUrl: mr.icon_url,
+      eventId: mr.event_id,
+      createdAt: mr.created_at
+    }));
+
+    // ── Reward points by event ────────────────────────────────────────────
+    const rewardPoints = {
+      totalPoints: stats.totalRewardPoints,
+      byEvent: rewardPointsByEventRes.rows.map(rp => ({
+        eventId: rp.event_id,
+        panelName: rp.panel_name,
+        rankingOriginal: rp.ranking_number_original,
+        pointsOriginal: rp.point_value_original,
+        pointsEdited: rp.point_value_edited,
+        editedBy: rp.edited_by_name
+      }))
+    };
+
+    // ── World buffs detail ────────────────────────────────────────────────
+    const worldBuffs = worldBuffsRes.rows.map(wb => ({
+      eventId: wb.event_id,
+      characterName: wb.character_name,
+      buffName: wb.buff_name,
+      buffValue: wb.buff_value,
+      colorStatus: wb.color_status,
+      backgroundColor: wb.background_color
+    }));
+
+    // ── Frost res detail ──────────────────────────────────────────────────
+    const frostRes = frostResRes.rows.map(fr => ({
+      eventId: fr.event_id,
+      characterName: fr.character_name,
+      frostResistance: fr.frost_resistance
+    }));
+
+    // ── Assignments ───────────────────────────────────────────────────────
+    const assignments = assignmentsRes.rows.map(a => ({
+      eventId: a.event_id,
+      boss: a.boss,
+      assignment: a.assignment,
+      characterName: a.character_name,
+      acceptStatus: a.accept_status,
+      acceptSetBy: a.accept_set_by
+    }));
+
+    // ── Poll votes ────────────────────────────────────────────────────────
+    const pollVotes = pollVotesRes.rows.map(pv => ({
+      pollId: pv.poll_id,
+      question: pv.question,
+      optionKey: pv.option_key,
+      optionText: pv.option_text,
+      votedAt: pv.voted_at
+    }));
+
+    // ── Response ──────────────────────────────────────────────────────────
+    res.json({
+      success: true,
+      identity,
+      memberEvents: memberEventsRes.rows.map(e => ({
+        event_type: e.event_type,
+        username: e.username,
+        tag: e.tag,
+        avatar_url: e.avatar_url,
+        created_at: e.created_at
+      })),
+      roles,
+      stats,
+      characters,
+      raidHistory,
+      loot,
+      manualRewards,
+      rewardPoints,
+      worldBuffs,
+      frostRes,
+      assignments,
+      pollVotes
+    });
+
+  } catch (error) {
+    console.error('❌ [/api/admin/player/:discordId] Error:', error.stack || error);
+    res.status(500).json({ success: false, message: 'Error fetching player data' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// ── PATCH /api/admin/player/:discordId/notes — Inline note editing ──────────
+app.patch('/api/admin/player/:discordId/notes', requireManagement, express.json(), async (req, res) => {
+  const discordId = req.params.discordId;
+  if (!discordId || !/^[0-9]{1,20}$/.test(discordId)) {
+    return res.status(400).json({ success: false, message: 'Invalid Discord ID format' });
+  }
+
+  const { characterName, className, field, value } = req.body || {};
+  const ALLOWED_FIELDS = ['public_note', 'officer_note', 'custom_note'];
+
+  if (!characterName || !className) {
+    return res.status(400).json({ success: false, message: 'characterName and className are required' });
+  }
+  if (!ALLOWED_FIELDS.includes(field)) {
+    return res.status(400).json({ success: false, message: `Invalid field. Allowed: ${ALLOWED_FIELDS.join(', ')}` });
+  }
+
+  try {
+    // field is validated against allowlist above — safe to interpolate into column name
+    const result = await pool.query(
+      `UPDATE guildies SET ${field} = $1, updated_at = NOW()
+       WHERE character_name = $2 AND class = $3`,
+      [value || '', characterName, className]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, message: 'Character not found' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [PATCH /api/admin/player/:discordId/notes] Error:', error.stack || error);
+    res.status(500).json({ success: false, message: 'Error updating note' });
+  }
+});
+
 // Management-only endpoint for user data
 app.get('/api/management/users', requireManagement, async (req, res) => {
   try {
@@ -10070,18 +10561,20 @@ app.get('/api/guild-members', async (req, res) => {
     const client = await pool.connect();
     const result = await client.query(`
       SELECT 
-        character_name, 
-        class, 
-        level, 
-        rank_name, 
-        race, 
-        sex,
-        last_online_days,
-        join_date,
-        discord_id,
-        CASE WHEN discord_id IS NOT NULL THEN true ELSE false END as has_discord_link
-      FROM guildies 
-      ORDER BY rank_name, character_name
+        g.character_name, 
+        g.class, 
+        g.level, 
+        g.rank_name, 
+        g.race, 
+        g.sex,
+        g.last_online_days,
+        g.join_date,
+        g.discord_id,
+        CASE WHEN g.discord_id IS NOT NULL THEN true ELSE false END as has_discord_link,
+        du.username AS discord_username
+      FROM guildies g
+      LEFT JOIN discord_users du ON du.discord_id = g.discord_id
+      ORDER BY g.rank_name, g.character_name
     `);
     client.release();
     
@@ -22446,6 +22939,11 @@ app.post('/api/loot/import', async (req, res) => {
     // Create index if it doesn't exist
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_loot_items_event_id ON loot_items (event_id)
+    `);
+
+    // Index for player profile gold lookups (case-insensitive player_name)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_loot_items_player_name ON loot_items (LOWER(player_name))
     `);
 
     // If not expanding existing list, delete current items for this event

@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Player Profile - Admin</title>
+    <link rel="stylesheet" href="/style.css?v=sandbox-fix-3">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script>
+        /* Apply dark mode immediately to prevent flash */
+        (function() {
+            const stored = localStorage.getItem('admin-theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (stored === 'dark' || (!stored && prefersDark)) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --bg: #f4f4f4;
+            --text: #333333;
+            --heading: #2c3e50;
+            --muted: #7f8c8d;
+            --panel-bg: #ffffff;
+            --panel-elev: #f8f9fa;
+            --border: #e5e7eb;
+            --table-head-bg: #f8f9fa;
+            --accent: #3498db;
+            --success: #27ae60;
+            --danger: #e74c3c;
+            --warning: #f39c12;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f1115;
+                --text: #e5e7eb;
+                --heading: #e5e7eb;
+                --muted: #a0aec0;
+                --panel-bg: #151922;
+                --panel-elev: #1a1f2b;
+                --border: #2a2f3a;
+                --table-head-bg: #1f2532;
+                --accent: #5b9bd5;
+                --success: #2ecc71;
+                --danger: #e74c3c;
+                --warning: #f1c40f;
+            }
+        }
+
+        html.dark {
+            --bg: #0f1115;
+            --text: #e5e7eb;
+            --heading: #e5e7eb;
+            --muted: #a0aec0;
+            --panel-bg: #151922;
+            --panel-elev: #1a1f2b;
+            --border: #2a2f3a;
+            --table-head-bg: #1f2532;
+            --accent: #5b9bd5;
+            --success: #2ecc71;
+            --danger: #e74c3c;
+            --warning: #f1c40f;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Back link */
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--accent);
+            text-decoration: none;
+            margin-bottom: 16px;
+            font-size: 0.9em;
+        }
+        .back-link:hover { text-decoration: underline; }
+
+        /* Identity Header */
+        .identity-header {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .identity-header .avatar {
+            width: 96px;
+            height: 96px;
+            border-radius: 50%;
+            background: var(--border);
+            flex-shrink: 0;
+        }
+        .identity-header .info h1 {
+            font-size: 1.8em;
+            color: var(--heading);
+            margin-bottom: 4px;
+        }
+        .identity-header .info .meta {
+            color: var(--muted);
+            font-size: 0.85em;
+        }
+        .identity-header .info .meta span {
+            margin-right: 16px;
+        }
+
+        /* Stat cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-card .stat-value {
+            font-size: 1.6em;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .stat-card .stat-label {
+            font-size: 0.78em;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
+        /* Collapsible sections */
+        .section {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 20px;
+            cursor: pointer;
+            user-select: none;
+            background: var(--panel-elev);
+            border-bottom: 1px solid var(--border);
+        }
+        .section-header:hover { opacity: 0.9; }
+        .section-header h2 {
+            font-size: 1.1em;
+            color: var(--heading);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-header .chevron {
+            transition: transform 0.2s;
+            color: var(--muted);
+        }
+        .section.collapsed .section-header .chevron {
+            transform: rotate(-90deg);
+        }
+        .section.collapsed .section-body {
+            display: none;
+        }
+        .section-body {
+            padding: 16px 20px;
+        }
+
+        /* Tables */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.88em;
+        }
+        .data-table th {
+            background: var(--table-head-bg);
+            text-align: left;
+            padding: 10px 12px;
+            font-weight: 600;
+            color: var(--heading);
+            border-bottom: 2px solid var(--border);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .data-table th:hover { opacity: 0.8; }
+        .data-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        .data-table tbody tr:hover {
+            background: var(--panel-elev);
+        }
+
+        /* Character cards */
+        .characters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+        }
+        .char-card {
+            border: 2px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            background: var(--panel-elev);
+        }
+        .char-card h3 {
+            font-size: 1.1em;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .char-card .class-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            color: #fff;
+        }
+        .char-card .detail-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85em;
+            padding: 2px 0;
+            color: var(--muted);
+        }
+        .char-card .detail-row strong { color: var(--text); }
+
+        /* Editable notes */
+        .note-field {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 6px 8px;
+            color: var(--text);
+            font-size: 0.85em;
+            font-family: inherit;
+            margin-top: 4px;
+            resize: vertical;
+            min-height: 28px;
+        }
+        .note-field:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .note-label {
+            font-size: 0.75em;
+            color: var(--muted);
+            margin-top: 8px;
+        }
+        .note-saved {
+            font-size: 0.7em;
+            color: var(--success);
+            margin-left: 6px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .note-saved.visible { opacity: 1; }
+
+        /* Role badges */
+        .role-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin: 2px 4px 2px 0;
+            background: var(--accent);
+            color: #fff;
+        }
+        .role-badge .revoke-btn {
+            margin-left: 6px;
+            cursor: pointer;
+            opacity: 0.7;
+        }
+        .role-badge .revoke-btn:hover { opacity: 1; }
+
+        /* Grant role form */
+        .grant-form {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .grant-form select, .grant-form button {
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            background: var(--panel-elev);
+            color: var(--text);
+            font-size: 0.85em;
+        }
+        .grant-form button {
+            background: var(--success);
+            color: #fff;
+            cursor: pointer;
+            border: none;
+        }
+
+        /* Buff status colors */
+        .buff-green { background: #27ae60; color: #fff; }
+        .buff-yellow { background: #f39c12; color: #fff; }
+        .buff-red { background: #e74c3c; color: #fff; }
+        .buff-cell {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+
+        /* Accept status */
+        .status-accepted { color: var(--success); }
+        .status-declined { color: var(--danger); }
+        .status-pending { color: var(--warning); }
+
+        /* No data */
+        .no-data {
+            color: var(--muted);
+            font-style: italic;
+            padding: 12px 0;
+        }
+
+        /* Progress bar */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .progress-bar .fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        /* WCL/WoWHead links */
+        a.item-link, a.wcl-link {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        a.item-link:hover, a.wcl-link:hover { text-decoration: underline; }
+
+        .item-icon {
+            width: 20px;
+            height: 20px;
+            vertical-align: middle;
+            margin-right: 4px;
+            border-radius: 3px;
+        }
+
+        /* Member events timeline */
+        .timeline {
+            position: relative;
+            padding-left: 20px;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 6px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border);
+        }
+        .timeline-item {
+            position: relative;
+            padding: 6px 0;
+            font-size: 0.85em;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -18px;
+            top: 12px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+        .timeline-item .event-type {
+            font-weight: 600;
+            text-transform: capitalize;
+        }
+        .timeline-item .event-date {
+            color: var(--muted);
+            font-size: 0.85em;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--muted);
+        }
+        .loading i { font-size: 2em; margin-bottom: 12px; }
+
+        /* WoW class colors */
+        .class-warrior { border-color: #C79C6E !important; }
+        .class-warrior .class-badge { background: #C79C6E; }
+        .class-paladin { border-color: #F58CBA !important; }
+        .class-paladin .class-badge { background: #F58CBA; }
+        .class-hunter { border-color: #ABD473 !important; }
+        .class-hunter .class-badge { background: #ABD473; }
+        .class-rogue { border-color: #FFF569 !important; }
+        .class-rogue .class-badge { background: #FFF569; color: #333; }
+        .class-priest { border-color: #FFFFFF !important; }
+        .class-priest .class-badge { background: #ccc; color: #333; }
+        .class-shaman { border-color: #0070DE !important; }
+        .class-shaman .class-badge { background: #0070DE; }
+        .class-mage { border-color: #69CCF0 !important; }
+        .class-mage .class-badge { background: #69CCF0; color: #333; }
+        .class-warlock { border-color: #9482C9 !important; }
+        .class-warlock .class-badge { background: #9482C9; }
+        .class-druid { border-color: #FF7D0A !important; }
+        .class-druid .class-badge { background: #FF7D0A; }
+        .class-death-knight { border-color: #C41F3B !important; }
+        .class-death-knight .class-badge { background: #C41F3B; }
+
+        @media (max-width: 768px) {
+            .identity-header { flex-direction: column; text-align: center; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .characters-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/guild-members" class="back-link"><i class="fas fa-arrow-left"></i> Back to Guild Members</a>
+
+        <div id="loading" class="loading">
+            <div><i class="fas fa-spinner fa-spin"></i></div>
+            <div>Loading player data...</div>
+        </div>
+
+        <div id="content" style="display:none;">
+            <!-- Identity Header -->
+            <div class="identity-header" id="identity-header"></div>
+
+            <!-- Stats Row -->
+            <div class="stats-grid" id="stats-grid"></div>
+
+            <!-- Roles Section -->
+            <div class="section" id="roles-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-shield-alt"></i> Roles &amp; Permissions</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="roles-body"></div>
+            </div>
+
+            <!-- Characters Section -->
+            <div class="section" id="characters-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-users"></i> Characters</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="characters-body"></div>
+            </div>
+
+            <!-- Member Events -->
+            <div class="section collapsed" id="member-events-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-history"></i> Member Events</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="member-events-body"></div>
+            </div>
+
+            <!-- Raid History -->
+            <div class="section" id="raid-history-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-dungeon"></i> Raid History</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="raid-history-body"></div>
+            </div>
+
+            <!-- Loot -->
+            <div class="section" id="loot-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-coins"></i> Loot &amp; Gold History</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="loot-body"></div>
+            </div>
+
+            <!-- Manual Rewards -->
+            <div class="section collapsed" id="manual-rewards-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-gift"></i> Manual Rewards / Deductions</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="manual-rewards-body"></div>
+            </div>
+
+            <!-- Reward Points -->
+            <div class="section collapsed" id="reward-points-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-star"></i> Reward Points History</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="reward-points-body"></div>
+            </div>
+
+            <!-- World Buffs -->
+            <div class="section collapsed" id="world-buffs-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-magic"></i> World Buffs</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="world-buffs-body"></div>
+            </div>
+
+            <!-- Frost Resistance -->
+            <div class="section collapsed" id="frost-res-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-snowflake"></i> Frost Resistance</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="frost-res-body"></div>
+            </div>
+
+            <!-- Raid Assignments -->
+            <div class="section collapsed" id="assignments-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-tasks"></i> Raid Assignments</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="assignments-body"></div>
+            </div>
+
+            <!-- Poll Votes -->
+            <div class="section collapsed" id="poll-votes-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-poll"></i> Poll Votes</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="poll-votes-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/admin/player.js"></script>
+</body>
+</html>
