@@ -276,12 +276,14 @@ function injectSandboxBanner() {
         const sandboxLabel = document.createElement('span');
         sandboxLabel.textContent = 'SANDBOX';
         sandboxLabel.className = 'sandbox-logo';
+        // Inline style on the span itself guarantees orange at all viewport sizes,
+        // overriding any dark-theme :where(span) or inherited color rules
+        sandboxLabel.style.color = '#FF6600';
 
         const parentAnchor = logoImg.parentNode;
         parentAnchor.replaceChild(sandboxLabel, logoImg);
 
-        // Set inline color on the anchor to guarantee orange in all browsers,
-        // including those without CSS :has() support
+        // Also set inline color on the anchor for browsers without CSS :has() support
         if (parentAnchor.tagName === 'A') {
             parentAnchor.style.color = '#FF6600';
             parentAnchor.style.textDecoration = 'none';
