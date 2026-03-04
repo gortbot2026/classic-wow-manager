@@ -149,6 +149,39 @@ As of 2026-03-03, `npm audit` reports 23 pre-existing vulnerabilities:
 
 These vulnerabilities are **pre-existing** and **not introduced by the admin player profile feature**. Recommend scheduling an `npm audit fix` pass in a future sprint. The critical `fast-xml-parser` issue only affects S3/AWS SDK usage (image uploads), not the player profile endpoints.
 
+## Class-Colored Character Names (2026-03-04)
+
+### Feature Summary
+Character names across the player profile page (Raid History, World Buffs, Frost Resistance, Raid Assignments) are now wrapped in `<span>` elements with inline `color:` styles matching the character's WoW class color.
+
+### Security Properties
+
+**No XSS vectors:**
+- All character name text content passes through `esc()` (DOM `div.textContent + div.innerHTML`)
+- Inline `color:` values come exclusively from the hardcoded `CLASS_COLORS` / `CLASS_COLORS_LIGHT` maps — never from user input
+- Even if `playerData.characters[].class` contains unexpected values, the map lookup returns `undefined`, which causes `classColorSpan()` to fall back to plain `esc(name)` — no injection path
+
+**No CSS injection:**
+- `color` attribute value is always a hex string from a hardcoded constant (e.g. `#C79C6E`) — never interpolated from external data
+- Character name goes only into `textContent` via `esc()`, not into the `style` attribute
+
+**No SQL changes:**
+- This is a pure client-side rendering change; no API endpoints or SQL queries were modified
+
+**charNameToClass lookup:**
+- Built from `playerData.characters` (server-controlled, already-fetched data)
+- Map key is `c.characterName.toLowerCase()` — no user-controlled injection vector into the Map structure
+- Prototype pollution negligible: character names are guild member names, not `__proto__`/`constructor`
+
+**Light-theme fallback:**
+- `isDarkMode()` reads `localStorage.getItem('admin-theme')` and `window.matchMedia(...)` — read-only, no injection vector
+- Fallback colors (`#AAAAAA` for Priest, `#D4B200` for Rogue) are hardcoded
+
+### Input Validation Rules
+- `classColorSpan(name)`: returns `esc(name)` (plain text) if name is falsy, class not in lookup, or class has no color — safe fallback in all edge cases
+
+---
+
 ## Raidlogs Link & Character Card Header (2026-03-04)
 
 ### Raidlogs Link
