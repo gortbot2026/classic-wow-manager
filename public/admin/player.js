@@ -897,6 +897,12 @@
 
   var currentConversation = null;
   var mayaSocket = null;
+  /** Cached conversations array from loadMayaChat() for the history panel */
+  var allConversations = [];
+  /** In-memory cache for fetched transcripts: conversationId → messages[] */
+  var transcriptCache = {};
+  /** Whether the history panel has been populated at least once */
+  var historyLoaded = false;
 
   /**
    * Initialize Socket.IO for real-time Maya updates.
@@ -944,92 +950,52 @@
    * Sets the toggle switch visual state and updates input/button visibility.
    * @param {boolean} isManual - true for Manual mode, false for AI mode
    */
+  /**
+   * Sets the toggle switch visual state and updates input visibility.
+   * @param {boolean} isManual - true for Manual mode, false for AI mode
+   */
   function setToggleState(isManual) {
     var track = document.getElementById('maya-toggle-track');
     var label = document.getElementById('maya-toggle-label');
     var input = document.getElementById('maya-message-input');
-    var takeoverBtn = document.getElementById('maya-takeover-btn');
 
     if (isManual) {
       track.classList.add('manual');
       label.textContent = 'Manual Mode';
       input.disabled = false;
       input.style.opacity = '1';
-      takeoverBtn.style.display = '';
     } else {
       track.classList.remove('manual');
       label.textContent = 'AI Mode';
       input.disabled = true;
       input.style.opacity = '0.5';
-      takeoverBtn.style.display = 'none';
     }
   }
 
-  /** Load Maya conversation for this player */
-  function loadMayaChat() {
-    fetch('/api/admin/maya/conversations/by-discord/' + discordId, { credentials: 'include' })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (!data.success) return;
-        // Remove existing "Start New Conversation" button if present
-        var existingBtn = document.getElementById('maya-new-conv-btn');
-        if (existingBtn) existingBtn.remove();
-
-        if (data.activeConversation) {
-          currentConversation = data.activeConversation;
-          showConversation(data.activeConversation, data.messages);
-          // Show "Start New Conversation" button below chat panel
-          addNewConversationButton('maya-conversation');
-        } else if (data.conversations && data.conversations.length > 0) {
-          // All conversations are closed — show button + start panel hidden
-          currentConversation = null;
-          document.getElementById('maya-no-conversation').style.display = 'none';
-          document.getElementById('maya-conversation').style.display = 'none';
-          addNewConversationButton('maya-chat-body');
-        } else {
-          // No conversations at all — show the start panel
-          currentConversation = null;
-          document.getElementById('maya-no-conversation').style.display = 'block';
-          document.getElementById('maya-conversation').style.display = 'none';
-        }
-      })
-      .catch(function() {
-        // API error — hide maya section silently
-      });
-  }
-  // Expose for inline onclick references
-  window.loadMayaChat = loadMayaChat;
-
   /**
-   * Adds a "Start New Conversation" button to the specified parent element.
-   * @param {string} parentId - DOM element ID to append the button to
+   * Updates the persistent Start/Stop button appearance based on conversation state.
+   * @param {boolean} hasActive - true if an active conversation exists
    */
-  function addNewConversationButton(parentId) {
-    var existing = document.getElementById('maya-new-conv-btn');
-    if (existing) existing.remove();
-
-    var parent = document.getElementById(parentId);
-    if (!parent) return;
-
-    var btn = document.createElement('button');
-    btn.id = 'maya-new-conv-btn';
-    btn.className = 'btn btn-primary';
-    btn.style.cssText = 'margin-top: 12px; display: block;';
-    btn.innerHTML = '<i class="fas fa-plus"></i> Start New Conversation';
-    btn.onclick = mayaStartNewConversation;
-    parent.appendChild(btn);
+  function updateStartStopButton(hasActive) {
+    var btn = document.getElementById('maya-start-stop-btn');
+    if (!btn) return;
+    if (hasActive) {
+      btn.textContent = 'Stop the Conversation';
+      btn.className = 'maya-start-stop-btn maya-start-stop-stop';
+    } else {
+      btn.textContent = 'Start New Conversation';
+      btn.className = 'maya-start-stop-btn maya-start-stop-start';
+    }
   }
 
   /**
-   * Handles starting a new conversation flow:
-   * 1. If active/paused conversation exists, confirm and close it first
-   * 2. Show the template picker (start panel)
-   * 3. User picks template and starts — previous context injected automatically
+   * Click handler for the persistent Start/Stop button.
+   * When active conversation exists: close it. Otherwise: show template picker.
    */
-  function mayaStartNewConversation() {
+  window.mayaHandleStartStop = function() {
     if (currentConversation && (currentConversation.status === 'active' || currentConversation.status === 'paused')) {
-      if (!confirm('This will close the current conversation. Continue?')) return;
-      // Close the current conversation first, then show start panel
+      // Stop — close the conversation
+      if (!confirm('Close this conversation? Maya will stop responding to this player.')) return;
       fetch('/api/admin/maya/conversations/' + currentConversation.id, {
         method: 'PATCH',
         credentials: 'include',
@@ -1040,18 +1006,55 @@
       .then(function(data) {
         if (data.success || data.conversation) {
           currentConversation = null;
-          showStartPanel();
+          document.getElementById('maya-conversation').style.display = 'none';
+          document.getElementById('maya-no-conversation').style.display = 'none';
+          updateStartStopButton(false);
         }
       })
       .catch(function() {
         alert('Failed to close conversation. Please try again.');
       });
     } else {
+      // Start — show template picker
       showStartPanel();
     }
-  }
-  window.mayaStartNewConversation = mayaStartNewConversation;
+  };
 
+  /** Load Maya conversation for this player */
+  function loadMayaChat() {
+    fetch('/api/admin/maya/conversations/by-discord/' + discordId, { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.success) return;
+
+        // Cache all conversations for history panel
+        allConversations = data.conversations || [];
+
+        if (data.activeConversation) {
+          currentConversation = data.activeConversation;
+          showConversation(data.activeConversation, data.messages);
+          updateStartStopButton(true);
+        } else {
+          currentConversation = null;
+          document.getElementById('maya-no-conversation').style.display = 'none';
+          document.getElementById('maya-conversation').style.display = 'none';
+          updateStartStopButton(false);
+        }
+      })
+      .catch(function() {
+        // API error — hide maya section silently
+      });
+  }
+  // Expose for inline onclick references
+  window.loadMayaChat = loadMayaChat;
+
+  // addNewConversationButton() removed — replaced by persistent #maya-start-stop-btn
+
+  // mayaStartNewConversation() removed — replaced by mayaHandleStartStop()
+
+  /**
+   * Shows the template picker / start panel for a new conversation.
+   */
   /**
    * Shows the template picker / start panel for a new conversation.
    */
@@ -1062,12 +1065,13 @@
     // Clear previous error
     var errorDiv = document.getElementById('maya-start-error');
     if (errorDiv) errorDiv.style.display = 'none';
-    // Remove the "Start New" button since we're now showing the panel
-    var btn = document.getElementById('maya-new-conv-btn');
-    if (btn) btn.remove();
   }
 
-  /** Render conversation UI (Fixes 2, 3: toggle + takeover + input state) */
+  /**
+   * Render active conversation UI with messages and toggle state.
+   * @param {Object} conv - Conversation object from API
+   * @param {Array} messages - Array of message objects
+   */
   function showConversation(conv, messages) {
     document.getElementById('maya-no-conversation').style.display = 'none';
     document.getElementById('maya-conversation').style.display = 'block';
@@ -1077,16 +1081,8 @@
     statusEl.textContent = conv.status;
     statusEl.className = 'badge badge-' + conv.status;
 
-    // Toggle state: paused/closed → force manual; otherwise use admin_override
-    var isManual = conv.admin_override;
-    if (conv.status === 'paused' || conv.status === 'closed') {
-      isManual = true;
-    }
-    setToggleState(isManual);
-
-    // Pause/Resume buttons
-    document.getElementById('maya-pause-btn').style.display = conv.status === 'active' ? '' : 'none';
-    document.getElementById('maya-resume-btn').style.display = conv.status === 'paused' ? '' : 'none';
+    // Toggle state: use admin_override directly
+    setToggleState(conv.admin_override);
 
     // Messages
     var container = document.getElementById('maya-messages');
@@ -1173,6 +1169,11 @@
    * Toggle AI/Manual mode via the toggle switch (Fix 3).
    * Clicking the toggle flips the current state.
    */
+  /**
+   * Toggle AI/Manual mode via the toggle switch.
+   * When switching back to AI mode (newOverride=false), also triggers
+   * Maya to generate her next reply via POST to the generate endpoint.
+   */
   window.mayaToggleOverride = function() {
     if (!currentConversation) return;
     var track = document.getElementById('maya-toggle-track');
@@ -1191,8 +1192,17 @@
     .then(function(data) {
       if (data.success) {
         currentConversation.admin_override = newOverride;
+        // When switching to AI mode, trigger Maya to send her next message
+        if (!newOverride) {
+          fetch('/api/admin/maya/conversations/' + currentConversation.id + '/generate', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+          }).catch(function() {
+            // Generation trigger is best-effort; persona-bot may also auto-respond
+          });
+        }
       } else {
-        // Revert on failure
         setToggleState(isCurrentlyManual);
       }
     })
@@ -1201,55 +1211,9 @@
     });
   };
 
-  /**
-   * Maya Take Over button handler (Fix 2).
-   * Switches from Manual back to AI mode.
-   */
-  window.mayaTakeOver = function() {
-    if (!currentConversation) return;
+  // mayaTakeOver() removed — toggle switch handles AI/Manual mode switching
 
-    setToggleState(false);
-
-    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
-      method: 'PATCH',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ admin_override: false })
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.success) {
-        currentConversation.admin_override = false;
-      } else {
-        setToggleState(true);
-      }
-    })
-    .catch(function() {
-      setToggleState(true);
-    });
-  };
-
-  /** Pause conversation */
-  window.mayaPauseConversation = function() {
-    if (!currentConversation) return;
-    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
-      method: 'PATCH',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'paused' })
-    }).then(function() { loadMayaChat(); });
-  };
-
-  /** Resume conversation */
-  window.mayaResumeConversation = function() {
-    if (!currentConversation) return;
-    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
-      method: 'PATCH',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'active' })
-    }).then(function() { loadMayaChat(); });
-  };
+  // mayaPauseConversation() and mayaResumeConversation() removed — AI/Manual toggle replaces pause behavior
 
   /** Close conversation */
   window.mayaCloseConversation = function() {
@@ -1338,6 +1302,135 @@
       errorDiv.style.display = 'block';
     });
   };
+
+  // ── Conversation History ──
+
+  /**
+   * Called when the history section header is clicked.
+   * On first expand, renders the conversation list from cached data.
+   */
+  window.mayaOnHistoryToggle = function() {
+    var section = document.getElementById('maya-history-section');
+    if (!section) return;
+    // If we just expanded (collapsed class was removed by toggleSection) and not yet loaded
+    if (!section.classList.contains('collapsed') && !historyLoaded) {
+      renderConversationHistory(allConversations);
+      historyLoaded = true;
+    }
+  };
+
+  /**
+   * Renders the list of past conversations in the history panel.
+   * @param {Array} conversations - Array of conversation objects from the by-discord endpoint
+   */
+  function renderConversationHistory(conversations) {
+    var body = document.getElementById('maya-history-body');
+    if (!body) return;
+
+    if (!conversations || conversations.length === 0) {
+      body.innerHTML = '<p style="color: var(--muted); font-style: italic;">No past conversations.</p>';
+      return;
+    }
+
+    var html = '';
+    conversations.forEach(function(conv) {
+      var dateStr = conv.created_at ? new Date(conv.created_at).toLocaleString() : 'Unknown';
+      var msgCount = conv.message_count != null ? parseInt(conv.message_count, 10) : 0;
+      var preview = '';
+      if (conv.summary) {
+        preview = conv.summary.length > 100 ? conv.summary.substring(0, 100) + '…' : conv.summary;
+      } else if (conv.first_message) {
+        preview = conv.first_message.length > 100 ? conv.first_message.substring(0, 100) + '…' : conv.first_message;
+      }
+
+      var statusClass = 'badge-' + (conv.status || 'closed');
+
+      html += '<div class="maya-history-entry" onclick="mayaToggleHistoryEntry(\'' + escapeHtml(conv.id) + '\')">' +
+        '<div class="maya-history-entry-header">' +
+          '<span>' + escapeHtml(dateStr) + '</span>' +
+          '<span class="badge ' + statusClass + '">' + escapeHtml(conv.status || 'unknown') + '</span>' +
+        '</div>' +
+        '<div class="maya-history-meta">' + msgCount + ' message' + (msgCount !== 1 ? 's' : '') + '</div>' +
+        (preview ? '<div class="maya-history-preview">' + escapeHtml(preview) + '</div>' : '') +
+        '<div class="maya-history-transcript" id="maya-transcript-' + escapeHtml(conv.id) + '"></div>' +
+      '</div>';
+    });
+
+    body.innerHTML = html;
+  }
+
+  /**
+   * Toggles a conversation entry's transcript. Fetches messages on first expand.
+   * @param {string} conversationId - The conversation ID to toggle
+   */
+  window.mayaToggleHistoryEntry = function(conversationId) {
+    var el = document.getElementById('maya-transcript-' + conversationId);
+    if (!el) return;
+
+    if (el.classList.contains('expanded')) {
+      el.classList.remove('expanded');
+      return;
+    }
+
+    // If already loaded from cache, just expand
+    if (transcriptCache[conversationId]) {
+      renderTranscript(el, transcriptCache[conversationId]);
+      el.classList.add('expanded');
+      return;
+    }
+
+    // Fetch transcript on-demand
+    el.innerHTML = '<p style="color: var(--muted); font-size: 12px;"><i class="fas fa-spinner fa-spin"></i> Loading...</p>';
+    el.classList.add('expanded');
+
+    fetch('/api/admin/maya/conversations/' + encodeURIComponent(conversationId), { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success && data.messages) {
+          transcriptCache[conversationId] = data.messages;
+          renderTranscript(el, data.messages);
+        } else {
+          el.innerHTML = '<p style="color: var(--muted); font-size: 12px;">Failed to load transcript.</p>';
+        }
+      })
+      .catch(function() {
+        el.innerHTML = '<p style="color: var(--muted); font-size: 12px;">Error loading transcript.</p>';
+      });
+  };
+
+  /**
+   * Renders messages into a transcript container element.
+   * Uses the same styling as the active chat (role-based coloring).
+   * @param {HTMLElement} container - The transcript div
+   * @param {Array} messages - Array of message objects with role, content, sent_at
+   */
+  function renderTranscript(container, messages) {
+    if (!messages || messages.length === 0) {
+      container.innerHTML = '<p style="color: var(--muted); font-size: 12px;">No messages in this conversation.</p>';
+      return;
+    }
+    var html = '';
+    messages.forEach(function(m) {
+      var bgColor, borderColor;
+      if (m.role === 'maya') {
+        bgColor = '#2563eb22';
+        borderColor = '#2563eb';
+      } else if (m.role === 'admin') {
+        bgColor = '#f59e0b22';
+        borderColor = '#f59e0b';
+      } else {
+        bgColor = 'var(--border)';
+        borderColor = 'var(--muted)';
+      }
+      var label = m.role === 'maya' ? '🤖 Maya' : m.role === 'admin' ? '👑 Admin (as Maya)' : '💬 Player';
+      var time = m.sent_at ? new Date(m.sent_at).toLocaleString() : '';
+      html += '<div style="margin-bottom:8px; padding:8px 12px; border-radius:8px; font-size:13px; line-height:1.4; background:' + bgColor + '; border-left:3px solid ' + borderColor + ';">' +
+        '<div style="font-size:11px; color:var(--muted); margin-bottom:2px;">' + label + ' · ' + escapeHtml(time) + '</div>' +
+        '<div>' + escapeHtml(m.content) + '</div>' +
+      '</div>';
+    });
+    container.innerHTML = html;
+  }
 
   // ── Maya Notes ──
 

@@ -507,6 +507,62 @@
             color: var(--text);
         }
 
+        /* Start/Stop conversation button */
+        .maya-start-stop-btn {
+            display: block;
+            width: 100%;
+            padding: 14px 28px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #fff;
+            margin-bottom: 12px;
+            transition: opacity 0.2s;
+        }
+        .maya-start-stop-btn:hover { opacity: 0.9; }
+        .maya-start-stop-start { background: var(--success); }
+        .maya-start-stop-stop  { background: var(--danger); }
+
+        /* Conversation History panel */
+        .maya-history-entry {
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            cursor: pointer;
+        }
+        .maya-history-entry:last-child { border-bottom: none; }
+        .maya-history-entry:hover { background: var(--panel-elev); }
+        .maya-history-entry-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .maya-history-meta {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+        .maya-history-preview {
+            font-size: 13px;
+            color: var(--text);
+            margin-top: 4px;
+            opacity: 0.8;
+        }
+        .maya-history-transcript {
+            display: none;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 8px;
+            background: var(--bg);
+        }
+        .maya-history-transcript.expanded { display: block; }
+
         @media (max-width: 768px) {
             .identity-header { flex-direction: column; text-align: center; }
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
@@ -537,7 +593,12 @@
                     <i class="fas fa-chevron-down chevron"></i>
                 </div>
                 <div class="section-body" id="maya-chat-body">
-                    <div id="maya-no-conversation" style="color: var(--muted); padding: 12px;">
+                    <!-- Persistent Start/Stop button -->
+                    <button id="maya-start-stop-btn" class="maya-start-stop-btn maya-start-stop-start" onclick="mayaHandleStartStop()">
+                        Start New Conversation
+                    </button>
+
+                    <div id="maya-no-conversation" style="color: var(--muted); padding: 12px; display:none;">
                         <p style="margin-bottom: 12px;">No active conversation with this player.</p>
                         
                         <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -570,12 +631,7 @@
                                     <span class="toggle-label" id="maya-toggle-label">AI Mode</span>
                                 </div>
                             </div>
-                            <div style="display:flex; gap:6px;">
-                                <button class="btn btn-sm" id="maya-takeover-btn" onclick="mayaTakeOver()" style="display:none; background:var(--accent); color:#fff; border:none; cursor:pointer;">🤖 Maya Take Over</button>
-                                <button class="btn btn-warning btn-sm" onclick="mayaPauseConversation()" id="maya-pause-btn">Pause</button>
-                                <button class="btn btn-success btn-sm" onclick="mayaResumeConversation()" id="maya-resume-btn" style="display:none;">Resume</button>
-                                <button class="btn btn-danger btn-sm" onclick="mayaCloseConversation()">Close</button>
-                            </div>
+                            <!-- Buttons removed: Close, Pause, Resume, TakeOver — replaced by Start/Stop button -->
                         </div>
                         <div id="maya-messages" style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:12px; background:var(--bg);">
                         </div>
@@ -608,6 +664,17 @@
                                onkeydown="if(event.key==='Enter')addMayaNote()">
                         <button class="btn btn-primary" onclick="addMayaNote()"><i class="fas fa-plus"></i> Add note</button>
                     </div>
+                </div>
+            </div>
+
+            <!-- Conversation History -->
+            <div class="section collapsed" id="maya-history-section">
+                <div class="section-header" onclick="toggleSection(this); mayaOnHistoryToggle();">
+                    <h2><i class="fas fa-history"></i> Conversation History</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="maya-history-body">
+                    <p style="color: var(--muted);">Loading...</p>
                 </div>
             </div>
 

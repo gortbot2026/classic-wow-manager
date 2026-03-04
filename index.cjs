@@ -3166,6 +3166,35 @@ app.post('/api/admin/maya/conversations/:conversationId/messages', requireManage
   }
 });
 
+/**
+ * POST /api/admin/maya/conversations/:conversationId/generate
+ *
+ * Placeholder endpoint for triggering Maya to generate her next reply.
+ * Currently a no-op since the persona-bot auto-responds on the next
+ * incoming player message when admin_override is off.
+ * Switching to AI mode re-enables auto-responses; this endpoint exists
+ * so the UI has a hook for future proactive generation.
+ */
+app.post('/api/admin/maya/conversations/:conversationId/generate', requireManagement, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+
+    const convRes = await pool.query(
+      `SELECT id, status, admin_override FROM bot_conversations WHERE id = $1`,
+      [conversationId]
+    );
+    if (convRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    // Currently best-effort: AI mode re-enabled, persona-bot will auto-respond on next player message
+    res.json({ success: true, triggered: false, message: 'AI mode re-enabled; Maya will respond on next player message' });
+  } catch (err) {
+    console.error('[maya-api] Error in generate endpoint:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error triggering generation' });
+  }
+});
+
 // --- Persona Management ---
 
 /** Get current persona config */
@@ -3349,7 +3378,10 @@ app.get('/api/admin/maya/conversations/by-discord/:discordId', requireManagement
       return res.status(400).json({ success: false, message: 'Invalid Discord ID' });
     }
     const convRes = await pool.query(
-      `SELECT * FROM bot_conversations WHERE discord_id = $1 ORDER BY created_at DESC`,
+      `SELECT c.*,
+        (SELECT COUNT(*) FROM bot_messages WHERE conversation_id = c.id) AS message_count,
+        (SELECT content FROM bot_messages WHERE conversation_id = c.id ORDER BY sent_at ASC LIMIT 1) AS first_message
+       FROM bot_conversations c WHERE c.discord_id = $1 ORDER BY c.created_at DESC`,
       [discordId]
     );
     // Get messages for the most recent active conversation
