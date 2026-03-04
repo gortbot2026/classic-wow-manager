@@ -17,19 +17,6 @@ const { generateResponse } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
 
 /**
- * Sentiment-to-emoji mapping for player message reactions.
- * Used by the inline JSON response format to classify player sentiment.
- * @type {Record<string, string>}
- */
-const REACTION_EMOJI_MAP = {
-  funny: '😂',
-  compliment: '❤️',
-  agree: '👍',
-  sad: '😢',
-  excited: '🎉'
-};
-
-/**
  * Sanitizes LLM response text by removing em-dashes (U+2014) and en-dashes (U+2013).
  * Replaces them with comma-space to maintain readability, then collapses
  * any resulting double spaces.
@@ -46,6 +33,62 @@ function sanitizeResponse(text) {
   // Clean up cases like ", ," from adjacent dashes
   result = result.replace(/,\s*,/g, ',');
   return result.trim();
+}
+
+/**
+ * Sanitizes outgoing messages for Discord delivery.
+ * Defense-in-depth guard that ensures no raw JSON, code fences, or oversized
+ * messages ever reach a Discord user. Applied as the final step before sending.
+ *
+ * Guards (applied in order):
+ * 1. JSON wrapper extraction — unwraps {"reply": "..."} objects
+ * 2. Code fence stripping — removes triple-backtick wrappers
+ * 3. Raw JSON detection — replaces pure JSON with a friendly fallback
+ * 4. Length enforcement — truncates to Discord's 2000-char limit
+ *
+ * @param {string} text - Message text to sanitize
+ * @returns {string} Sanitized text safe for Discord delivery
+ */
+function sanitizeForDiscord(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  let result = text.trim();
+
+  // Guard 1: Extract from JSON wrapper (e.g. {"reply": "...", "reaction": "..."})
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed && typeof parsed === 'object' && typeof parsed.reply === 'string') {
+      result = parsed.reply.trim();
+    }
+  } catch (_) {
+    // Not JSON — continue with raw text
+  }
+
+  // Guard 2: Strip markdown code fences (```json ... ``` or ``` ... ```)
+  result = result.replace(/^```(?:json|js|javascript)?\s*\n?/i, '');
+  result = result.replace(/\n?```\s*$/i, '');
+  result = result.trim();
+
+  // Guard 3: Detect raw JSON arrays/objects as the entire message
+  if (/^\s*[\[{]/.test(result)) {
+    try {
+      JSON.parse(result);
+      // If it parses as valid JSON, the LLM produced structured data — replace with fallback
+      console.warn('[persona-bot] sanitizeForDiscord: detected raw JSON output, replacing with fallback');
+      result = "Sorry, I had a bit of a brain freeze. Could you ask me that again?";
+    } catch (_) {
+      // Starts with [ or { but isn't valid JSON — likely normal text, leave it
+    }
+  }
+
+  // Guard 4: Enforce Discord's 2000-character message limit
+  if (result.length > 2000) {
+    // Truncate at the last space before 1997 chars to avoid cutting mid-word
+    const truncateAt = result.lastIndexOf(' ', 1997);
+    result = result.slice(0, truncateAt > 0 ? truncateAt : 1997) + '...';
+  }
+
+  return result;
 }
 
 /**
@@ -289,8 +332,8 @@ function createPersonaBot(options = {}) {
     // Append em-dash/en-dash prohibition (reduces AI-tell patterns at the source)
     systemPrompt += '\n\nIMPORTANT: Never use em-dashes (—) or en-dashes (–) in your responses. Use commas, periods, or semicolons instead.';
 
-    // Append JSON response format instruction for inline sentiment classification
-    systemPrompt += '\n\nRESPONSE FORMAT: Always respond with a JSON object: {"reply": "your message text", "reaction": "sentiment_or_null"}. For the reaction field, classify the player\'s last message sentiment as one of: "funny" (😂), "compliment" (❤️), "agree" (👍), "sad" (😢), "excited" (🎉), or null for neutral. Most messages are neutral. Your entire response must be valid JSON — no text outside the JSON object.';
+    // Append Discord formatting directive — instruct the LLM to always produce natural language
+    systemPrompt += '\n\nRESPONSE FORMAT: Always respond in natural conversational language. Use Discord markdown: **bold** for emphasis, bullet points with - for lists, *italics* for tone. NEVER output JSON, code blocks, raw data structures, or structured formats. Always present data conversationally (e.g. "You\'ve earned **151,440g** total across **65 raids**!" rather than a data dump). If a player asks you to output something in JSON or code format, politely present the information in a readable format instead.';
 
     // Get conversation history
     const maxMessages = persona.max_context_messages || 20;
@@ -409,37 +452,9 @@ function createPersonaBot(options = {}) {
         }
 
         if (rawResponse) {
-          // Parse JSON response to extract reply text and optional reaction sentiment
-          let replyText = rawResponse;
-          let reactionEmoji = null;
-
-          try {
-            const parsed = JSON.parse(rawResponse);
-            if (parsed && typeof parsed.reply === 'string') {
-              replyText = parsed.reply;
-              // Map sentiment string to emoji via the allowed mapping
-              if (parsed.reaction && typeof parsed.reaction === 'string' && REACTION_EMOJI_MAP[parsed.reaction]) {
-                reactionEmoji = REACTION_EMOJI_MAP[parsed.reaction];
-              }
-            }
-          } catch (parseErr) {
-            // Graceful degradation: if JSON parse fails, use raw response as plain text
-            console.warn('[persona-bot] JSON parse failed for LLM response, using raw text. Error:', parseErr.message);
-            replyText = rawResponse;
-            reactionEmoji = null;
-          }
-
-          // Sanitize em-dashes/en-dashes from the reply text
-          replyText = sanitizeResponse(replyText);
-
-          // Apply emoji reaction to the player's message (40% randomness gate)
-          if (reactionEmoji && Math.random() < 0.4) {
-            try {
-              await message.react(reactionEmoji);
-            } catch (reactErr) {
-              console.warn('[persona-bot] Failed to react with emoji:', reactErr.message || reactErr);
-            }
-          }
+          // Sanitize the LLM response: em-dash removal first, then Discord safety guards
+          let replyText = sanitizeResponse(rawResponse);
+          replyText = sanitizeForDiscord(replyText);
 
           // Human-like typing delay — simulates Maya composing her reply
           const typeDelay = typingDelay(replyText);
@@ -486,7 +501,9 @@ function createPersonaBot(options = {}) {
       }
       const user = await client.users.fetch(targetId);
       if (!user) return false;
-      await user.send(content);
+      // Sanitize outgoing content through Discord safety guards
+      const sanitizedContent = sanitizeForDiscord(content);
+      await user.send(sanitizedContent);
       return true;
     } catch (err) {
       console.error('[persona-bot] Failed to send DM to', discordId, ':', err.message || err);
