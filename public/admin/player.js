@@ -1106,26 +1106,75 @@
   };
 
   /** Start a new conversation */
+  /**
+   * Fetches available Maya templates and populates the template dropdown.
+   * Called once on page load when the Maya Chat section initializes.
+   */
+  function fetchTemplates() {
+    fetch('/api/admin/maya/templates', { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.success || !data.templates) return;
+        var select = document.getElementById('maya-template-select');
+        if (!select) return;
+        data.templates.forEach(function(tpl) {
+          var option = document.createElement('option');
+          option.value = tpl.id;
+          option.textContent = tpl.name + ' (' + tpl.trigger_type + ')';
+          select.appendChild(option);
+        });
+      })
+      .catch(function() {
+        // Templates API unavailable — dropdown stays with default option only
+      });
+  }
+
+  /**
+   * Starts a Maya conversation using the selected template and/or custom message.
+   * Handles 409 (active conversation exists) with an inline error message.
+   */
   window.mayaStartConversation = function() {
-    var openingMessage = prompt('Opening message from Maya (or leave empty for default):');
-    if (openingMessage === null) return; // Cancelled
+    var select = document.getElementById('maya-template-select');
+    var textarea = document.getElementById('maya-custom-message');
+    var errorDiv = document.getElementById('maya-start-error');
+    errorDiv.style.display = 'none';
+
+    var templateId = select ? select.value : '';
+    var customMessage = textarea ? textarea.value.trim() : '';
+
+    var payload = { discordId: discordId };
+    if (templateId) payload.templateId = templateId;
+    if (customMessage) payload.openingMessage = customMessage;
 
     fetch('/api/admin/maya/conversations', {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        discordId: discordId,
-        openingMessage: openingMessage || undefined
-      })
+      body: JSON.stringify(payload)
     })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (r.status === 409) {
+        return r.json().then(function(data) {
+          errorDiv.innerHTML = '⚠️ An active conversation already exists for this player. <a href="#" onclick="loadMayaChat(); return false;" style="color: var(--accent); text-decoration: underline;">View conversation</a>';
+          errorDiv.style.display = 'block';
+          return null;
+        });
+      }
+      return r.json();
+    })
     .then(function(data) {
+      if (!data) return;
       if (data.success) {
+        if (textarea) textarea.value = '';
         loadMayaChat();
       } else {
-        alert(data.message || 'Failed to start conversation');
+        errorDiv.textContent = data.message || 'Failed to start conversation';
+        errorDiv.style.display = 'block';
       }
+    })
+    .catch(function(err) {
+      errorDiv.textContent = 'Network error — please try again';
+      errorDiv.style.display = 'block';
     });
   };
 
@@ -1133,10 +1182,12 @@
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
       loadMayaChat();
+      fetchTemplates();
       initMayaSocket();
     });
   } else {
     loadMayaChat();
+    fetchTemplates();
     initMayaSocket();
   }
 })();

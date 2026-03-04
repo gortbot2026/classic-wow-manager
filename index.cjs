@@ -1137,6 +1137,38 @@ Important guidelines:
       console.log('✅ Seeded default Maya persona');
     }
 
+    // Seed default templates if none exist
+    const templateCount = await pool.query(`SELECT COUNT(*) AS cnt FROM bot_templates`);
+    if (parseInt(templateCount.rows[0].cnt) === 0) {
+      await pool.query(`
+        INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        'tpl-post-raid-checkin-default',
+        'Post-raid check-in',
+        'post_raid',
+        'Hey {{player_name}}! Great job in the raid tonight 🎉 How did you feel about your performance? Anything you want to work on for next time?',
+        'This is a post-raid check-in. Congratulate the player on participating. Reference their DPS/HPS numbers if available. Ask how they felt about the raid. If they are a PUG player (not in guild), subtly gauge interest in joining 1Principles. Keep it casual and encouraging.',
+        null,
+        false
+      ]);
+      await pool.query(`
+        INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        'tpl-guild-invite-default',
+        'Guild invite',
+        'manual',
+        'Hey {{player_name}}! I noticed you\'ve been raiding with us lately and putting up great numbers. Have you thought about joining 1Principles as a full member? 😊',
+        'This is a recruitment conversation. Introduce 1Principles guild, highlight benefits (consistent raids, fair GDKP, community). Reference the player\'s raid history and performance data. Be genuine and not pushy — if they are not interested, respect that gracefully.',
+        null,
+        false
+      ]);
+      console.log('✅ Seeded default Maya templates');
+    }
+
     console.log('✅ Maya persona bot tables initialized');
   } catch (error) {
     console.error('❌ Error initializing Maya tables:', error?.message || error);
@@ -13527,8 +13559,9 @@ app.post('/api/roster/:eventId/convert-placeholder', requireRosterManager, async
             ON CONFLICT (discord_id, character_name, class) DO NOTHING`,
             [discordId, characterName, characterClass]
         );
-        // Maya welcome trigger for new player
+        /* MAYA AUTO-TRIGGER DISABLED — re-enable when ready for production
         fireMayaTrigger('welcome', discordId, characterName);
+        */
         
         // Update the placeholder with Discord ID
         await client.query(`
@@ -13672,8 +13705,9 @@ app.post('/api/roster/:eventId/add-character', requireRosterManager, async (req,
             ON CONFLICT (discord_id, character_name, class) DO NOTHING`,
             [discordId, characterName, characterClass]
         );
-        // Maya welcome trigger for new player
+        /* MAYA AUTO-TRIGGER DISABLED — re-enable when ready for production
         fireMayaTrigger('welcome', discordId, characterName);
+        */
 
         // Then, upsert into roster_overrides using explicit existence check
         const existingOverride = await client.query(
@@ -19968,7 +20002,7 @@ app.post('/api/rewards-snapshot/:eventId/publish', requireManagement, async (req
     );
     await client.query('COMMIT');
     try { broadcastUpdate('raidlogs', eventId, { type: 'snapshot_published' }); } catch {}
-    // Maya auto-trigger: fire post_raid templates for confirmed attendees
+    /* MAYA AUTO-TRIGGER DISABLED — re-enable when ready for production
     setImmediate(async () => {
       try {
         if (!personaBotInstance) return;
@@ -19984,6 +20018,7 @@ app.post('/api/rewards-snapshot/:eventId/publish', requireManagement, async (req
         console.error('[maya-trigger] Post-raid trigger error:', triggerErr?.message || triggerErr);
       }
     });
+    */
     return res.json({ success: true, header: finalHdr.rows && finalHdr.rows[0] ? finalHdr.rows[0] : null });
   } catch (error) {
     if (client) await client.query('ROLLBACK');
@@ -24138,13 +24173,12 @@ app.post('/api/loot/import', async (req, res) => {
     console.log(`[LOOT] Successfully imported ${insertedCount} items for event ${eventId}`);
 
     try { broadcastUpdate('loot', eventId, { type: 'loot_changed', byUserId: req.user?.id || null, count: insertedCount }); } catch {}
-    // Maya item_won trigger: fire for each loot item that has a player
+    /* MAYA AUTO-TRIGGER DISABLED — re-enable when ready for production
     setImmediate(async () => {
       try {
         if (!personaBotInstance) return;
         for (const item of items) {
           if (!item.player_name) continue;
-          // Look up discord_id from player name
           const playerRes = await pool.query(
             `SELECT discord_id FROM players WHERE character_name = $1 LIMIT 1`,
             [item.player_name]
@@ -24160,6 +24194,7 @@ app.post('/api/loot/import', async (req, res) => {
         console.error('[maya-trigger] Item-won trigger error:', triggerErr?.message || triggerErr);
       }
     });
+    */
     res.json({
       success: true,
       message: `Successfully imported ${insertedCount} items`,

@@ -598,10 +598,23 @@
                 </div>
                 <div class="section-body" id="maya-chat-body">
                     <div id="maya-no-conversation" style="color: var(--muted); padding: 12px;">
-                        <p>No active conversation with this player.</p>
-                        <button class="btn btn-primary" onclick="mayaStartConversation()" style="margin-top:8px;">
-                            <i class="fas fa-plus"></i> Start Conversation
-                        </button>
+                        <p style="margin-bottom: 12px;">No active conversation with this player.</p>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <label style="font-size: 13px; color: var(--text); font-weight: 500;">Select a template</label>
+                            <select id="maya-template-select" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 14px; width: 100%;">
+                                <option value="">No template (custom message only)</option>
+                            </select>
+
+                            <label style="font-size: 13px; color: var(--text); font-weight: 500;">Custom opening message <span style="color: var(--muted); font-weight: 400;">(optional — overrides template opening)</span></label>
+                            <textarea id="maya-custom-message" rows="3" placeholder="Enter a custom opening message..." style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 14px; width: 100%; resize: vertical; font-family: inherit;"></textarea>
+
+                            <div id="maya-start-error" style="display: none; background: rgba(239,68,68,0.15); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: #f87171; font-size: 13px;"></div>
+
+                            <button class="btn btn-primary" onclick="mayaStartConversation()" style="margin-top: 4px; align-self: flex-start;">
+                                <i class="fas fa-paper-plane"></i> Start Conversation with Maya
+                            </button>
+                        </div>
                     </div>
                     <div id="maya-conversation" style="display:none;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">

@@ -17,6 +17,13 @@ const { generateResponse } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext } = require('./persona-context.cjs');
 
 /**
+ * TEST MODE: When set, all Maya DMs go to this Discord ID instead of the actual player.
+ * Remove this override when ready to go live.
+ * @type {string|null}
+ */
+const MAYA_TEST_MODE_DISCORD_ID = '492023474437619732';
+
+/**
  * In-memory lock map to prevent concurrent LLM calls per conversation.
  * Key: conversationId, Value: true if generation in progress.
  * @type {Map<string, boolean>}
@@ -227,10 +234,27 @@ function createPersonaBot(options = {}) {
     // Only process DMs
     if (message.channel.type !== ChannelType.DM) return;
 
-    const discordId = message.author.id;
+    let discordId = message.author.id;
     const playerName = message.author.globalName || message.author.username || null;
 
     try {
+      // TEST MODE: If the incoming DM is from the test user, route to the most recently
+      // updated active conversation (which belongs to the real target player, not the test user)
+      if (MAYA_TEST_MODE_DISCORD_ID && discordId === MAYA_TEST_MODE_DISCORD_ID) {
+        const recentConv = await pool.query(
+          `SELECT id, discord_id, player_name, status, admin_override, template_id
+           FROM bot_conversations
+           WHERE status = 'active'
+           ORDER BY updated_at DESC LIMIT 1`
+        );
+        if (recentConv.rows.length > 0) {
+          const realConv = recentConv.rows[0];
+          console.log(`[persona-bot] TEST MODE: Routing reply from ${discordId} to conversation ${realConv.id} (player: ${realConv.discord_id})`);
+          // Use the real player's discord_id for context building
+          discordId = realConv.discord_id;
+        }
+      }
+
       // Find or create conversation
       const conversation = await findOrCreateConversation(discordId, playerName);
 
@@ -313,7 +337,12 @@ function createPersonaBot(options = {}) {
   async function sendDM(discordId, content) {
     if (!ready || !client) return false;
     try {
-      const user = await client.users.fetch(discordId);
+      // TEST MODE: redirect DM to test Discord ID while preserving real player in conversation data
+      const targetId = MAYA_TEST_MODE_DISCORD_ID || discordId;
+      if (MAYA_TEST_MODE_DISCORD_ID && targetId !== discordId) {
+        console.log(`[persona-bot] TEST MODE: Redirecting DM from ${discordId} to ${targetId}`);
+      }
+      const user = await client.users.fetch(targetId);
       if (!user) return false;
       await user.send(content);
       return true;
