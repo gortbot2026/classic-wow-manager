@@ -1,7 +1,7 @@
 # Security: DPS/HPS Calculation Feature
 
 **Feature:** Admin player page Avg DPS / Avg HPS calculation  
-**Reviewed:** 2026-03-04  
+**Reviewed:** 2026-03-04 (updated v2 post-QA bug fix)  
 **Reviewer:** Security Gort  
 **Status:** PASS
 
@@ -45,6 +45,13 @@
 - `totalTime` is sourced from the WCL external API — if the API returns an unexpected value (e.g. 0, negative), DPS/HPS defaults to 0 and is excluded from averages by the `> 0` filter. Safe.
 - Existing `log_data` rows with `dps_value=0` / `hps_value=0` are excluded from all averages by `> 0` filter. No stale data leaks into metrics.
 - `damage_amount` / `healing_amount` columns (raw raid totals) are unchanged and not used for DPS/HPS display.
+
+## Startup Migration Safety
+
+- `ALTER TABLE log_data ADD COLUMN IF NOT EXISTS dps_value/hps_value` runs at `pool.connect()` startup
+- Error handling catches `42P01` (table does not exist yet) — safe to run before `ensureLogDataTable()` creates the table
+- `IF NOT EXISTS` makes the migration idempotent — safe to re-run on every restart
+- No destructive migration operations performed (ADD COLUMN only)
 
 ## Dependency Notes
 
