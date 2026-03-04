@@ -890,7 +890,6 @@
   function initMayaSocket() {
     if (typeof io === 'undefined') return;
     try {
-      // Get user info from page context for auth
       var userId = null;
       var metaEl = document.querySelector('meta[name="user-id"]');
       if (metaEl) userId = metaEl.getAttribute('content');
@@ -898,10 +897,6 @@
       mayaSocket = io('/maya-admin', {
         auth: { userId: userId || 'admin' },
         transports: ['websocket', 'polling']
-      });
-
-      mayaSocket.on('connect', function() {
-        console.log('[maya-chat] Connected to /maya-admin');
       });
 
       mayaSocket.on('maya:message', function(data) {
@@ -925,14 +920,39 @@
       });
 
       mayaSocket.on('connect_error', function() {
-        // Socket auth failed — that's okay, just disable real-time
+        // Socket auth failed — disable real-time silently
       });
     } catch (e) {
       // Socket.IO not available
     }
   }
 
-  /** Load Maya conversation for this player */
+  /**
+   * Sets the toggle switch visual state and updates input/button visibility.
+   * @param {boolean} isManual - true for Manual mode, false for AI mode
+   */
+  function setToggleState(isManual) {
+    var track = document.getElementById('maya-toggle-track');
+    var label = document.getElementById('maya-toggle-label');
+    var input = document.getElementById('maya-message-input');
+    var takeoverBtn = document.getElementById('maya-takeover-btn');
+
+    if (isManual) {
+      track.classList.add('manual');
+      label.textContent = 'Manual Mode';
+      input.disabled = false;
+      input.style.opacity = '1';
+      takeoverBtn.style.display = '';
+    } else {
+      track.classList.remove('manual');
+      label.textContent = 'AI Mode';
+      input.disabled = true;
+      input.style.opacity = '0.5';
+      takeoverBtn.style.display = 'none';
+    }
+  }
+
+  /** Load Maya conversation for this player (Fix 1: only show active/paused) */
   function loadMayaChat() {
     fetch('/api/admin/maya/conversations/by-discord/' + discordId, { credentials: 'include' })
       .then(function(r) { return r.json(); })
@@ -941,11 +961,9 @@
         if (data.activeConversation) {
           currentConversation = data.activeConversation;
           showConversation(data.activeConversation, data.messages);
-        } else if (data.conversations && data.conversations.length > 0) {
-          // Show most recent (even if closed)
-          currentConversation = data.conversations[0];
-          showConversation(data.conversations[0], data.messages);
         } else {
+          // No active/paused conversation — always show start panel
+          currentConversation = null;
           document.getElementById('maya-no-conversation').style.display = 'block';
           document.getElementById('maya-conversation').style.display = 'none';
         }
@@ -954,8 +972,10 @@
         // API error — hide maya section silently
       });
   }
+  // Expose for inline onclick references
+  window.loadMayaChat = loadMayaChat;
 
-  /** Render conversation UI */
+  /** Render conversation UI (Fixes 2, 3: toggle + takeover + input state) */
   function showConversation(conv, messages) {
     document.getElementById('maya-no-conversation').style.display = 'none';
     document.getElementById('maya-conversation').style.display = 'block';
@@ -965,8 +985,12 @@
     statusEl.textContent = conv.status;
     statusEl.className = 'badge badge-' + conv.status;
 
-    // Admin override toggle
-    document.getElementById('maya-admin-override').checked = conv.admin_override;
+    // Toggle state: paused/closed → force manual; otherwise use admin_override
+    var isManual = conv.admin_override;
+    if (conv.status === 'paused' || conv.status === 'closed') {
+      isManual = true;
+    }
+    setToggleState(isManual);
 
     // Pause/Resume buttons
     document.getElementById('maya-pause-btn').style.display = conv.status === 'active' ? '' : 'none';
@@ -1031,11 +1055,11 @@
   window.mayaSendMessage = function() {
     if (!currentConversation) return;
     var input = document.getElementById('maya-message-input');
+    if (input.disabled) return;
     var content = input.value.trim();
     if (!content) return;
 
     input.value = '';
-    // Optimistic UI — append immediately
     appendMessage('admin', content, new Date().toISOString());
     scrollMessages();
 
@@ -1053,21 +1077,63 @@
     });
   };
 
-  /** Toggle AI/Manual mode */
+  /**
+   * Toggle AI/Manual mode via the toggle switch (Fix 3).
+   * Clicking the toggle flips the current state.
+   */
   window.mayaToggleOverride = function() {
     if (!currentConversation) return;
-    var override = document.getElementById('maya-admin-override').checked;
+    var track = document.getElementById('maya-toggle-track');
+    var isCurrentlyManual = track.classList.contains('manual');
+    var newOverride = !isCurrentlyManual;
+
+    setToggleState(newOverride);
+
     fetch('/api/admin/maya/conversations/' + currentConversation.id, {
       method: 'PATCH',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ admin_override: override })
+      body: JSON.stringify({ admin_override: newOverride })
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
-        currentConversation.admin_override = override;
+        currentConversation.admin_override = newOverride;
+      } else {
+        // Revert on failure
+        setToggleState(isCurrentlyManual);
       }
+    })
+    .catch(function() {
+      setToggleState(isCurrentlyManual);
+    });
+  };
+
+  /**
+   * Maya Take Over button handler (Fix 2).
+   * Switches from Manual back to AI mode.
+   */
+  window.mayaTakeOver = function() {
+    if (!currentConversation) return;
+
+    setToggleState(false);
+
+    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_override: false })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        currentConversation.admin_override = false;
+      } else {
+        setToggleState(true);
+      }
+    })
+    .catch(function() {
+      setToggleState(true);
     });
   };
 
@@ -1105,7 +1171,6 @@
     }).then(function() { loadMayaChat(); });
   };
 
-  /** Start a new conversation */
   /**
    * Fetches available Maya templates and populates the template dropdown.
    * Called once on page load when the Maya Chat section initializes.
@@ -1131,20 +1196,23 @@
 
   /**
    * Starts a Maya conversation using the selected template and/or custom message.
-   * Handles 409 (active conversation exists) with an inline error message.
+   * Sends preferred_name from the address input (Fix 4 UI).
    */
   window.mayaStartConversation = function() {
     var select = document.getElementById('maya-template-select');
     var textarea = document.getElementById('maya-custom-message');
+    var nameInput = document.getElementById('maya-preferred-name');
     var errorDiv = document.getElementById('maya-start-error');
     errorDiv.style.display = 'none';
 
     var templateId = select ? select.value : '';
     var customMessage = textarea ? textarea.value.trim() : '';
+    var preferredName = nameInput ? nameInput.value.trim() : '';
 
     var payload = { discordId: discordId };
     if (templateId) payload.templateId = templateId;
     if (customMessage) payload.openingMessage = customMessage;
+    if (preferredName) payload.preferredName = preferredName;
 
     fetch('/api/admin/maya/conversations', {
       method: 'POST',
@@ -1154,7 +1222,7 @@
     })
     .then(function(r) {
       if (r.status === 409) {
-        return r.json().then(function(data) {
+        return r.json().then(function() {
           errorDiv.innerHTML = '⚠️ An active conversation already exists for this player. <a href="#" onclick="loadMayaChat(); return false;" style="color: var(--accent); text-decoration: underline;">View conversation</a>';
           errorDiv.style.display = 'block';
           return null;
@@ -1166,13 +1234,14 @@
       if (!data) return;
       if (data.success) {
         if (textarea) textarea.value = '';
+        if (nameInput) nameInput.value = '';
         loadMayaChat();
       } else {
         errorDiv.textContent = data.message || 'Failed to start conversation';
         errorDiv.style.display = 'block';
       }
     })
-    .catch(function(err) {
+    .catch(function() {
       errorDiv.textContent = 'Network error — please try again';
       errorDiv.style.display = 'block';
     });

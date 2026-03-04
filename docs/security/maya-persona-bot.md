@@ -72,6 +72,26 @@ Triggers check for existing non-closed conversations before creating new ones:
 
 Conversation messages stored in `bot_messages` with `role` field (`maya`, `user`, `admin`) providing a full audit trail of who sent what and when. Admin-injected messages clearly marked as `role: 'admin'`.
 
+## Initialization Resilience (Decoupling Fix — 2026-03-04)
+
+Maya bot startup is decoupled from Socket.IO site-chat initialization in `index.cjs`. Both run as independent try/catch blocks inside the same async IIFE:
+
+**Block 1 — Socket.IO + maya-admin namespace** (may fail due to SSL/network errors):
+- If this block fails, `app.get('io')` returns `undefined`.
+- `maya-admin` namespace auth middleware is correctly inside this block (requires a live `io` instance).
+
+**Block 2 — Maya persona bot** (runs unconditionally after Block 1):
+- Calls `createPersonaBot({ pool, io: app.get('io') })`.
+- When `io` is `undefined`, `emitToAdmin()` in `persona-bot.cjs` returns early (`if (!io) return`) — no crash.
+- All core Maya functionality (Discord DMs, LLM responses, DB persistence) is unaffected without Socket.IO.
+- Real-time admin dashboard updates degrade gracefully to no-ops.
+
+**Security properties preserved:**
+- `PERSONA_BOT_TOKEN` still sourced from environment variable only.
+- Auth middleware on `/maya-admin` namespace unchanged.
+- Error messages in catch blocks log `err.message` only — no stack traces, no credential leakage.
+- No new packages, no new user input surfaces, no query changes.
+
 ## Known Notes (Non-Blocking)
 
 1. **`model` field**: No allowlist validation on `model`/`model_override`. LOW risk — management-only access.

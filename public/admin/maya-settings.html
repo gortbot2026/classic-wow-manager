@@ -331,6 +331,31 @@
                 <label>Agent Instructions (injected into system prompt for this template)</label>
                 <textarea id="tpl-agent-instructions" placeholder="Focus on congratulating the player and asking about their experience..."></textarea>
             </div>
+            <!-- Available Variables Reference (Fix 5) -->
+            <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 16px;">
+                <div style="display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;" onclick="document.getElementById('var-ref-list').style.display = document.getElementById('var-ref-list').style.display === 'none' ? 'block' : 'none'; this.querySelector('.var-chevron').classList.toggle('collapsed')">
+                    <span style="font-size: 13px; font-weight: 600; color: var(--text);">📋 Available Variables</span>
+                    <i class="fas fa-chevron-down var-chevron collapsed" style="font-size: 11px; color: var(--muted); transition: transform 0.2s;"></i>
+                </div>
+                <div id="var-ref-list" style="display: none; margin-top: 10px;">
+                    <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">Click a variable to insert it at the cursor position in the last-focused textarea.</div>
+                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px;">
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{player_name}}')">{{player_name}}</code><span style="color:var(--muted);">Player's display name</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{character_name}}')">{{character_name}}</code><span style="color:var(--muted);">Main character name</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{discord_name}}')">{{discord_name}}</code><span style="color:var(--muted);">Discord username</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{guild_name}}')">{{guild_name}}</code><span style="color:var(--muted);">Guild name (1Principles)</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{raid_name}}')">{{raid_name}}</code><span style="color:var(--muted);">Raid/event name</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{gold_earned}}')">{{gold_earned}}</code><span style="color:var(--muted);">Gold earned in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{items_won}}')">{{items_won}}</code><span style="color:var(--muted);">Items won in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{raids_attended}}')">{{raids_attended}}</code><span style="color:var(--muted);">Total raids attended</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{last_raid_date}}')">{{last_raid_date}}</code><span style="color:var(--muted);">Date of most recent raid</span>
+                    </div>
+                </div>
+            </div>
+            <style>
+                .var-chevron { transform: rotate(-90deg); }
+                .var-chevron:not(.collapsed) { transform: rotate(0deg); }
+            </style>
             <div class="form-group">
                 <label>Model Override (optional)</label>
                 <select id="tpl-model-override">

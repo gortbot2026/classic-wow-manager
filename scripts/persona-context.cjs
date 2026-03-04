@@ -212,4 +212,101 @@ async function buildVoiceContext(pool, discordId, characterNames) {
   }
 }
 
-module.exports = { buildPlayerContext, buildVoiceContext };
+/**
+ * Resolves the best name to address a player in conversation.
+ * Uses a 4-step resolution chain:
+ *   1. Conversation's preferred_name (admin override)
+ *   2. Previous conversation's preferred_name
+ *   3. Character name from most recent raid
+ *   4. Sanitized Discord name (strip non-letters, title-case)
+ * Falls back to null if no suitable name is found.
+ *
+ * After resolution, stores the result back on the conversation for consistency.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} discordId - Player's Discord snowflake ID
+ * @param {string} conversationId - Current conversation ID
+ * @returns {Promise<string|null>} Resolved player name or null
+ */
+async function resolvePlayerName(pool, discordId, conversationId) {
+  try {
+    // Step 1: Check this conversation's preferred_name
+    const convRes = await pool.query(
+      `SELECT preferred_name FROM bot_conversations WHERE id = $1`,
+      [conversationId]
+    );
+    if (convRes.rows.length > 0 && convRes.rows[0].preferred_name) {
+      return convRes.rows[0].preferred_name;
+    }
+
+    let resolvedName = null;
+
+    // Step 2: Check previous conversations for a preferred_name
+    const prevRes = await pool.query(
+      `SELECT preferred_name FROM bot_conversations
+       WHERE discord_id = $1 AND preferred_name IS NOT NULL AND id != $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [discordId, conversationId]
+    );
+    if (prevRes.rows.length > 0 && prevRes.rows[0].preferred_name) {
+      resolvedName = prevRes.rows[0].preferred_name;
+    }
+
+    // Step 3: Character name from most recent raid
+    if (!resolvedName) {
+      const charRes = await pool.query(
+        `SELECT pcl.character_name FROM player_confirmed_logs pcl
+         WHERE pcl.discord_id = $1
+         ORDER BY pcl.id DESC LIMIT 1`,
+        [discordId]
+      );
+      if (charRes.rows.length > 0 && charRes.rows[0].character_name) {
+        resolvedName = charRes.rows[0].character_name;
+      }
+    }
+
+    // Step 4: Sanitized Discord name
+    if (!resolvedName) {
+      const playerRes = await pool.query(
+        `SELECT player_name FROM bot_conversations WHERE id = $1`,
+        [conversationId]
+      );
+      let rawName = playerRes.rows.length > 0 ? playerRes.rows[0].player_name : null;
+
+      // Fallback to players table
+      if (!rawName) {
+        const pRes = await pool.query(
+          `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`,
+          [discordId]
+        );
+        rawName = pRes.rows.length > 0 ? pRes.rows[0].character_name : null;
+      }
+
+      if (rawName) {
+        // Strip all non-letter characters
+        const lettersOnly = rawName.replace(/[^a-zA-Z]/g, '');
+        if (lettersOnly.length >= 3) {
+          // Title-case: first letter uppercase, rest lowercase
+          resolvedName = lettersOnly.charAt(0).toUpperCase() + lettersOnly.slice(1).toLowerCase();
+        }
+      }
+    }
+
+    // Store resolved name on the conversation for future reference
+    if (resolvedName) {
+      await pool.query(
+        `UPDATE bot_conversations SET preferred_name = $1 WHERE id = $2`,
+        [resolvedName, conversationId]
+      ).catch(() => {
+        // Non-critical — don't fail if update errors
+      });
+    }
+
+    return resolvedName;
+  } catch (err) {
+    console.error('[persona-context] Error resolving player name:', err.message || err);
+    return null;
+  }
+}
+
+module.exports = { buildPlayerContext, buildVoiceContext, resolvePlayerName };

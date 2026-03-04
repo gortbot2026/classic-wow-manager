@@ -232,6 +232,39 @@ function escHtml(str) {
   return div.innerHTML;
 }
 
+// ─── Template Variable Insert (Fix 5) ───────────────────────────────────
+
+/**
+ * Tracks the last-focused textarea so variable clicks insert at the right place.
+ * @type {HTMLTextAreaElement|null}
+ */
+let lastFocusedTextarea = null;
+
+/**
+ * Inserts a template variable string at the cursor position of the
+ * last-focused textarea (opening message or agent instructions).
+ *
+ * @param {string} varName - The variable string to insert, e.g. '{{player_name}}'
+ */
+function insertVariable(varName) {
+  var textarea = lastFocusedTextarea;
+  if (!textarea) {
+    // Default to opening message textarea
+    textarea = document.getElementById('tpl-opening-message');
+  }
+  if (!textarea) return;
+
+  textarea.focus();
+  var start = textarea.selectionStart;
+  var end = textarea.selectionEnd;
+  var value = textarea.value;
+  textarea.value = value.substring(0, start) + varName + value.substring(end);
+  // Place cursor after inserted variable
+  var newPos = start + varName.length;
+  textarea.selectionStart = newPos;
+  textarea.selectionEnd = newPos;
+}
+
 // ─── Init ───────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -239,4 +272,10 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTemplates();
   loadStats();
   loadTranscripts();
+
+  // Track last-focused textarea for variable insertion (Fix 5)
+  var openingMsg = document.getElementById('tpl-opening-message');
+  var agentInstr = document.getElementById('tpl-agent-instructions');
+  if (openingMsg) openingMsg.addEventListener('focus', function() { lastFocusedTextarea = openingMsg; });
+  if (agentInstr) agentInstr.addEventListener('focus', function() { lastFocusedTextarea = agentInstr; });
 });

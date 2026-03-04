@@ -1063,6 +1063,9 @@ async function initializeMayaTables() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_conversations_discord_id ON bot_conversations(discord_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_conversations_status ON bot_conversations(status)`);
 
+    // Migration: add preferred_name column for smart name resolution (Fix 4)
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS preferred_name TEXT`);
+
     // bot_messages — Individual messages in a conversation
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bot_messages (
@@ -2898,7 +2901,7 @@ app.get('/api/admin/maya/conversations/:conversationId', requireManagement, asyn
 /** Start a new conversation */
 app.post('/api/admin/maya/conversations', requireManagement, express.json(), async (req, res) => {
   try {
-    const { discordId, templateId, openingMessage } = req.body;
+    const { discordId, templateId, openingMessage, preferredName } = req.body;
     if (!discordId) {
       return res.status(400).json({ success: false, message: 'discordId is required' });
     }
@@ -2924,9 +2927,9 @@ app.post('/api/admin/maya/conversations', requireManagement, express.json(), asy
 
     const convId = require('crypto').randomUUID();
     await pool.query(
-      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id)
-       VALUES ($1, $2, $3, 'active', 'admin', $4)`,
-      [convId, discordId, playerName, templateId || null]
+      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, preferred_name)
+       VALUES ($1, $2, $3, 'active', 'admin', $4, $5)`,
+      [convId, discordId, playerName, templateId || null, preferredName || null]
     );
 
     // Determine opening message
@@ -3252,7 +3255,8 @@ app.get('/api/admin/maya/conversations/by-discord/:discordId', requireManagement
     );
     // Get messages for the most recent active conversation
     let messages = [];
-    const activeConv = convRes.rows.find(c => c.status === 'active') || convRes.rows[0];
+    // Only return active or paused conversations — not closed ones (Fix 1)
+    const activeConv = convRes.rows.find(c => c.status === 'active') || convRes.rows.find(c => c.status === 'paused') || null;
     if (activeConv) {
       const msgRes = await pool.query(
         `SELECT id, role, content, model_used, sent_at FROM bot_messages 

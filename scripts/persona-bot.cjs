@@ -14,7 +14,7 @@
 const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js');
 const crypto = require('crypto');
 const { generateResponse } = require('./persona-llm.cjs');
-const { buildPlayerContext, buildVoiceContext } = require('./persona-context.cjs');
+const { buildPlayerContext, buildVoiceContext, resolvePlayerName } = require('./persona-context.cjs');
 
 /**
  * TEST MODE: When set, all Maya DMs go to this Discord ID instead of the actual player.
@@ -202,6 +202,14 @@ function createPersonaBot(options = {}) {
     const voiceContext = await buildVoiceContext(pool, discordId, charNames);
     if (voiceContext) {
       systemPrompt += '\n\n' + voiceContext;
+    }
+
+    // Resolve player name and inject addressing directive
+    const playerName = await resolvePlayerName(pool, discordId, conversationId);
+    if (playerName) {
+      systemPrompt += '\n\nAddress this player as: ' + playerName;
+    } else {
+      systemPrompt += '\n\nDo not use the player\'s name. Use greetings like \'Hey there\', \'Hi!\', \'Hey!\' instead.';
     }
 
     // Get conversation history
