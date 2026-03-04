@@ -1,169 +1,101 @@
-# Security: Maya Discord AI Persona Bot
+# Security: Maya Persona Bot (`scripts/persona-bot.cjs`)
 
-**Feature:** Maya — Discord AI Persona Agent (Phase 1 + 2)  
-**Reviewed:** 2026-03-04  
-**Verdict:** PASS  
+_Last reviewed: 2026-03-04 by Security Gort_
 
 ---
 
-## Authentication Requirements
+## Overview
 
-All Maya admin API endpoints are protected by `requireManagement` middleware:
+Maya is an AI persona Discord bot that DMs guild players. She connects via `PERSONA_BOT_TOKEN`, listens for DMs, and generates responses via the Anthropic API. This document covers security requirements for the persona bot module.
 
-- `GET/POST/PATCH /api/admin/maya/conversations`
-- `POST /api/admin/maya/conversations/:id/messages`
-- `GET/PATCH /api/admin/maya/persona`
-- `GET/POST/PATCH/DELETE /api/admin/maya/templates`
-- `GET /api/admin/maya/stats`
-- `GET /api/admin/maya/conversations/by-discord/:discordId`
+---
 
-The `/admin/maya-settings` static HTML page is served without server-side auth (consistent with all other admin pages in the codebase). Access to actual data requires management role via session/cookie on all API endpoints.
+## Authentication & Secrets
 
-## Authorization Rules
+- **Discord token** — loaded exclusively from `process.env.PERSONA_BOT_TOKEN`. If missing, the bot disables itself gracefully (no crash, no partial auth).
+- **No hardcoded credentials** — all secrets in environment variables only.
+- **⚠️ Note:** `MAYA_TEST_MODE_DISCORD_ID` is currently hardcoded as a Discord user ID (not a secret/credential, but a static test routing override). For production hardening, consider moving to `process.env.MAYA_TEST_MODE_DISCORD_ID` so it can be cleared without a code deploy.
 
-- **Only management-role users** can view conversation content, send messages as Maya, or configure the persona.
-- **Players can only interact via Discord DMs** — they have no direct API access to Maya endpoints.
-- Socket.IO `/maya-admin` namespace enforces management role via `hasManagementRoleById(userId)` on connection.
-
-## Bot Safety Controls
-
-- **DM-only**: Bot checks `message.channel.type !== ChannelType.DM` — Maya never responds in guild channels.
-- **No self-response**: `message.author.bot` check prevents bot loops and auto-responses to own messages.
-- **Conversation gating**: Bot checks `status` and `admin_override` flags from DB before responding — DB-backed, survives restarts.
-- **Generation lock**: In-memory `Map<conversationId, boolean>` prevents concurrent LLM calls per conversation (DoS protection). Note: lock resets on dyno restart, but DB status remains authoritative.
+---
 
 ## Input Validation
 
-| Field | Validation |
-|-------|-----------|
-| `discordId` (by-discord route) | Regex `^[0-9]{1,20}$` enforced |
-| `status` (PATCH conversation) | Enum check: `['active', 'paused', 'closed']` |
-| `trigger_type` (templates) | Enum check: `['post_raid', 'welcome', 'item_won', 'manual']` |
-| `content` (admin message) | Non-empty string check |
-| `discordId` (POST conversation) | Required check |
-| Template required fields | `name`, `trigger_type`, `opening_message`, `agent_instructions` |
+### LLM Response Parsing (JSON)
+- `handleDM()` attempts `JSON.parse()` on the LLM response to extract `{reply, reaction}`.
+- Wrapped in `try/catch` — parse failures fall back to treating the raw string as the reply with no reaction. No crash possible.
+- `parsed.reply` must be `typeof === 'string'` before use.
 
-**Note:** `model` and `model_override` fields accept arbitrary strings (not validated against an allowlist). Since only management users can set these, risk is low — an invalid model name would cause an Anthropic API error, not a security issue. Consider adding an allowlist (`['claude-haiku-4-5', 'claude-sonnet-4-5']`) in a future sprint.
+### Emoji Reaction Allowlist
+- `parsed.reaction` (a sentiment string from Claude) is **always** resolved through `REACTION_EMOJI_MAP` before being passed to `message.react()`.
+- Map has 5 known-good emoji: `funny→😂`, `compliment→❤️`, `agree→👍`, `sad→😢`, `excited→🎉`.
+- Any sentiment string not in the map produces `undefined` (falsy) → no reaction. Arbitrary strings from Claude cannot inject arbitrary emoji.
+- Only standard Unicode emoji in the map — no custom guild emoji that could fail across servers.
 
-## SQL Injection
-
-All database queries use parameterized syntax (`$1`, `$2`, etc.) via the `pg` library. Dynamic UPDATE queries in PATCH endpoints build parameterized clauses programmatically — field names are hardcoded constants, only values come from user input. No string concatenation of user data into query strings.
-
-## XSS Prevention
-
-Frontend pages (`player.js`, `maya-settings.js`) use `esc()`/`escHtml()`/`escapeHtml()` helper functions on all user-supplied data before insertion via `innerHTML`. The Maya chat `appendMessage()` function uses `escapeHtml()` for both message content and timestamps.
-
-## Secret Management
-
-All credentials from environment variables only — no hardcoded secrets:
-- `PERSONA_BOT_TOKEN` — Discord bot token for Maya
-- `ANTHROPIC_API_KEY` — Anthropic Claude API key
-- `OPENAI_API_KEY` — OpenAI Whisper API key (Phase 2)
-- `VOICE_CHANNEL_ID` — Discord voice channel (Phase 2)
-
-## Auto-Trigger Idempotency
-
-Triggers check for existing non-closed conversations before creating new ones:
-- `findOrCreateConversation()` checks `status != 'closed'` — won't create a new conversation for players with existing active conversations.
-- `triggerTemplate()` checks for `status = 'active'` OR `status = 'closed'` before firing — skips both.
-- This prevents duplicate DMs and respects players who previously closed conversations.
-
-## Audit Logging
-
-Conversation messages stored in `bot_messages` with `role` field (`maya`, `user`, `admin`) providing a full audit trail of who sent what and when. Admin-injected messages clearly marked as `role: 'admin'`.
-
-## Initialization Resilience (Decoupling Fix — 2026-03-04)
-
-Maya bot startup is decoupled from Socket.IO site-chat initialization in `index.cjs`. Both run as independent try/catch blocks inside the same async IIFE:
-
-**Block 1 — Socket.IO + maya-admin namespace** (may fail due to SSL/network errors):
-- If this block fails, `app.get('io')` returns `undefined`.
-- `maya-admin` namespace auth middleware is correctly inside this block (requires a live `io` instance).
-
-**Block 2 — Maya persona bot** (runs unconditionally after Block 1):
-- Calls `createPersonaBot({ pool, io: app.get('io') })`.
-- When `io` is `undefined`, `emitToAdmin()` in `persona-bot.cjs` returns early (`if (!io) return`) — no crash.
-- All core Maya functionality (Discord DMs, LLM responses, DB persistence) is unaffected without Socket.IO.
-- Real-time admin dashboard updates degrade gracefully to no-ops.
-
-**Security properties preserved:**
-- `PERSONA_BOT_TOKEN` still sourced from environment variable only.
-- Auth middleware on `/maya-admin` namespace unchanged.
-- Error messages in catch blocks log `err.message` only — no stack traces, no credential leakage.
-- No new packages, no new user input surfaces, no query changes.
-
-## Known Notes (Non-Blocking)
-
-1. **`model` field**: No allowlist validation on `model`/`model_override`. LOW risk — management-only access.
-2. **Socket.IO userId fallback**: `userId || 'admin'` in player.js — if `<meta name="user-id">` is missing, passes string `'admin'` which correctly fails auth (no DB row). Real-time features won't work if meta tag is absent, but no security bypass possible.
-3. **Pre-existing npm vulnerabilities** (not introduced by this PR):
-   - `fast-xml-parser`: critical (via @aws-sdk) — ReDoS in numeric entities
-   - `axios`: high — prototype pollution in mergeConfig
-   - `multer`: high — DoS via incomplete cleanup
-   - `minimatch`: high — ReDoS
-   - Run `npm audit fix` in a dedicated maintenance sprint
-
-## Template Variable System (2026-03-04)
-
-Feature: Maya — Expand template variables (gold, raids, guild status)  
-Reviewed: 2026-03-04 | Verdict: PASS
-
-### Architecture
-
-`resolveTemplateVariables(pool, discordId, eventId, conversationId)` in `scripts/persona-context.cjs`:
-- Runs all DB queries in parallel via `Promise.all()`
-- Returns `Map<string, string>` — all values guaranteed to be strings, never null/undefined
-- Used in: `triggerTemplate()` (persona-bot.cjs), `buildContext()` (persona-bot.cjs), admin create-conversation (index.cjs)
-
-`applyTemplateVariables(text, variableMap)`:
-- Single-pass `text.replace(/\{\{(\w+)\}\}/g, ...)` — regex-safe, only matches word characters
-- Unresolved variables left as-is (no data exposure from missing vars)
-
-### SQL Injection (VERIFIED CLEAN)
-
-All 9+ queries in `resolveTemplateVariables` use positional parameters:
-- `$1`, `$2` for scalar values
-- `ANY($1)` for array values (charNamesArray) — parameterized, no concatenation
-- `computeGoldFromEntries()` operates entirely on in-memory JS arrays after DB fetch — no additional queries
-
-### Authentication & Authorization
-
-- Admin create-conversation endpoint: `requireManagement` middleware (checks `isAuthenticated()` + management role)
-- Template triggers in `triggerTemplate()`: internal bot function, called only from post-raid automation — no external entry point
-- `buildContext()`: called from within the bot's Discord message handler — requires existing conversation in DB
-
-### Input Validation
-
-| Field | Source | Validation |
-|-------|--------|-----------|
-| `discordId` (admin create-conversation) | `req.body` | Presence check only (`if (!discordId)`) — LOW risk behind requireManagement |
-| `discordId` (by-discord route) | `req.params` | Format validated: `/^[0-9]{1,20}$/` |
-| `eventId` | DB (bot_conversations.event_id) or internal trigger parameter | Trusted source, no user-controlled input |
-| `conversationId` | Internal UUID | Controlled by server, not user-supplied |
-
-**Note (LOW risk):** `discordId` at `POST /api/admin/maya/conversations` uses presence-only check. All downstream queries are parameterized so no injection risk, but format validation (`isValidDiscordId`) would be cleaner. Recommend aligning with other endpoints in a future sprint.
-
-### Null Safety (VERIFIED)
-
-- All 18 variables have explicit string defaults in the `catch` block
-- Numeric values default to `"0"`, text to `"unknown"`, guild join date to `"Not in 1Principles Guild"`
-- `formatDate()` returns `"unknown"` for invalid/null dates
-- `String(Number(x) || 0)` pattern used consistently for DB numeric aggregates
-
-### Prompt Injection (LOW risk, noted)
-
-Character names, raid names, and other string fields from DB are injected into the LLM system prompt. Requires DB write access to exploit — not accessible to regular players. No sanitization applied to DB-sourced values before prompt injection; this is consistent with the existing `buildPlayerContext()` pattern.
-
-### Dependency Check (Pre-existing, not introduced by this PR)
-
-No new packages added. Pre-existing vulnerabilities remain (see Known Notes below).
+### sanitizeResponse()
+- Strips em-dashes (U+2014) and en-dashes (U+2013) from LLM output, replacing with comma.
+- Null/undefined/empty string safe: `if (!text) return text` guard at top.
+- Applied to both DM replies (`handleDM`) and template opening messages (`triggerTemplate`).
 
 ---
 
-## Phase 2 Voice Worker
+## Authorization
 
-`voice-worker.cjs` is a scaffold — full implementation requires installing `@discordjs/voice` and related deps. Key security requirements for Phase 2 implementation:
-- Audio data should not be logged or persisted beyond transcripts
-- `OPENAI_API_KEY` must be set via env var (already documented)
-- Whisper API calls should include timeout handling
-- Transcript storage uses parameterized queries (already implemented in scaffold)
+### Incoming DMs
+- `if (message.author.bot) return` — Maya ignores all bot messages including her own.
+- `if (message.channel.type !== ChannelType.DM) return` — only processes DMs, not guild messages.
+- Admin-injected messages go through `sendDM()`, not `handleDM()` — reactions and JSON parsing are not applied to admin traffic by architecture.
+
+### Concurrency Lock
+- `generationLocks` map prevents concurrent LLM calls per conversation — protects against message flooding and race conditions in DB writes.
+
+---
+
+## Database Security
+
+- All PostgreSQL queries use parameterized placeholders (`$1, $2, ...`) — no raw string interpolation of user data.
+- No new queries introduced in the emoji reaction / em-dash feature update.
+- `storeMessage()` stores `content` parameterized — player message text cannot inject SQL.
+
+---
+
+## Error Handling
+
+- Errors logged to console with `err.message || err` — no internal stack traces or DB details returned to Discord users.
+- `message.react()` failures are caught and warned, never surfaced to the player.
+- LLM API failures (`generateResponse`) propagate to the outer try/catch in `handleDM` — logged, not re-thrown to Discord.
+
+---
+
+## Dependency Security (as of 2026-03-04)
+
+| Package | Severity | Type | Notes |
+|---------|----------|------|-------|
+| `multer` | HIGH | Direct | DoS via incomplete cleanup (GHSA-xf7r-hgr6-v32p, GHSA-v52c-386h-88mc). File upload — not in persona bot path. Fix in future sprint. |
+| `fast-xml-parser` | CRITICAL | Indirect | Entity encoding bypass / DoS via DOCTYPE (GHSA-m7jm-9gc2-mpf2). Not used by persona bot. Fix in future sprint. |
+| `qs` | HIGH | Indirect | arrayLimit bypass DoS (GHSA-w7fw-mjwx-w883). Not used by persona bot. Fix in future sprint. |
+| `minimatch` | LOW | Indirect | ReDoS in nested extglobs. Dev tooling only. |
+
+All pre-existing vulnerabilities — none introduced by the em-dash/emoji-reaction update.
+
+---
+
+## Test Mode Consideration
+
+`MAYA_TEST_MODE_DISCORD_ID` is currently hardcoded ON. In this mode:
+- All outgoing `sendDM()` calls redirect to the test Discord ID.
+- Incoming DMs from the test ID route to the most recently active conversation.
+- This means the test user can read all Maya conversation responses during testing.
+
+**Recommendation:** Before production launch, either clear `MAYA_TEST_MODE_DISCORD_ID` to `null` or move it to an env var so it can be disabled without a redeploy.
+
+---
+
+## Security Checklist (Feature: em-dash removal + emoji reactions)
+
+- ✅ No hardcoded secrets in new code
+- ✅ JSON parse input validation with graceful degradation
+- ✅ No SQL injection — no new DB queries
+- ✅ Auth/authz correct — bot check + DM check + admin path excluded by architecture
+- ✅ Emoji allowlist — REACTION_EMOJI_MAP gates all `message.react()` calls
+- ✅ sanitizeResponse handles null/empty safely
+- ✅ No new npm dependencies
