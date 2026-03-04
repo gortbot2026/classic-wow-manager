@@ -126,7 +126,7 @@ async function saveTemplate() {
   };
 
   if (!body.name || !body.opening_message || !body.agent_instructions) {
-    showToast('Name, opening message, and agent instructions are required');
+    showToast('Name, opening instructions, and agent instructions are required');
     return;
   }
 

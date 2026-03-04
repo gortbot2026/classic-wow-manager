@@ -58,11 +58,13 @@ try {
 // Persona bot (Maya) — separate Discord client for AI persona DMs
 let createPersonaBot = null;
 let generateConversationSummary = null;
+let generateOpeningMessage = null;
 try {
   const personaModule = require('./scripts/persona-bot.cjs');
   createPersonaBot = personaModule.createPersonaBot;
   generateConversationSummary = personaModule.generateConversationSummary || null;
-  console.log('[init] Persona bot module loaded:', { hasCreatePersonaBot: !!createPersonaBot, hasSummaryGen: !!generateConversationSummary });
+  generateOpeningMessage = personaModule.generateOpeningMessage || null;
+  console.log('[init] Persona bot module loaded:', { hasCreatePersonaBot: !!createPersonaBot, hasSummaryGen: !!generateConversationSummary, hasOpeningGen: !!generateOpeningMessage });
 } catch (err) {
   console.error('[init] Failed to load persona bot module:', err?.message || err);
   createPersonaBot = null;
@@ -1181,7 +1183,7 @@ Important guidelines:
         'tpl-post-raid-checkin-default',
         'Post-raid check-in',
         'post_raid',
-        'Hey {{player_name}}! Great job in the raid tonight 🎉 How did you feel about your performance? Anything you want to work on for next time?',
+        'Write a short, casual opening (2-3 sentences). Mention gold earned last raid. If gold_spent_last_raid > 3000, acknowledge the investment. If manual_rewards_last_raid > 0, mention the bonus points.',
         'This is a post-raid check-in. Congratulate the player on participating. Reference their DPS/HPS numbers if available. Ask how they felt about the raid. If they are a PUG player (not in guild), subtly gauge interest in joining 1Principles. Keep it casual and encouraging.',
         null,
         false
@@ -1196,6 +1198,32 @@ Important guidelines:
         'manual',
         'Hey {{player_name}}! I noticed you\'ve been raiding with us lately and putting up great numbers. Have you thought about joining 1Principles as a full member? 😊',
         'This is a recruitment conversation. Introduce 1Principles guild, highlight benefits (consistent raids, fair GDKP, community). Reference the player\'s raid history and performance data. Be genuine and not pushy — if they are not interested, respect that gracefully.',
+        null,
+        false
+      ]);
+      await pool.query(`
+        INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        'tpl-big-spender-default',
+        'Big Spender',
+        'item_won',
+        'Write an opening that celebrates their loot purchase. Reference the gold amount spent. Fun and congratulatory, 1-2 sentences.',
+        'This player just won an item in a GDKP raid. Celebrate their purchase, reference the gold they spent. If they are a repeat big spender, acknowledge their investment history. Keep it fun and encouraging. Ask how they feel about their new gear.',
+        null,
+        false
+      ]);
+      await pool.query(`
+        INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        'tpl-veteran-recognition-default',
+        'Veteran Recognition',
+        'manual',
+        'Acknowledge their loyalty. Mention total raids attended. Sincere, 1-2 sentences.',
+        'This is a recognition conversation for a loyal raider. Thank them for their dedication, reference their total raids attended and time with the guild. Be sincere and appreciative. Ask if there is anything the guild can do better for them.',
         null,
         false
       ]);
@@ -2962,42 +2990,58 @@ app.post('/api/admin/maya/conversations', requireManagement, express.json(), asy
       [convId, discordId, playerName, templateId || null, preferredName || null]
     );
 
-    // Determine opening message with full template variable resolution
+    // Determine opening message — use LLM generation when a template is selected
     let message = openingMessage || null;
-    if (!message && templateId) {
+    let modelUsed = null;
+
+    if (!message && templateId && generateOpeningMessage) {
+      // LLM-generated opening from template instructions
+      try {
+        const tplRes = await pool.query(
+          `SELECT id, opening_message, model_override FROM bot_templates WHERE id = $1`,
+          [templateId]
+        );
+        if (tplRes.rows.length > 0) {
+          const { generated, fallback, modelUsed: usedModel } = await generateOpeningMessage(
+            pool, tplRes.rows[0], discordId, null, convId
+          );
+          message = generated || fallback;
+          modelUsed = generated ? usedModel : null;
+        }
+      } catch (genErr) {
+        console.error('[maya-api] Error generating opening message:', genErr.message || genErr);
+      }
+    } else if (!message && templateId) {
+      // Fallback: variable substitution only (generateOpeningMessage not loaded)
       const tplRes = await pool.query(`SELECT opening_message FROM bot_templates WHERE id = $1`, [templateId]);
       if (tplRes.rows.length > 0) {
         message = tplRes.rows[0].opening_message;
       }
-    }
-    // Apply template variable resolution to the message
-    if (message && resolveTemplateVariables && applyTemplateVariables) {
-      try {
-        const templateVars = await resolveTemplateVariables(pool, discordId, null, convId);
-        // Also set player_name from preferred name or player table
-        if (preferredName) {
-          templateVars.set('player_name', preferredName);
-        } else if (playerName) {
-          templateVars.set('player_name', playerName);
+      if (message && resolveTemplateVariables && applyTemplateVariables) {
+        try {
+          const templateVars = await resolveTemplateVariables(pool, discordId, null, convId);
+          if (preferredName) {
+            templateVars.set('player_name', preferredName);
+          } else if (playerName) {
+            templateVars.set('player_name', playerName);
+          }
+          message = applyTemplateVariables(message, templateVars);
+        } catch (varErr) {
+          console.error('[maya-api] Error resolving template variables:', varErr.message || varErr);
+          if (playerName) {
+            message = message.replace(/\{\{player_name\}\}/g, playerName);
+          }
         }
-        message = applyTemplateVariables(message, templateVars);
-      } catch (varErr) {
-        console.error('[maya-api] Error resolving template variables:', varErr.message || varErr);
-        // Fallback: at minimum replace player_name
-        if (playerName) {
-          message = message.replace(/\{\{player_name\}\}/g, playerName);
-        }
+      } else if (message && playerName) {
+        message = message.replace(/\{\{player_name\}\}/g, playerName);
       }
-    } else if (message && playerName) {
-      // Fallback if modules not loaded
-      message = message.replace(/\{\{player_name\}\}/g, playerName);
     }
 
     // Send opening message if provided
     if (message) {
       await pool.query(
-        `INSERT INTO bot_messages (conversation_id, role, content) VALUES ($1, 'maya', $2)`,
-        [convId, message]
+        `INSERT INTO bot_messages (conversation_id, role, content, model_used) VALUES ($1, 'maya', $2, $3)`,
+        [convId, message, modelUsed]
       );
       // Send via Discord
       if (personaBotInstance) {

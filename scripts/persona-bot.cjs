@@ -568,25 +568,14 @@ function createPersonaBot(options = {}) {
             [convId, attendee.discord_id, attendee.player_name || null, template.id, eventId || null]
           );
 
-          // Resolve template variables and apply to opening message
-          const templateVars = await resolveTemplateVariables(
-            pool, attendee.discord_id, eventId || null, convId
+          // Generate LLM-powered opening with fallback to variable substitution
+          const { generated, fallback, modelUsed } = await generateOpeningMessage(
+            pool, template, attendee.discord_id, eventId || null, convId
           );
-          // Also resolve player_name via resolvePlayerName for consistency
-          const resolvedName = await resolvePlayerName(pool, attendee.discord_id, convId);
-          if (resolvedName) {
-            templateVars.set('player_name', resolvedName);
-          } else if (attendee.player_name) {
-            templateVars.set('player_name', attendee.player_name);
-          }
-          let opening = applyTemplateVariables(template.opening_message, templateVars);
+          const opening = generated || fallback;
 
-          // Sanitize em-dashes/en-dashes as a safety net (future-proofs LLM-generated openers)
-          opening = sanitizeResponse(opening);
-
-          // Store and send the opening message
-          const model = template.model_override || 'claude-haiku-4-5';
-          await storeMessage(convId, 'maya', opening, null);
+          // Store and send the opening message (model_used reflects actual generation)
+          await storeMessage(convId, 'maya', opening, generated ? modelUsed : null);
           await sendDM(attendee.discord_id, opening);
 
           // Small delay between messages to avoid rate limits
@@ -731,4 +720,58 @@ async function generateConversationSummary(pool, conversationId) {
   }
 }
 
-module.exports = { createPersonaBot, generateConversationSummary };
+/**
+ * Generates an AI-powered opening message for a Maya conversation.
+ * 
+ * Uses the template's opening_message as instructions (not a literal message)
+ * and combines them with player context data to generate a unique, personalized
+ * opening DM via Claude. Falls back to variable-substituted template text if
+ * the LLM call fails or returns empty.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {{ id: string, opening_message: string, model_override?: string }} template - Template row
+ * @param {string} discordId - Player's Discord ID
+ * @param {string|null} eventId - Associated event ID (for post-raid context)
+ * @param {string} conversationId - The new conversation ID
+ * @returns {Promise<{ generated: string|null, fallback: string, modelUsed: string }>}
+ *   generated is the LLM text (null on failure), fallback is the variable-substituted template
+ */
+async function generateOpeningMessage(pool, template, discordId, eventId, conversationId) {
+  const model = template.model_override || 'claude-haiku-4-5';
+
+  // Step 1: Resolve template variables for the fallback path
+  const templateVars = await resolveTemplateVariables(pool, discordId, eventId, conversationId);
+  const resolvedName = await resolvePlayerName(pool, discordId, conversationId);
+  if (resolvedName) {
+    templateVars.set('player_name', resolvedName);
+  }
+  const fallback = sanitizeResponse(applyTemplateVariables(template.opening_message, templateVars));
+
+  // Step 2: Build player context for LLM generation
+  let generated = null;
+  try {
+    const playerContext = await buildPlayerContext(pool, discordId);
+
+    const systemPrompt =
+      'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
+      'Generate an opening DM based on the instructions below. Keep it natural and conversational. ' +
+      'Do not use em-dashes or en-dashes.\n\n' +
+      '=== Opening Instructions ===\n' +
+      template.opening_message + '\n\n' +
+      '=== Player Data ===\n' +
+      playerContext;
+
+    const messages = [{ role: 'user', content: 'Generate the opening message now.' }];
+    const rawResponse = await generateResponse(systemPrompt, messages, model);
+
+    if (rawResponse && rawResponse.trim().length > 0) {
+      generated = sanitizeForDiscord(sanitizeResponse(rawResponse));
+    }
+  } catch (err) {
+    console.error('[persona-bot] LLM opening generation failed for', discordId, ':', err.message || err);
+  }
+
+  return { generated, fallback, modelUsed: model };
+}
+
+module.exports = { createPersonaBot, generateConversationSummary, generateOpeningMessage };
