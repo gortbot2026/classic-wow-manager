@@ -349,12 +349,18 @@
     return luminance > 0.4;
   }
 
+  // Class role definitions for DPS/HPS display
+  var DAMAGE_CLASSES = ['rogue', 'warrior', 'hunter', 'mage', 'warlock'];
+  var HEALING_CLASSES = ['priest', 'druid', 'shaman'];
+
   function renderCharacters() {
-    const chars = playerData.characters;
+    var chars = playerData.characters;
     if (!chars || chars.length === 0) {
       document.getElementById('characters-body').innerHTML = '<div class="no-data">No characters found</div>';
       return;
     }
+
+    var charStats = playerData.characterStats || {};
 
     document.getElementById('characters-body').innerHTML =
       '<div class="characters-grid">' +
@@ -363,6 +369,17 @@
         var guildBadge = c.inGuild === false ? ' <span class="not-in-guild">Not in Guild</span>' : '';
         var classColor = CLASS_COLORS[(c.class || '').toLowerCase()] || '#888';
         var textColor = needsDarkText(classColor) ? '#1a1a2e' : '#fff';
+        var classLower = (c.class || '').toLowerCase();
+        var stats = charStats[c.characterName.toLowerCase()] || {};
+
+        // Build DPS/HPS row based on class role
+        var dpsHpsRow = '';
+        if (DAMAGE_CLASSES.indexOf(classLower) !== -1 && stats.avgDps > 0) {
+          dpsHpsRow = '<div class="detail-row"><span>Avg DPS</span><strong>' + fmtNum(stats.avgDps) + '</strong></div>';
+        } else if (HEALING_CLASSES.indexOf(classLower) !== -1 && stats.avgHps > 0) {
+          dpsHpsRow = '<div class="detail-row"><span>Avg HPS</span><strong>' + fmtNum(stats.avgHps) + '</strong></div>';
+        }
+
         return '<div class="char-card ' + slug + '">' +
           '<div class="char-card-header" style="background-color:' + classColor + ';color:' + textColor + '">' +
             esc(c.characterName) + guildBadge +
@@ -373,6 +390,7 @@
           (c.specName ? '<div class="detail-row"><span>Spec</span><strong>' + esc(c.specName) + '</strong></div>' : '') +
           (c.primaryRole ? '<div class="detail-row"><span>Role</span><strong>' + esc(c.primaryRole) + '</strong></div>' : '') +
           (c.mainAlt ? '<div class="detail-row"><span>Main/Alt</span><strong>' + esc(c.mainAlt) + '</strong></div>' : '') +
+          dpsHpsRow +
           '<div class="detail-row"><span>Joined</span><strong>' + esc(c.joinDate || 'N/A') + '</strong></div>' +
           (c.lastOnlineDays != null ? '<div class="detail-row"><span>Last Online</span><strong>' +
             (c.lastOnlineDays < 1 ? 'Online' : Math.floor(c.lastOnlineDays) + 'd ago') + '</strong></div>' : '') +

@@ -260,7 +260,8 @@ class WoWLogsAnalyzer {
                 name: player.character_name,
                 total: parseInt(player.damage_amount),
                 type: player.character_class,
-                icon: player.character_class
+                icon: player.character_class,
+                dpsValue: parseFloat(player.dps_value) || 0
             }))
             .sort((a, b) => b.total - a.total);
 
@@ -270,7 +271,8 @@ class WoWLogsAnalyzer {
                 name: player.character_name,
                 total: parseInt(player.healing_amount),
                 type: player.character_class,
-                icon: player.character_class
+                icon: player.character_class,
+                hpsValue: parseFloat(player.hps_value) || 0
             }))
             .sort((a, b) => b.total - a.total);
 
@@ -385,14 +387,21 @@ class WoWLogsAnalyzer {
             // Get all players from damage and healing data
             const allPlayers = new Map();
             
+            // Compute DPS/HPS using totalTime from WCL API response (milliseconds)
+            const dmgTotalTimeSec = (this.currentLogData.damage?.totalTime || 0) / 1000;
+            const healTotalTimeSec = (this.currentLogData.healing?.totalTime || 0) / 1000;
+
             // Add damage data
             if (this.currentLogData.damage?.entries) {
                 this.currentLogData.damage.entries.forEach(entry => {
+                    const dpsValue = dmgTotalTimeSec > 0 ? (entry.total || 0) / dmgTotalTimeSec : 0;
                     allPlayers.set(entry.name, {
                         characterName: entry.name,
                         characterClass: entry.type || 'Unknown',
                         damageAmount: entry.total || 0,
-                        healingAmount: 0
+                        healingAmount: 0,
+                        dpsValue: dpsValue,
+                        hpsValue: 0
                     });
                 });
             }
@@ -400,14 +409,19 @@ class WoWLogsAnalyzer {
             // Add healing data
             if (this.currentLogData.healing?.entries) {
                 this.currentLogData.healing.entries.forEach(entry => {
+                    const hpsValue = healTotalTimeSec > 0 ? (entry.total || 0) / healTotalTimeSec : 0;
                     if (allPlayers.has(entry.name)) {
-                        allPlayers.get(entry.name).healingAmount = entry.total || 0;
+                        const existing = allPlayers.get(entry.name);
+                        existing.healingAmount = entry.total || 0;
+                        existing.hpsValue = hpsValue;
                     } else {
                         allPlayers.set(entry.name, {
                             characterName: entry.name,
                             characterClass: entry.type || 'Unknown',
                             damageAmount: 0,
-                            healingAmount: entry.total || 0
+                            healingAmount: entry.total || 0,
+                            dpsValue: 0,
+                            hpsValue: hpsValue
                         });
                     }
                 });
@@ -472,6 +486,8 @@ class WoWLogsAnalyzer {
                     specName: specName,
                     damageAmount: playerData.damageAmount,
                     healingAmount: playerData.healingAmount,
+                    dpsValue: playerData.dpsValue || 0,
+                    hpsValue: playerData.hpsValue || 0,
                     logId: logId
                 });
             });
@@ -1878,6 +1894,7 @@ class WoWLogsAnalyzer {
                 console.log('Damage endpoint:', damageEndpoint);
                 damageData = await this.makeApiCall(damageEndpoint);
                 console.log('Damage API response:', damageData);
+                console.log('Damage totalTime:', damageData.totalTime || 0);
                 console.log('Damage entries length:', damageData.entries ? damageData.entries.length : 'no entries property');
                 console.log('Damage entries content:', damageData.entries);
                 if (damageData.entries && damageData.entries.length > 0) {
@@ -1894,6 +1911,7 @@ class WoWLogsAnalyzer {
                 console.log('Healing endpoint:', healingEndpoint);
                 healingData = await this.makeApiCall(healingEndpoint);
                 console.log('Healing API response:', healingData);
+                console.log('Healing totalTime:', healingData.totalTime || 0);
                 console.log('Healing entries length:', healingData.entries ? healingData.entries.length : 'no entries property');
                 console.log('Healing entries content:', healingData.entries);
                 if (healingData.entries && healingData.entries.length > 0) {

@@ -9838,7 +9838,8 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       raidHistoryRes,
       worldBuffsRes,
       frostResRes,
-      goldEarnedRes
+      goldEarnedRes,
+      characterStatsRes
     ] = await Promise.all([
       // Identity from discord_users
       client.query(
@@ -9896,13 +9897,17 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
               SELECT LOWER(character_name) FROM players WHERE discord_id = $1
             )`, [discordId]
       ),
-      // Average DPS
+      // Average DPS — filtered to damage classes only, using computed dps_value
       client.query(
-        `SELECT AVG(damage_amount) AS avg_dps FROM log_data WHERE discord_id = $1 AND damage_amount > 0`, [discordId]
+        `SELECT AVG(dps_value) AS avg_dps FROM log_data
+         WHERE discord_id = $1 AND dps_value > 0
+         AND LOWER(character_class) IN ('rogue', 'warrior', 'hunter', 'mage', 'warlock')`, [discordId]
       ),
-      // Average HPS
+      // Average HPS — filtered to healing classes only, using computed hps_value
       client.query(
-        `SELECT AVG(healing_amount) AS avg_hps FROM log_data WHERE discord_id = $1 AND healing_amount > 0`, [discordId]
+        `SELECT AVG(hps_value) AS avg_hps FROM log_data
+         WHERE discord_id = $1 AND hps_value > 0
+         AND LOWER(character_class) IN ('priest', 'druid', 'shaman')`, [discordId]
       ),
       // Loot items (resolve through character names from both guildies + players)
       client.query(
@@ -9998,7 +10003,16 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       ),
       // Gold earned: placeholder — actual calculation done post-Promise.all
       // using points-weighted per-raid logic mirroring computeTotalsFromSnapshot()
-      Promise.resolve({ rows: [] })
+      Promise.resolve({ rows: [] }),
+      // Per-character DPS/HPS averages from log_data
+      client.query(
+        `SELECT character_name, character_class,
+                AVG(CASE WHEN dps_value > 0 THEN dps_value ELSE NULL END) AS avg_dps,
+                AVG(CASE WHEN hps_value > 0 THEN hps_value ELSE NULL END) AS avg_hps
+         FROM log_data
+         WHERE discord_id = $1
+         GROUP BY character_name, character_class`, [discordId]
+      )
     ]);
 
     // ── Build identity ────────────────────────────────────────────────────
@@ -10433,6 +10447,16 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       votedAt: pv.voted_at
     }));
 
+    // ── Per-character DPS/HPS stats ──────────────────────────────────────
+    const characterStats = {};
+    for (const row of characterStatsRes.rows) {
+      characterStats[row.character_name.toLowerCase()] = {
+        characterClass: row.character_class,
+        avgDps: row.avg_dps ? Math.round(parseFloat(row.avg_dps)) : null,
+        avgHps: row.avg_hps ? Math.round(parseFloat(row.avg_hps)) : null
+      };
+    }
+
     // ── Response ──────────────────────────────────────────────────────────
     res.json({
       success: true,
@@ -10456,7 +10480,8 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       assignments,
       pollVotes,
       goldEarnedByEvent,
-      goldSpentByEvent
+      goldSpentByEvent,
+      characterStats
     });
 
   } catch (error) {
@@ -13487,11 +13512,17 @@ app.post('/api/admin/setup-database', async (req, res) => {
                 spec_name VARCHAR(50),
                 damage_amount BIGINT DEFAULT 0,
                 healing_amount BIGINT DEFAULT 0,
+                dps_value FLOAT DEFAULT 0,
+                hps_value FLOAT DEFAULT 0,
                 log_id VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (event_id, character_name)
             )
         `);
+
+        // Migrate existing log_data tables to include dps_value and hps_value columns
+        await client.query(`ALTER TABLE log_data ADD COLUMN IF NOT EXISTS dps_value FLOAT DEFAULT 0`);
+        await client.query(`ALTER TABLE log_data ADD COLUMN IF NOT EXISTS hps_value FLOAT DEFAULT 0`);
 
         // Create guildies table for guild member data
         await client.query(`
@@ -14889,8 +14920,8 @@ app.post('/api/log-data/:eventId/store', async (req, res) => {
                 INSERT INTO log_data (
                     event_id, character_name, character_class, discord_id, 
                     role_detected, role_source, spec_name, damage_amount, 
-                    healing_amount, log_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    healing_amount, dps_value, hps_value, log_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (event_id, character_name) 
                 DO UPDATE SET
                     character_class = EXCLUDED.character_class,
@@ -14900,6 +14931,8 @@ app.post('/api/log-data/:eventId/store', async (req, res) => {
                     spec_name = EXCLUDED.spec_name,
                     damage_amount = EXCLUDED.damage_amount,
                     healing_amount = EXCLUDED.healing_amount,
+                    dps_value = EXCLUDED.dps_value,
+                    hps_value = EXCLUDED.hps_value,
                     log_id = EXCLUDED.log_id,
                     created_at = CURRENT_TIMESTAMP
             `, [
@@ -14912,6 +14945,8 @@ app.post('/api/log-data/:eventId/store', async (req, res) => {
                 player.specName,
                 player.damageAmount || 0,
                 player.healingAmount || 0,
+                player.dpsValue || 0,
+                player.hpsValue || 0,
                 player.logId
             ]);
         }
