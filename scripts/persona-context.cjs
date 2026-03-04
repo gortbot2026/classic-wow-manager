@@ -118,13 +118,33 @@ async function buildPlayerContext(pool, discordId) {
       parts.push('In guild: No (PUG player or not yet a member)');
     }
 
-    // Recent raids
+    // Recent raids — enrich with channel names from attendance_cache where available
     const raids = raidsRes.rows;
     if (raids.length > 0) {
+      // Batch-fetch channel names for raid IDs
+      const raidEventIds = [...new Set(raids.map(r => r.raid_id || r.event_id).filter(Boolean))];
+      let channelNameMap = new Map();
+      if (raidEventIds.length > 0) {
+        try {
+          const cnRes = await client.query(
+            `SELECT DISTINCT event_id, channel_name FROM attendance_cache WHERE event_id = ANY($1)`,
+            [raidEventIds]
+          );
+          for (const row of cnRes.rows) {
+            if (row.channel_name) channelNameMap.set(row.event_id, row.channel_name);
+          }
+        } catch (_) { /* attendance_cache may be empty */ }
+      }
+
       parts.push(`\n=== Recent Raids (last ${raids.length}) ===`);
       for (const r of raids) {
         const date = r.locked_at ? new Date(r.locked_at).toISOString().split('T')[0] : 'unknown date';
-        parts.push(`- Raid ${r.raid_id || r.event_id} on ${date} as ${r.character_name} (${r.character_class || '?'})`);
+        const eventId = r.raid_id || r.event_id;
+        const channelName = channelNameMap.get(eventId);
+        const raidLabel = channelName
+          ? humanizeRaidName(stripDateSuffix(channelName))
+          : (eventId || 'unknown');
+        parts.push(`- ${raidLabel} on ${date} as ${r.character_name} (${r.character_class || '?'})`);
       }
     } else {
       parts.push('\n=== Recent Raids ===');
@@ -173,6 +193,7 @@ async function buildPlayerContext(pool, discordId) {
       const totalRaids = templateVars.get('total_raids_attended') || '0';
 
       parts.push('\n=== Gold & Economy ===');
+      parts.push(`Guild: ${templateVars.get('guild_name') || '1Principles'}`);
       parts.push(`Total gold earned: ${totalGold}g`);
       if (lastRaidName !== 'unknown') {
         parts.push(`Last raid (${lastRaidName}): earned ${goldEarnedLast}g, spent ${goldSpentLast}g, manual rewards ${manualRewards}g, manual deductions ${manualDeductions}g, items won: ${itemsWon}`);
@@ -202,6 +223,26 @@ async function buildPlayerContext(pool, discordId) {
       }
     } catch (err) {
       console.error('[persona-context] Error fetching player notes:', err.message || err);
+    }
+
+    // Previous conversation summaries (for conversation continuity)
+    try {
+      const summaryRes = await pool.query(
+        `SELECT summary, created_at FROM bot_conversations
+         WHERE discord_id = $1 AND status = 'closed' AND summary IS NOT NULL
+         ORDER BY updated_at DESC LIMIT 3`,
+        [discordId]
+      );
+      if (summaryRes.rows.length > 0) {
+        parts.push('\n=== Previous conversations with this player ===');
+        for (const row of summaryRes.rows) {
+          const d = new Date(row.created_at);
+          const dateStr = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+          parts.push(`- [${dateStr}] ${row.summary}`);
+        }
+      }
+    } catch (err) {
+      console.error('[persona-context] Error fetching conversation summaries:', err.message || err);
     }
 
     return parts.join('\n');
@@ -350,6 +391,42 @@ async function resolvePlayerName(pool, discordId, conversationId) {
     console.error('[persona-context] Error resolving player name:', err.message || err);
     return null;
   }
+}
+
+/**
+ * Abbreviation lookup for common WoW raid short names.
+ * Keys are lowercased slugs; values are the display-friendly form.
+ * @type {Object<string, string>}
+ */
+const RAID_ABBREVIATIONS = {
+  nax: 'Naxx', naxx: 'Naxx',
+  aq: 'AQ40', aq40: 'AQ40', aq20: 'AQ20',
+  mc: 'Molten Core',
+  bwl: 'BWL',
+  zg: 'Zul Gurub',
+  ony: 'Onyxia', onyxia: 'Onyxia'
+};
+
+/**
+ * Converts a raw Discord channel slug into a human-readable raid name.
+ * Replaces hyphens with spaces, title-cases each word, and expands
+ * known abbreviations (e.g. "thursday-nax" → "Thursday Naxx").
+ *
+ * @param {string} slug - Raw channel/raid slug (e.g. "thursday-nax")
+ * @returns {string} Human-readable raid name
+ */
+function humanizeRaidName(slug) {
+  if (!slug) return slug;
+  return slug
+    .replace(/-/g, ' ')
+    .split(' ')
+    .map(word => {
+      const lower = word.toLowerCase();
+      if (RAID_ABBREVIATIONS[lower]) return RAID_ABBREVIATIONS[lower];
+      // Title-case: first letter upper, rest lower
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
 }
 
 /**
@@ -578,9 +655,27 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       ? characterRes.rows[0].character_name : 'unknown';
     vars.set('character_name', characterName);
 
-    const discordName = discordNameRes.rows.length > 0 && discordNameRes.rows[0].player_name
-      ? discordNameRes.rows[0].player_name : 'unknown';
-    vars.set('discord_name', discordName);
+    let discordName = discordNameRes.rows.length > 0 && discordNameRes.rows[0].player_name
+      ? discordNameRes.rows[0].player_name : null;
+
+    // Fallback: query discord_users.username if bot_conversations.player_name is null
+    if (!discordName) {
+      try {
+        const duRes = await pool.query(
+          `SELECT username FROM discord_users WHERE discord_id = $1 LIMIT 1`,
+          [discordId]
+        );
+        if (duRes.rows.length > 0 && duRes.rows[0].username) {
+          // Title-case the Discord username for consistent display
+          const raw = duRes.rows[0].username;
+          discordName = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+        }
+      } catch (_) {
+        // discord_users table may not exist — non-critical
+      }
+    }
+
+    vars.set('discord_name', discordName || 'unknown');
 
     vars.set('guild_name', '1Principles');
 
@@ -642,7 +737,8 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     );
 
     // Gold spent last raid (SUM of loot_items.gold_amount)
-    const charNamesArray = Array.from(playerCharNames);
+    // Defensive: ensure all character names are lowercased for LOWER() SQL comparisons
+    const charNamesArray = Array.from(playerCharNames).map(n => n.toLowerCase());
     lastRaidQueries.push(
       lastRaidEventId && charNamesArray.length > 0
         ? pool.query(
@@ -688,7 +784,7 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     // Last raid name
     const rawRaidName = raidNameRes.rows.length > 0 && raidNameRes.rows[0].channel_name
       ? raidNameRes.rows[0].channel_name : null;
-    const lastRaidName = rawRaidName ? stripDateSuffix(rawRaidName) : 'unknown';
+    const lastRaidName = rawRaidName ? humanizeRaidName(stripDateSuffix(rawRaidName)) : 'unknown';
     vars.set('last_raid_name', lastRaidName);
     vars.set('raid_name', lastRaidName); // backward compat alias
 

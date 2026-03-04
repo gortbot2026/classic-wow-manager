@@ -965,17 +965,29 @@
     }
   }
 
-  /** Load Maya conversation for this player (Fix 1: only show active/paused) */
+  /** Load Maya conversation for this player */
   function loadMayaChat() {
     fetch('/api/admin/maya/conversations/by-discord/' + discordId, { credentials: 'include' })
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (!data.success) return;
+        // Remove existing "Start New Conversation" button if present
+        var existingBtn = document.getElementById('maya-new-conv-btn');
+        if (existingBtn) existingBtn.remove();
+
         if (data.activeConversation) {
           currentConversation = data.activeConversation;
           showConversation(data.activeConversation, data.messages);
+          // Show "Start New Conversation" button below chat panel
+          addNewConversationButton('maya-conversation');
+        } else if (data.conversations && data.conversations.length > 0) {
+          // All conversations are closed — show button + start panel hidden
+          currentConversation = null;
+          document.getElementById('maya-no-conversation').style.display = 'none';
+          document.getElementById('maya-conversation').style.display = 'none';
+          addNewConversationButton('maya-chat-body');
         } else {
-          // No active/paused conversation — always show start panel
+          // No conversations at all — show the start panel
           currentConversation = null;
           document.getElementById('maya-no-conversation').style.display = 'block';
           document.getElementById('maya-conversation').style.display = 'none';
@@ -987,6 +999,73 @@
   }
   // Expose for inline onclick references
   window.loadMayaChat = loadMayaChat;
+
+  /**
+   * Adds a "Start New Conversation" button to the specified parent element.
+   * @param {string} parentId - DOM element ID to append the button to
+   */
+  function addNewConversationButton(parentId) {
+    var existing = document.getElementById('maya-new-conv-btn');
+    if (existing) existing.remove();
+
+    var parent = document.getElementById(parentId);
+    if (!parent) return;
+
+    var btn = document.createElement('button');
+    btn.id = 'maya-new-conv-btn';
+    btn.className = 'btn btn-primary';
+    btn.style.cssText = 'margin-top: 12px; display: block;';
+    btn.innerHTML = '<i class="fas fa-plus"></i> Start New Conversation';
+    btn.onclick = mayaStartNewConversation;
+    parent.appendChild(btn);
+  }
+
+  /**
+   * Handles starting a new conversation flow:
+   * 1. If active/paused conversation exists, confirm and close it first
+   * 2. Show the template picker (start panel)
+   * 3. User picks template and starts — previous context injected automatically
+   */
+  function mayaStartNewConversation() {
+    if (currentConversation && (currentConversation.status === 'active' || currentConversation.status === 'paused')) {
+      if (!confirm('This will close the current conversation. Continue?')) return;
+      // Close the current conversation first, then show start panel
+      fetch('/api/admin/maya/conversations/' + currentConversation.id, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'closed' })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success || data.conversation) {
+          currentConversation = null;
+          showStartPanel();
+        }
+      })
+      .catch(function() {
+        alert('Failed to close conversation. Please try again.');
+      });
+    } else {
+      showStartPanel();
+    }
+  }
+  window.mayaStartNewConversation = mayaStartNewConversation;
+
+  /**
+   * Shows the template picker / start panel for a new conversation.
+   */
+  function showStartPanel() {
+    document.getElementById('maya-conversation').style.display = 'none';
+    var noConv = document.getElementById('maya-no-conversation');
+    noConv.style.display = 'block';
+    // Clear previous error
+    var errorDiv = document.getElementById('maya-start-error');
+    if (errorDiv) errorDiv.style.display = 'none';
+    // Remove the "Start New" button since we're now showing the panel
+    var btn = document.getElementById('maya-new-conv-btn');
+    if (btn) btn.remove();
+  }
 
   /** Render conversation UI (Fixes 2, 3: toggle + takeover + input state) */
   function showConversation(conv, messages) {
@@ -1236,7 +1315,7 @@
     .then(function(r) {
       if (r.status === 409) {
         return r.json().then(function() {
-          errorDiv.innerHTML = '⚠️ An active conversation already exists for this player. <a href="#" onclick="loadMayaChat(); return false;" style="color: var(--accent); text-decoration: underline;">View conversation</a>';
+          errorDiv.innerHTML = '⚠️ An active conversation already exists. <a href="#" onclick="loadMayaChat(); return false;" style="color: var(--accent); text-decoration: underline;">View it</a>, or use "Start New Conversation" to close and restart.';
           errorDiv.style.display = 'block';
           return null;
         });

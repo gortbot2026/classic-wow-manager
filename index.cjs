@@ -57,13 +57,16 @@ try {
 
 // Persona bot (Maya) — separate Discord client for AI persona DMs
 let createPersonaBot = null;
+let generateConversationSummary = null;
 try {
   const personaModule = require('./scripts/persona-bot.cjs');
   createPersonaBot = personaModule.createPersonaBot;
-  console.log('[init] Persona bot module loaded:', { hasCreatePersonaBot: !!createPersonaBot });
+  generateConversationSummary = personaModule.generateConversationSummary || null;
+  console.log('[init] Persona bot module loaded:', { hasCreatePersonaBot: !!createPersonaBot, hasSummaryGen: !!generateConversationSummary });
 } catch (err) {
   console.error('[init] Failed to load persona bot module:', err?.message || err);
   createPersonaBot = null;
+  generateConversationSummary = null;
 }
 
 // Persona context helpers for template variable resolution
@@ -1079,6 +1082,7 @@ async function initializeMayaTables() {
 
     // Migration: add event_id column for raid-specific variable resolution
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS event_id TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS summary TEXT`);
 
     // bot_messages — Individual messages in a conversation
     await pool.query(`
@@ -3048,6 +3052,12 @@ app.patch('/api/admin/maya/conversations/:conversationId', requireManagement, ex
     const io = app.get('io');
     if (io) {
       try { io.of('/maya-admin').emit('maya:status', { conversationId, ...result.rows[0] }); } catch (_) {}
+    }
+
+    // Fire-and-forget: generate summary when conversation is closed
+    if (status === 'closed' && generateConversationSummary) {
+      Promise.resolve().then(() => generateConversationSummary(pool, conversationId))
+        .catch(err => console.error('[maya-api] Summary generation failed (non-blocking):', err.message || err));
     }
 
     res.json({ success: true, conversation: result.rows[0] });

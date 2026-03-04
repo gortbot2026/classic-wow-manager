@@ -669,4 +669,49 @@ async function extractPlayerNotes(pool, io, discordId, conversationId, playerMes
   }
 }
 
-module.exports = { createPersonaBot };
+/**
+ * Generates a short summary of a closed conversation using Claude Haiku.
+ * Called asynchronously (fire-and-forget) after a conversation is closed.
+ * Stores the summary in bot_conversations.summary.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} conversationId - The conversation to summarize
+ * @returns {Promise<void>}
+ */
+async function generateConversationSummary(pool, conversationId) {
+  try {
+    // Fetch all messages for this conversation
+    const msgRes = await pool.query(
+      `SELECT role, content FROM bot_messages
+       WHERE conversation_id = $1
+       ORDER BY sent_at ASC`,
+      [conversationId]
+    );
+
+    if (msgRes.rows.length === 0) return;
+
+    // Build messages array for the LLM
+    const messages = msgRes.rows.map(m => ({
+      role: m.role === 'maya' || m.role === 'admin' ? 'assistant' : 'user',
+      content: m.content
+    }));
+
+    const systemPrompt =
+      'Summarize this conversation in 2-3 sentences from Maya\'s perspective. ' +
+      'What was discussed, what was the player\'s mood/interest level, ' +
+      'what was left unresolved? Be concise and factual.';
+
+    const summary = await generateResponse(systemPrompt, messages, 'claude-haiku-4-5');
+
+    if (summary && typeof summary === 'string' && summary.trim().length > 0) {
+      await pool.query(
+        `UPDATE bot_conversations SET summary = $1 WHERE id = $2`,
+        [summary.trim().slice(0, 2000), conversationId]
+      );
+    }
+  } catch (err) {
+    console.error('[persona-bot] Error generating conversation summary:', err.message || err);
+  }
+}
+
+module.exports = { createPersonaBot, generateConversationSummary };
