@@ -38,12 +38,12 @@ async function buildPlayerContext(pool, discordId) {
       ),
       // Recent raids attended (last 10)
       client.query(
-        `SELECT pcl.raid_id, pcl.character_name, pcl.class,
+        `SELECT pcl.raid_id, pcl.character_name, pcl.character_class,
                 rse.event_id, rse.locked_at
          FROM player_confirmed_logs pcl
          LEFT JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
          WHERE pcl.discord_id = $1
-         ORDER BY pcl.id DESC
+         ORDER BY pcl.confirmed_at DESC
          LIMIT 10`,
         [discordId]
       ),
@@ -69,20 +69,18 @@ async function buildPlayerContext(pool, discordId) {
       ),
       // Average DPS (if available from log_data)
       client.query(
-        `SELECT AVG(CAST(ld.amount AS NUMERIC)) AS avg_dps
+        `SELECT AVG(ld.dps_value) AS avg_dps
          FROM log_data ld
-         JOIN players p ON p.character_name = ld.name AND p.discord_id = $1
-         WHERE ld.spec = 'dps'
-         LIMIT 1`,
+         JOIN players p ON p.character_name = ld.character_name AND p.discord_id = $1
+         WHERE ld.dps_value > 0`,
         [discordId]
       ).catch(() => ({ rows: [] })),
       // Average HPS (if available from log_data)
       client.query(
-        `SELECT AVG(CAST(ld.amount AS NUMERIC)) AS avg_hps
+        `SELECT AVG(ld.hps_value) AS avg_hps
          FROM log_data ld
-         JOIN players p ON p.character_name = ld.name AND p.discord_id = $1
-         WHERE ld.spec = 'hps'
-         LIMIT 1`,
+         JOIN players p ON p.character_name = ld.character_name AND p.discord_id = $1
+         WHERE ld.hps_value > 0`,
         [discordId]
       ).catch(() => ({ rows: [] })),
       // Guild membership status from guildies table
@@ -126,7 +124,7 @@ async function buildPlayerContext(pool, discordId) {
       parts.push(`\n=== Recent Raids (last ${raids.length}) ===`);
       for (const r of raids) {
         const date = r.locked_at ? new Date(r.locked_at).toISOString().split('T')[0] : 'unknown date';
-        parts.push(`- Raid ${r.raid_id || r.event_id} on ${date} as ${r.character_name} (${r.class || '?'})`);
+        parts.push(`- Raid ${r.raid_id || r.event_id} on ${date} as ${r.character_name} (${r.character_class || '?'})`);
       }
     } else {
       parts.push('\n=== Recent Raids ===');
@@ -283,7 +281,7 @@ async function resolvePlayerName(pool, discordId, conversationId) {
       const charRes = await pool.query(
         `SELECT pcl.character_name FROM player_confirmed_logs pcl
          WHERE pcl.discord_id = $1
-         ORDER BY pcl.id DESC LIMIT 1`,
+         ORDER BY pcl.confirmed_at DESC LIMIT 1`,
         [discordId]
       );
       if (charRes.rows.length > 0 && charRes.rows[0].character_name) {
@@ -593,7 +591,7 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
          FROM player_confirmed_logs pcl
          JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id AND rse.published = TRUE
          WHERE pcl.discord_id = $1
-         ORDER BY pcl.id DESC LIMIT 1`,
+         ORDER BY pcl.confirmed_at DESC LIMIT 1`,
         [discordId]
       );
       if (lastRaidRes.rows.length > 0) {

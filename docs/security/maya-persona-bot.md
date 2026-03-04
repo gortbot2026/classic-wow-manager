@@ -103,6 +103,63 @@ Maya bot startup is decoupled from Socket.IO site-chat initialization in `index.
    - `minimatch`: high — ReDoS
    - Run `npm audit fix` in a dedicated maintenance sprint
 
+## Template Variable System (2026-03-04)
+
+Feature: Maya — Expand template variables (gold, raids, guild status)  
+Reviewed: 2026-03-04 | Verdict: PASS
+
+### Architecture
+
+`resolveTemplateVariables(pool, discordId, eventId, conversationId)` in `scripts/persona-context.cjs`:
+- Runs all DB queries in parallel via `Promise.all()`
+- Returns `Map<string, string>` — all values guaranteed to be strings, never null/undefined
+- Used in: `triggerTemplate()` (persona-bot.cjs), `buildContext()` (persona-bot.cjs), admin create-conversation (index.cjs)
+
+`applyTemplateVariables(text, variableMap)`:
+- Single-pass `text.replace(/\{\{(\w+)\}\}/g, ...)` — regex-safe, only matches word characters
+- Unresolved variables left as-is (no data exposure from missing vars)
+
+### SQL Injection (VERIFIED CLEAN)
+
+All 9+ queries in `resolveTemplateVariables` use positional parameters:
+- `$1`, `$2` for scalar values
+- `ANY($1)` for array values (charNamesArray) — parameterized, no concatenation
+- `computeGoldFromEntries()` operates entirely on in-memory JS arrays after DB fetch — no additional queries
+
+### Authentication & Authorization
+
+- Admin create-conversation endpoint: `requireManagement` middleware (checks `isAuthenticated()` + management role)
+- Template triggers in `triggerTemplate()`: internal bot function, called only from post-raid automation — no external entry point
+- `buildContext()`: called from within the bot's Discord message handler — requires existing conversation in DB
+
+### Input Validation
+
+| Field | Source | Validation |
+|-------|--------|-----------|
+| `discordId` (admin create-conversation) | `req.body` | Presence check only (`if (!discordId)`) — LOW risk behind requireManagement |
+| `discordId` (by-discord route) | `req.params` | Format validated: `/^[0-9]{1,20}$/` |
+| `eventId` | DB (bot_conversations.event_id) or internal trigger parameter | Trusted source, no user-controlled input |
+| `conversationId` | Internal UUID | Controlled by server, not user-supplied |
+
+**Note (LOW risk):** `discordId` at `POST /api/admin/maya/conversations` uses presence-only check. All downstream queries are parameterized so no injection risk, but format validation (`isValidDiscordId`) would be cleaner. Recommend aligning with other endpoints in a future sprint.
+
+### Null Safety (VERIFIED)
+
+- All 18 variables have explicit string defaults in the `catch` block
+- Numeric values default to `"0"`, text to `"unknown"`, guild join date to `"Not in 1Principles Guild"`
+- `formatDate()` returns `"unknown"` for invalid/null dates
+- `String(Number(x) || 0)` pattern used consistently for DB numeric aggregates
+
+### Prompt Injection (LOW risk, noted)
+
+Character names, raid names, and other string fields from DB are injected into the LLM system prompt. Requires DB write access to exploit — not accessible to regular players. No sanitization applied to DB-sourced values before prompt injection; this is consistent with the existing `buildPlayerContext()` pattern.
+
+### Dependency Check (Pre-existing, not introduced by this PR)
+
+No new packages added. Pre-existing vulnerabilities remain (see Known Notes below).
+
+---
+
 ## Phase 2 Voice Worker
 
 `voice-worker.cjs` is a scaffold — full implementation requires installing `@discordjs/voice` and related deps. Key security requirements for Phase 2 implementation:

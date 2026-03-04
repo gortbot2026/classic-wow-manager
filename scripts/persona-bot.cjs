@@ -17,6 +17,42 @@ const { generateResponse } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
 
 /**
+ * Clamps a numeric value between a minimum and maximum.
+ *
+ * @param {number} value - Value to clamp
+ * @param {number} min - Minimum bound
+ * @param {number} max - Maximum bound
+ * @returns {number} Clamped value
+ */
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * Calculates a human-like reading delay based on incoming message word count.
+ * Simulates Maya reading the player's message before she starts thinking.
+ *
+ * @param {string} text - Incoming message text
+ * @returns {number} Delay in milliseconds (1000–4000)
+ */
+function readingDelay(text) {
+  const wordCount = (text || '').split(/\s+/).filter(Boolean).length;
+  return clamp(wordCount * 200, 1000, 4000);
+}
+
+/**
+ * Calculates a human-like typing delay based on outgoing response word count.
+ * Simulates Maya typing out her reply after the LLM generates it.
+ *
+ * @param {string} text - Outgoing response text
+ * @returns {number} Delay in milliseconds (500–5000)
+ */
+function typingDelay(text) {
+  const wordCount = (text || '').split(/\s+/).filter(Boolean).length;
+  return clamp(wordCount * 60, 500, 5000);
+}
+
+/**
  * TEST MODE: When set, all Maya DMs go to this Discord ID instead of the actual player.
  * Remove this override when ready to go live.
  * @type {string|null}
@@ -317,13 +353,31 @@ function createPersonaBot(options = {}) {
         // Build context and generate response
         const { systemPrompt, messages } = await buildContext(conversation.id, discordId, persona);
         
-        // Add a human-like delay (2-3 seconds)
-        const delay = 2000 + Math.random() * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Human-like reading delay — simulates Maya reading the incoming message
+        const readDelay = readingDelay(message.content);
+        await new Promise(resolve => setTimeout(resolve, readDelay));
 
-        const responseText = await generateResponse(systemPrompt, messages, model);
+        // Start Discord typing indicator and refresh it every 8s during LLM generation
+        message.channel.sendTyping().catch(() => {});
+        const typingInterval = setInterval(() => {
+          message.channel.sendTyping().catch(() => {});
+        }, 8000);
+
+        let responseText;
+        try {
+          responseText = await generateResponse(systemPrompt, messages, model);
+        } finally {
+          clearInterval(typingInterval);
+        }
 
         if (responseText) {
+          // Human-like typing delay — simulates Maya composing her reply
+          const typeDelay = typingDelay(responseText);
+
+          // Keep typing indicator alive during the typing delay
+          message.channel.sendTyping().catch(() => {});
+          await new Promise(resolve => setTimeout(resolve, typeDelay));
+
           // Store and send the response
           await storeMessage(conversation.id, 'maya', responseText, model);
 
