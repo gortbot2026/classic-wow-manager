@@ -1893,13 +1893,6 @@ class WoWLogsAnalyzer {
                 const damageEndpoint = `report/tables/damage-done/${logId}?start=${logStartTime}&end=${logEndTime}`;
                 console.log('Damage endpoint:', damageEndpoint);
                 damageData = await this.makeApiCall(damageEndpoint);
-                console.log('Damage API response:', damageData);
-                console.log('Damage totalTime:', damageData.totalTime || 0);
-                console.log('Damage entries length:', damageData.entries ? damageData.entries.length : 'no entries property');
-                console.log('Damage entries content:', damageData.entries);
-                if (damageData.entries && damageData.entries.length > 0) {
-                    console.log('First damage entry:', damageData.entries[0]);
-                }
             } catch (error) {
                 console.error('Direct damage API call failed:', error);
                 damageData = { entries: [] };
@@ -1910,13 +1903,6 @@ class WoWLogsAnalyzer {
                 const healingEndpoint = `report/tables/healing/${logId}?start=${logStartTime}&end=${logEndTime}`;
                 console.log('Healing endpoint:', healingEndpoint);
                 healingData = await this.makeApiCall(healingEndpoint);
-                console.log('Healing API response:', healingData);
-                console.log('Healing totalTime:', healingData.totalTime || 0);
-                console.log('Healing entries length:', healingData.entries ? healingData.entries.length : 'no entries property');
-                console.log('Healing entries content:', healingData.entries);
-                if (healingData.entries && healingData.entries.length > 0) {
-                    console.log('First healing entry:', healingData.entries[0]);
-                }
             } catch (error) {
                 console.error('Direct healing API call failed:', error);
                 healingData = { entries: [] };

@@ -632,6 +632,15 @@ migratePlayerConfirmedLogsTable();
     // Initialize polls tables and seed initial poll
     await initializePollsTables();
     await ensureInitialPoll();
+
+    // Ensure log_data has dps_value and hps_value columns (migration for existing databases)
+    try {
+      await pool.query(`ALTER TABLE log_data ADD COLUMN IF NOT EXISTS dps_value FLOAT DEFAULT 0`);
+      await pool.query(`ALTER TABLE log_data ADD COLUMN IF NOT EXISTS hps_value FLOAT DEFAULT 0`);
+    } catch (e) {
+      // Table may not exist yet — that's fine, ensureLogDataTable will create it with these columns
+      if (e.code !== '42P01') console.error('log_data migration error:', e.message);
+    }
   })
   .catch(err => {
     console.error('Error connecting to PostgreSQL database:', err.stack);
