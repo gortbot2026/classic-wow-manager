@@ -10112,12 +10112,21 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
     const playerRaids = parseInt(playerRaidsRes.rows[0].total, 10) || 0;
     const attendanceRate = totalRaidsAll > 0 ? Math.round((playerRaids / totalRaidsAll) * 10000) / 100 : 0;
 
-    // Gold spent from loot
+    // Gold spent from loot (total and per-event)
     const totalGoldSpent = lootRes.rows.reduce((sum, item) => sum + (parseInt(item.gold_amount, 10) || 0), 0);
+    const goldSpentByEvent = {};
+    for (const item of lootRes.rows) {
+      const eid = item.event_id;
+      if (!eid) continue;
+      const amt = parseInt(item.gold_amount, 10) || 0;
+      if (amt > 0) {
+        goldSpentByEvent[eid] = (goldSpentByEvent[eid] || 0) + amt;
+      }
+    }
 
     // Gold earned from GDKP raids — points-weighted per-raid calculation
     // Mirrors public/gold.js → computeTotalsFromSnapshot() logic
-    const totalGoldEarned = await (async () => {
+    const goldEarnedResult = await (async () => {
       // Collect all character names for this player (case-insensitive)
       const playerCharNames = new Set();
       for (const row of charactersRes.rows) {
@@ -10126,7 +10135,7 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       for (const row of playersRes.rows) {
         if (row.character_name) playerCharNames.add(row.character_name.toLowerCase());
       }
-      if (playerCharNames.size === 0) return 0;
+      if (playerCharNames.size === 0) return { totalGold: 0, goldByEvent: {} };
 
       // Helper: normalize snapshot name (mirrors gold.js normalizeSnapshotName)
       const normalizeSnapshotName = (name) => {
@@ -10158,7 +10167,7 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
         [charNamesArray]
       );
 
-      if (attendedRaidsRes.rows.length === 0) return 0;
+      if (attendedRaidsRes.rows.length === 0) return { totalGold: 0, goldByEvent: {} };
 
       const eventIds = attendedRaidsRes.rows.map(r => r.event_id);
       const sharedPotByEvent = new Map();
@@ -10197,6 +10206,7 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       }
 
       let totalGold = 0;
+      const goldByEvent = {};
 
       // Per-raid gold calculation (mirrors computeTotalsFromSnapshot 6-step formula)
       for (const eventId of eventIds) {
@@ -10272,14 +10282,22 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
         });
 
         // Sum gold for the target player's characters in this raid
+        let eventGold = 0;
         for (const charName of playerCharNames) {
           const v = nameToPlayer.get(charName);
-          if (v) totalGold += v.gold;
+          if (v) {
+            totalGold += v.gold;
+            eventGold += v.gold;
+          }
         }
+        if (eventGold > 0) goldByEvent[eventId] = eventGold;
       }
 
-      return totalGold;
+      return { totalGold, goldByEvent };
     })();
+
+    const totalGoldEarned = goldEarnedResult.totalGold;
+    const goldEarnedByEvent = goldEarnedResult.goldByEvent;
 
     // Frost resistance compliance
     const frostByEvent = {};
@@ -10436,7 +10454,9 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       worldBuffs,
       frostRes,
       assignments,
-      pollVotes
+      pollVotes,
+      goldEarnedByEvent,
+      goldSpentByEvent
     });
 
   } catch (error) {

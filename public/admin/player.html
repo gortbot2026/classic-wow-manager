@@ -130,7 +130,9 @@
             margin-bottom: 24px;
         }
         .stat-card {
-            background: var(--panel-bg);
+            background: linear-gradient(135deg,
+                color-mix(in srgb, var(--accent) 8%, var(--panel-bg)),
+                color-mix(in srgb, var(--accent) 2%, var(--panel-bg)));
             border: 1px solid var(--border);
             border-radius: 10px;
             padding: 16px;
@@ -222,8 +224,16 @@
         .char-card {
             border: 2px solid var(--border);
             border-radius: 10px;
-            padding: 16px;
+            padding: 0 16px 16px;
             background: var(--panel-elev);
+            overflow: hidden;
+        }
+        .char-card-header {
+            margin: 0 -16px;
+            padding: 10px 16px;
+            font-size: 1.1em;
+            font-weight: 700;
+            border-radius: 8px 8px 0 0;
         }
         .char-card h3 {
             font-size: 1.1em;
@@ -231,14 +241,6 @@
             display: flex;
             align-items: center;
             gap: 8px;
-        }
-        .char-card .class-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.75em;
-            font-weight: 600;
-            color: #fff;
         }
         .char-card .detail-row {
             display: flex;

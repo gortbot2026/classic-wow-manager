@@ -107,6 +107,7 @@
 
       renderIdentity();
       renderStats();
+      animateStatValues();
       renderRoles();
       renderCharacters();
       renderMemberEvents();
@@ -161,7 +162,6 @@
       { label: 'Reward Points', value: fmtNum(s.totalRewardPoints), icon: 'fa-star' },
       { label: 'Avg DPS', value: s.avgDPS != null ? fmtNum(s.avgDPS) : 'N/A', icon: 'fa-sword' },
       { label: 'Avg HPS', value: s.avgHPS != null ? fmtNum(s.avgHPS) : 'N/A', icon: 'fa-heart' },
-      { label: 'Frost Res Compliance', value: s.frostResComplianceRate != null ? s.frostResComplianceRate + '%' : 'N/A', icon: 'fa-snowflake' }
     ];
 
     document.getElementById('stats-grid').innerHTML = cards.map(function (c) {
@@ -263,6 +263,24 @@
   };
 
   // ── Render: Characters ────────────────────────────────────────────────
+  /**
+   * Determine whether a hex color needs dark text for readability.
+   * Uses relative luminance formula; returns true for light backgrounds.
+   */
+  function needsDarkText(hex) {
+    if (!hex) return false;
+    var h = hex.replace('#', '');
+    var r = parseInt(h.substring(0, 2), 16) / 255;
+    var g = parseInt(h.substring(2, 4), 16) / 255;
+    var b = parseInt(h.substring(4, 6), 16) / 255;
+    // sRGB linearization
+    r = r <= 0.03928 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
+    g = g <= 0.03928 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
+    b = b <= 0.03928 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
+    var luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.4;
+  }
+
   function renderCharacters() {
     const chars = playerData.characters;
     if (!chars || chars.length === 0) {
@@ -275,8 +293,12 @@
       chars.map(function (c) {
         var slug = classSlug(c.class);
         var guildBadge = c.inGuild === false ? ' <span class="not-in-guild">Not in Guild</span>' : '';
+        var classColor = CLASS_COLORS[(c.class || '').toLowerCase()] || '#888';
+        var textColor = needsDarkText(classColor) ? '#1a1a2e' : '#fff';
         return '<div class="char-card ' + slug + '">' +
-          '<h3>' + esc(c.characterName) + ' <span class="class-badge">' + esc(c.class) + '</span>' + guildBadge + '</h3>' +
+          '<div class="char-card-header" style="background-color:' + classColor + ';color:' + textColor + '">' +
+            esc(c.characterName) + guildBadge +
+          '</div>' +
           '<div class="detail-row"><span>Race</span><strong>' + esc(c.race || 'Unknown') + '</strong></div>' +
           '<div class="detail-row"><span>Level</span><strong>' + (c.level || '?') + '</strong></div>' +
           '<div class="detail-row"><span>Faction</span><strong>' + esc(c.faction || 'Unknown') + '</strong></div>' +
@@ -365,8 +387,16 @@
       return;
     }
 
+    // Enrich raid rows with per-event gold for sorting
+    var enriched = raids.map(function (r) {
+      var copy = Object.assign({}, r);
+      copy.goldEarned = (playerData.goldEarnedByEvent && playerData.goldEarnedByEvent[r.eventId]) || 0;
+      copy.goldSpent = (playerData.goldSpentByEvent && playerData.goldSpentByEvent[r.eventId]) || 0;
+      return copy;
+    });
+
     // Sort
-    var sorted = raids.slice().sort(function (a, b) {
+    var sorted = enriched.slice().sort(function (a, b) {
       var aVal = a[raidHistorySortCol];
       var bVal = b[raidHistorySortCol];
       if (aVal == null && bVal == null) return 0;
@@ -390,23 +420,34 @@
       '<th onclick="sortRaidHistory(\'eventDate\')">Date' + sortIcon('eventDate') + '</th>' +
       '<th onclick="sortRaidHistory(\'eventName\')">Event' + sortIcon('eventName') + '</th>' +
       '<th onclick="sortRaidHistory(\'characterUsed\')">Character' + sortIcon('characterUsed') + '</th>' +
-      '<th>In Raid</th>' +
       '<th onclick="sortRaidHistory(\'damageDealt\')">Damage' + sortIcon('damageDealt') + '</th>' +
       '<th onclick="sortRaidHistory(\'healingDone\')">Healing' + sortIcon('healingDone') + '</th>' +
       '<th>Spec</th>' +
-      '<th>WCL</th>' +
+      '<th onclick="sortRaidHistory(\'goldEarned\')">Gold Earned' + sortIcon('goldEarned') + '</th>' +
+      '<th onclick="sortRaidHistory(\'goldSpent\')">Gold Spent' + sortIcon('goldSpent') + '</th>' +
+      '<th>Links</th>' +
     '</tr></thead><tbody>';
 
     sorted.forEach(function (r) {
+      var earnedVal = playerData.goldEarnedByEvent ? playerData.goldEarnedByEvent[r.eventId] : null;
+      var spentVal = playerData.goldSpentByEvent ? playerData.goldSpentByEvent[r.eventId] : null;
+
+      // Build links cell: raidlogs (always) + WCL (conditional)
+      var linksHtml = '<a href="/event/' + encodeURIComponent(r.eventId) + '/raidlogs" target="_blank" class="wcl-link" title="Raid Logs"><i class="fas fa-scroll"></i></a>';
+      if (r.wclLogLink) {
+        linksHtml += ' <a href="' + esc(r.wclLogLink) + '" target="_blank" class="wcl-link" title="Warcraft Logs" style="margin-left:8px"><i class="fas fa-external-link-alt"></i></a>';
+      }
+
       html += '<tr>' +
         '<td>' + fmtDate(r.eventDate) + '</td>' +
         '<td>' + esc(r.eventName || r.eventId) + '</td>' +
         '<td>' + esc(r.characterUsed || '-') + '</td>' +
-        '<td>' + (r.inRaid ? '<i class="fas fa-check" style="color:var(--success)"></i>' : '<i class="fas fa-minus" style="color:var(--muted)"></i>') + '</td>' +
         '<td>' + (r.damageDealt != null ? fmtNum(r.damageDealt) : '-') + '</td>' +
         '<td>' + (r.healingDone != null ? fmtNum(r.healingDone) : '-') + '</td>' +
         '<td>' + esc(r.specName || '-') + '</td>' +
-        '<td>' + (r.wclLogLink ? '<a href="' + esc(r.wclLogLink) + '" target="_blank" class="wcl-link"><i class="fas fa-external-link-alt"></i></a>' : '-') + '</td>' +
+        '<td style="color:var(--success);font-weight:600">' + (earnedVal ? fmtNum(earnedVal) + 'g' : '-') + '</td>' +
+        '<td style="color:var(--warning);font-weight:600">' + (spentVal ? fmtNum(spentVal) + 'g' : '-') + '</td>' +
+        '<td>' + linksHtml + '</td>' +
       '</tr>';
     });
 
@@ -685,6 +726,61 @@
 
     html += '</tbody></table>';
     document.getElementById('poll-votes-body').innerHTML = html;
+  }
+
+  // ── Count-up animation for stat values ─────────────────────────────────
+  /**
+   * Animate stat-value elements from ~90% to their final numeric value.
+   * Handles suffixes (g, %), thousand separators, and skips non-numeric values.
+   * Uses requestAnimationFrame with cubic ease-out over 800ms.
+   */
+  function animateStatValues() {
+    var DURATION = 800;
+    var elements = document.querySelectorAll('.stat-value');
+
+    elements.forEach(function (el) {
+      var raw = el.textContent.trim();
+
+      // Extract numeric portion and suffix (e.g. "1,234g" → 1234, "g")
+      var match = raw.match(/^([\d,]+(?:\.\d+)?)\s*(%|g)?$/);
+      if (!match) return; // Skip non-numeric values like "N/A"
+
+      var numStr = match[1].replace(/,/g, '');
+      var finalValue = parseFloat(numStr);
+      if (isNaN(finalValue) || finalValue === 0) return;
+
+      var suffix = match[2] || '';
+      var isInteger = numStr.indexOf('.') === -1;
+      var startValue = Math.floor(finalValue * 0.9);
+
+      var startTime = null;
+      function step(timestamp) {
+        if (!startTime) startTime = timestamp;
+        var elapsed = timestamp - startTime;
+        var t = Math.min(elapsed / DURATION, 1);
+
+        // Cubic ease-out: 1 - (1 - t)^3
+        var eased = 1 - Math.pow(1 - t, 3);
+        var current = startValue + (finalValue - startValue) * eased;
+
+        if (isInteger) {
+          current = Math.round(current);
+        } else {
+          current = Math.round(current * 10) / 10;
+        }
+
+        el.textContent = current.toLocaleString('en-US') + suffix;
+
+        if (t < 1) {
+          requestAnimationFrame(step);
+        } else {
+          // Ensure final value is exact
+          el.textContent = (isInteger ? finalValue : finalValue).toLocaleString('en-US') + suffix;
+        }
+      }
+
+      requestAnimationFrame(step);
+    });
   }
 
   // ── Init ──────────────────────────────────────────────────────────────
