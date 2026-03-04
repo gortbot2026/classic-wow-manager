@@ -627,18 +627,43 @@ function createPersonaBot(options = {}) {
  * @param {string} mayaReply - Maya's reply text
  */
 async function extractPlayerNotes(pool, io, discordId, conversationId, playerMessage, mayaReply) {
-  // Fetch existing notes for deduplication context
+  // Fetch existing notes for deduplication context (20 most recent)
   const existingRes = await pool.query(
-    `SELECT note FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
+    `SELECT note FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 20`,
     [discordId]
   );
   const existingNotes = existingRes.rows.map(r => r.note);
 
-  const existingContext = existingNotes.length > 0
-    ? `\n\nExisting notes about this player (DO NOT repeat these):\n${existingNotes.map(n => `- ${n}`).join('\n')}`
+  const existingNotesBlock = existingNotes.length > 0
+    ? `\n\nEXISTING NOTES (already stored — do NOT create duplicates):\n${existingNotes.map(n => `- ${n}`).join('\n')}`
     : '';
 
-  const extractionPrompt = `You are an information extraction assistant. Based on this exchange between a guild bot and a player, extract any personal facts, opinions, preferences, or useful details about the player. Return a JSON array of short note strings. Return empty array [] if nothing notable. Do not include facts about game mechanics or the bot itself — only facts about the player as a person or their relationship with the guild. Each note should be a single concise sentence.${existingContext}`;
+  const extractionPrompt = `You are an information extraction assistant for a World of Warcraft guild bot called Maya.
+
+Based on the exchange below, extract ONLY personal, non-queryable facts about the player. Return a JSON array of short note strings. Return empty array [] if nothing notable.
+
+DO store (personal info Maya cannot look up in the database):
+- Personal preferences (e.g. "prefers not to raid on Fridays")
+- Personality traits (e.g. "tends to joke around", "very competitive")
+- Life context (e.g. "mentioned they work nights", "going on vacation next week")
+- Goals or wishes (e.g. "wants to main Priest next phase")
+- Opinions (e.g. "doesn't like the loot council system")
+- Any personal detail from conversation that gives useful future context
+
+DO NOT store (data already tracked in the database):
+- Gold earned or spent (tracked in rewards table)
+- Raid attendance, dates, or counts (tracked in raid logs)
+- Items won or loot details (tracked in loot table)
+- Character names, class, race, or level (tracked in players table)
+- Guild join date or membership status (tracked in guild records)
+- Any game statistic or fact that can be queried from the database
+
+DEDUPLICATION — This is critical:
+- If existing notes are listed below, do NOT extract anything that is semantically similar, a rephrasing, or a subset of an existing note.
+- "Semantically similar" means the same meaning even if worded differently. For example, if "works night shifts" exists, do not add "mentioned working nights".
+- Only extract genuinely NEW personal information not already captured.
+
+Each note should be a single concise sentence.${existingNotesBlock}`;
 
   const exchangeMessages = [
     { role: 'user', content: `Player said: "${playerMessage}"\n\nMaya replied: "${mayaReply}"\n\nExtract notable personal facts as JSON array:` }
