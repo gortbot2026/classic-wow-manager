@@ -17,6 +17,38 @@ const { generateResponse } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
 
 /**
+ * Sentiment-to-emoji mapping for player message reactions.
+ * Used by the inline JSON response format to classify player sentiment.
+ * @type {Record<string, string>}
+ */
+const REACTION_EMOJI_MAP = {
+  funny: '😂',
+  compliment: '❤️',
+  agree: '👍',
+  sad: '😢',
+  excited: '🎉'
+};
+
+/**
+ * Sanitizes LLM response text by removing em-dashes (U+2014) and en-dashes (U+2013).
+ * Replaces them with comma-space to maintain readability, then collapses
+ * any resulting double spaces.
+ *
+ * @param {string} text - Raw response text from the LLM
+ * @returns {string} Sanitized text with dashes replaced
+ */
+function sanitizeResponse(text) {
+  if (!text) return text;
+  // Replace em-dashes and en-dashes with comma-space
+  let result = text.replace(/[\u2014\u2013]/g, ',');
+  // Collapse any double/triple spaces into single space
+  result = result.replace(/ {2,}/g, ' ');
+  // Clean up cases like ", ," from adjacent dashes
+  result = result.replace(/,\s*,/g, ',');
+  return result.trim();
+}
+
+/**
  * Clamps a numeric value between a minimum and maximum.
  *
  * @param {number} value - Value to clamp
@@ -254,6 +286,12 @@ function createPersonaBot(options = {}) {
       systemPrompt += '\n\nDo not use the player\'s name. Use greetings like \'Hey there\', \'Hi!\', \'Hey!\' instead.';
     }
 
+    // Append em-dash/en-dash prohibition (reduces AI-tell patterns at the source)
+    systemPrompt += '\n\nIMPORTANT: Never use em-dashes (—) or en-dashes (–) in your responses. Use commas, periods, or semicolons instead.';
+
+    // Append JSON response format instruction for inline sentiment classification
+    systemPrompt += '\n\nRESPONSE FORMAT: Always respond with a JSON object: {"reply": "your message text", "reaction": "sentiment_or_null"}. For the reaction field, classify the player\'s last message sentiment as one of: "funny" (😂), "compliment" (❤️), "agree" (👍), "sad" (😢), "excited" (🎉), or null for neutral. Most messages are neutral. Your entire response must be valid JSON — no text outside the JSON object.';
+
     // Get conversation history
     const maxMessages = persona.max_context_messages || 20;
     const historyRes = await pool.query(
@@ -363,26 +401,58 @@ function createPersonaBot(options = {}) {
           message.channel.sendTyping().catch(() => {});
         }, 8000);
 
-        let responseText;
+        let rawResponse;
         try {
-          responseText = await generateResponse(systemPrompt, messages, model);
+          rawResponse = await generateResponse(systemPrompt, messages, model);
         } finally {
           clearInterval(typingInterval);
         }
 
-        if (responseText) {
+        if (rawResponse) {
+          // Parse JSON response to extract reply text and optional reaction sentiment
+          let replyText = rawResponse;
+          let reactionEmoji = null;
+
+          try {
+            const parsed = JSON.parse(rawResponse);
+            if (parsed && typeof parsed.reply === 'string') {
+              replyText = parsed.reply;
+              // Map sentiment string to emoji via the allowed mapping
+              if (parsed.reaction && typeof parsed.reaction === 'string' && REACTION_EMOJI_MAP[parsed.reaction]) {
+                reactionEmoji = REACTION_EMOJI_MAP[parsed.reaction];
+              }
+            }
+          } catch (parseErr) {
+            // Graceful degradation: if JSON parse fails, use raw response as plain text
+            console.warn('[persona-bot] JSON parse failed for LLM response, using raw text. Error:', parseErr.message);
+            replyText = rawResponse;
+            reactionEmoji = null;
+          }
+
+          // Sanitize em-dashes/en-dashes from the reply text
+          replyText = sanitizeResponse(replyText);
+
+          // Apply emoji reaction to the player's message (40% randomness gate)
+          if (reactionEmoji && Math.random() < 0.4) {
+            try {
+              await message.react(reactionEmoji);
+            } catch (reactErr) {
+              console.warn('[persona-bot] Failed to react with emoji:', reactErr.message || reactErr);
+            }
+          }
+
           // Human-like typing delay — simulates Maya composing her reply
-          const typeDelay = typingDelay(responseText);
+          const typeDelay = typingDelay(replyText);
 
           // Keep typing indicator alive during the typing delay
           message.channel.sendTyping().catch(() => {});
           await new Promise(resolve => setTimeout(resolve, typeDelay));
 
           // Store and send the response
-          await storeMessage(conversation.id, 'maya', responseText, model);
+          await storeMessage(conversation.id, 'maya', replyText, model);
 
           // Send via Discord DM
-          await message.channel.send(responseText);
+          await message.channel.send(replyText);
         }
       } finally {
         generationLocks.delete(conversation.id);
@@ -489,6 +559,9 @@ function createPersonaBot(options = {}) {
             templateVars.set('player_name', attendee.player_name);
           }
           let opening = applyTemplateVariables(template.opening_message, templateVars);
+
+          // Sanitize em-dashes/en-dashes as a safety net (future-proofs LLM-generated openers)
+          opening = sanitizeResponse(opening);
 
           // Store and send the opening message
           const model = template.model_override || 'claude-haiku-4-5';
