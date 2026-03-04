@@ -185,6 +185,44 @@ async function loadStats() {
   `).join('');
 }
 
+// ─── Voice Transcripts (Phase 2) ────────────────────────────────────────
+
+/**
+ * Loads recent voice transcripts from the API with optional filters.
+ * Renders them into the #voice-transcripts container.
+ */
+async function loadTranscripts() {
+  const speaker = (document.getElementById('transcript-speaker-filter') || {}).value || '';
+  const eventId = (document.getElementById('transcript-event-filter') || {}).value || '';
+
+  const params = new URLSearchParams();
+  if (speaker.trim()) params.set('speaker', speaker.trim());
+  if (eventId.trim()) params.set('event_id', eventId.trim());
+  params.set('limit', '50');
+
+  const data = await apiFetch(`/api/admin/maya/transcripts?${params.toString()}`);
+  const container = document.getElementById('voice-transcripts');
+  if (!container) return;
+
+  if (!data || !data.transcripts || data.transcripts.length === 0) {
+    container.innerHTML = '<p style="color: var(--muted); font-size: 13px;">No transcripts found. Transcripts appear here when the voice worker captures and transcribes speech from Discord voice channels.</p>';
+    return;
+  }
+
+  container.innerHTML = data.transcripts.map(t => {
+    const time = t.spoken_at ? new Date(t.spoken_at).toLocaleString() : 'unknown';
+    const eventTag = t.event_id ? `<span class="badge badge-trigger" style="margin-left:4px;font-size:10px;">${escHtml(t.event_id)}</span>` : '';
+    return `<div style="margin-bottom: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border);">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+        <strong style="font-size:13px;">${escHtml(t.speaker_name || t.speaker_discord_id)}</strong>
+        ${eventTag}
+        <span style="font-size:11px;color:var(--muted);margin-left:auto;">${escHtml(time)}</span>
+      </div>
+      <div style="font-size:13px;color:var(--text);">${escHtml(t.transcript_text)}</div>
+    </div>`;
+  }).join('');
+}
+
 // ─── Utilities ──────────────────────────────────────────────────────────
 
 function escHtml(str) {
@@ -200,4 +238,5 @@ document.addEventListener('DOMContentLoaded', () => {
   loadPersona();
   loadTemplates();
   loadStats();
+  loadTranscripts();
 });

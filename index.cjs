@@ -3241,6 +3241,44 @@ app.get('/api/admin/maya/conversations/by-discord/:discordId', requireManagement
   }
 });
 
+// --- Voice Transcripts (Phase 2) ---
+
+/** Get recent voice transcripts with optional filtering by speaker or event */
+app.get('/api/admin/maya/transcripts', requireManagement, async (req, res) => {
+  try {
+    const { speaker, event_id, limit: queryLimit } = req.query;
+    const limitVal = Math.min(Math.max(parseInt(queryLimit) || 50, 1), 200);
+    const params = [];
+    const conditions = [];
+
+    if (speaker) {
+      params.push(`%${speaker}%`);
+      conditions.push(`(speaker_name ILIKE $${params.length} OR speaker_discord_id = $${params.length})`);
+    }
+    if (event_id) {
+      params.push(event_id);
+      conditions.push(`event_id = $${params.length}`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(limitVal);
+
+    const result = await pool.query(
+      `SELECT id, event_id, speaker_discord_id, speaker_name, transcript_text, spoken_at
+       FROM raid_voice_transcripts
+       ${whereClause}
+       ORDER BY spoken_at DESC
+       LIMIT $${params.length}`,
+      params
+    );
+
+    res.json({ success: true, transcripts: result.rows });
+  } catch (err) {
+    console.error('[maya-api] Error getting transcripts:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error getting transcripts' });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════
 // End Maya Admin API
 // ════════════════════════════════════════════════════════════════════════
