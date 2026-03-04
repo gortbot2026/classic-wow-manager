@@ -1,6 +1,6 @@
 # Security: Admin Player Profile Page (`/admin/player/:discordId`)
 
-_Last updated: 2026-03-03 by Security Gort_
+_Last updated: 2026-03-04 by Security Gort_
 
 ## Endpoints
 
@@ -68,6 +68,39 @@ All values passed as parameters.
 - `officer_note` (guild officer notes) are exposed to management role users — appropriate for admin page
 - Error messages are generic (`'Error fetching player data'`) — no stack traces or query details leaked
 
+## Gold Earned / Gold Spent Per-Event Maps
+
+_Updated 2026-03-04: Extended totalGoldEarned calculation to also produce `goldEarnedByEvent` and `goldSpentByEvent` maps for per-raid gold breakdown on the admin player page._
+
+### goldEarnedByEvent
+
+Built inside the existing async IIFE (previously computing `totalGoldEarned`):
+- Keys: `event_id` values from `player_confirmed_logs` query results (DB-sourced, not user input)
+- Values: floating-point sums of `v.gold` per event, computed from the points-weighted GDKP formula
+- Only events where `eventGold > 0` are included (zero-gold raids omitted)
+- Returned as part of the API response JSON
+
+### goldSpentByEvent
+
+Built from `lootRes.rows` (the existing loot query result, no new SQL):
+- Keys: `item.event_id` from loot rows (DB-sourced)
+- Values: `parseInt(item.gold_amount, 10) || 0` — integer-only, no float risk
+- Only positive amounts included (`amt > 0` guard)
+
+### Frontend Rendering
+
+- `playerData.goldEarnedByEvent[r.eventId]` — object lookup, no user input involved
+- `playerData.goldSpentByEvent[r.eventId]` — same
+- Values formatted with `fmtNum()` + hardcoded `'g'` suffix — no XSS risk
+- Both columns sortable via the existing sortRaidHistory() mechanism
+
+### Security Properties
+
+- No new SQL queries — both maps built in-memory from already-fetched result rows
+- No user-controlled input flows into key or value construction
+- Integer/float arithmetic only — no string concatenation with external data
+- Prototype pollution: event IDs are application-generated strings (not `__proto__`/`constructor`) — negligible risk
+
 ## Gold Earned Calculation
 
 _Updated 2026-03-03: Replaced naive equal-split SQL with points-weighted per-raid JS calculation._
@@ -115,6 +148,22 @@ As of 2026-03-03, `npm audit` reports 23 pre-existing vulnerabilities:
 - **1 low/moderate**: minimatch ReDoS
 
 These vulnerabilities are **pre-existing** and **not introduced by the admin player profile feature**. Recommend scheduling an `npm audit fix` pass in a future sprint. The critical `fast-xml-parser` issue only affects S3/AWS SDK usage (image uploads), not the player profile endpoints.
+
+## Raidlogs Link & Character Card Header (2026-03-04)
+
+### Raidlogs Link
+- URL pattern: `/event/${encodeURIComponent(r.eventId)}/raidlogs`
+- `encodeURIComponent()` applied to eventId — prevents path traversal or XSS via event ID value
+- Link opens in `target="_blank"` — no `rel="noopener"` needed for same-origin links; WCL external links already use `_blank`
+
+### Character Card Header Bar
+- `classColor` sourced from hardcoded `CLASS_COLORS` map (keyed by WoW class names, values are hex strings)
+- Even if `c.class` is a DB value with unusual characters, it can only resolve to a predefined hex color or the default `#888` — no user-controlled CSS injection
+- `textColor` is computed locally as `'#1a1a2e'` or `'#fff'` based on luminance — hardcoded strings only
+- `classSlug(c.class)` injects class name into HTML `class` attribute (e.g. `class-warrior`). Function only lowercases and replaces spaces — does NOT escape `"` or `>`. Pre-existing pattern; WoW class names are constrained DB values. LOW risk, theoretical only.
+
+### In Raid Column Removal
+- Removed misleading column — no security implications; data access unchanged
 
 ## CSRF Consideration
 
