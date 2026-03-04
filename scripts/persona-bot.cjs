@@ -120,11 +120,66 @@ function readingDelay(text) {
  * Simulates Maya typing out her reply after the LLM generates it.
  *
  * @param {string} text - Outgoing response text
- * @returns {number} Delay in milliseconds (500–5000)
+ * @returns {number} Delay in milliseconds (500–12000)
  */
 function typingDelay(text) {
   const wordCount = (text || '').split(/\s+/).filter(Boolean).length;
-  return clamp(wordCount * 60, 500, 5000);
+  return clamp(wordCount * 90, 500, 12000);
+}
+
+/**
+ * Simulates realistic typing with random "thinking" pauses.
+ * Splits the total typing time into unequal segments with gaps where the
+ * typing indicator disappears, mimicking a human pausing to think mid-message.
+ *
+ * @param {import('discord.js').TextBasedChannel} channel - Discord channel to send typing indicators to
+ * @param {number} totalTypingMs - Total typing duration in milliseconds (from typingDelay())
+ * @returns {Promise<void>} Resolves when all typing simulation is complete
+ */
+async function simulateTypingWithPauses(channel, totalTypingMs) {
+  // Determine number of thinking pauses: 1 per ~2500ms of typing, capped at 3
+  const pauseCount = Math.min(Math.floor(totalTypingMs / 2500), 3);
+  const segmentCount = pauseCount + 1;
+
+  // Split total typing time into random-length segments
+  const weights = [];
+  for (let i = 0; i < segmentCount; i++) {
+    weights.push(Math.random());
+  }
+  const weightSum = weights.reduce((sum, w) => sum + w, 0);
+  const segments = weights.map(w => Math.round((w / weightSum) * totalTypingMs));
+
+  // Generate random pause durations (1000–3000ms each)
+  const pauses = [];
+  for (let i = 0; i < pauseCount; i++) {
+    pauses.push(Math.round(1000 + Math.random() * 2000));
+  }
+
+  console.log(`[persona-bot] simulateTypingWithPauses: totalMs=${totalTypingMs}, segments=[${segments.join(', ')}]ms, pauses=[${pauses.join(', ')}]ms`);
+
+  for (let i = 0; i < segments.length; i++) {
+    const segmentMs = segments[i];
+
+    // Start typing indicator for this segment
+    channel.sendTyping().catch(() => {});
+
+    // Wait for segment duration, refreshing typing indicator every 8s
+    let remaining = segmentMs;
+    while (remaining > 0) {
+      const waitTime = Math.min(remaining, 8000);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      remaining -= waitTime;
+      // Refresh typing indicator if more time remains in this segment
+      if (remaining > 0) {
+        channel.sendTyping().catch(() => {});
+      }
+    }
+
+    // Insert thinking pause between segments (no typing indicator)
+    if (i < segments.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pauses[i]));
+    }
+  }
 }
 
 /**
@@ -456,12 +511,9 @@ function createPersonaBot(options = {}) {
           let replyText = sanitizeResponse(rawResponse);
           replyText = sanitizeForDiscord(replyText);
 
-          // Human-like typing delay — simulates Maya composing her reply
+          // Human-like typing delay with thinking pauses — simulates Maya composing her reply
           const typeDelay = typingDelay(replyText);
-
-          // Keep typing indicator alive during the typing delay
-          message.channel.sendTyping().catch(() => {});
-          await new Promise(resolve => setTimeout(resolve, typeDelay));
+          await simulateTypingWithPauses(message.channel, typeDelay);
 
           // Store and send the response
           await storeMessage(conversation.id, 'maya', replyText, model);

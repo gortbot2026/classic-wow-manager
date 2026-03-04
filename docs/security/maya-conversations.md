@@ -114,3 +114,37 @@ Maya conversation events are logged to:
 - All messages stored in `bot_messages` table (conversation_id, role, content)
 
 No sensitive player data (passwords, payment info) is stored in Maya conversations.
+
+---
+
+## Maya Admin UI — Conversation Controls & History Panel (2026-03-04)
+
+### Feature Summary
+- Persistent Start/Stop button replacing dynamic addNewConversationButton()
+- Removed Pause/Resume/TakeOver buttons — manual AI toggle is now the sole control
+- Conversation History panel: collapsible, lazy-loaded, shows all past conversations with transcripts
+- New backend: `/generate` endpoint (placeholder), subqueries in `by-discord` endpoint
+
+### Authentication
+- All 3 changed endpoints (`/generate`, `/by-discord/:discordId`) use `requireManagement` middleware
+- Frontend transcript fetches use `credentials: 'include'` for session auth
+
+### Input Validation
+- `discordId` parameter validated via regex `/^[0-9]{1,20}$/` before DB query
+- `conversationId` in `/generate` validated via DB existence check (parameterized query) — no explicit UUID format check (LOW risk: DB parameterization prevents injection, errors caught gracefully)
+
+### XSS Prevention
+- All user/DB content rendered via `escapeHtml()` (textContent/innerHTML DOM trick)
+- Labels for message roles are hardcoded strings (no user-controlled values)
+- `conv.status` used directly in CSS class name — LOW risk since values are DB-controlled (active/paused/closed)
+
+### SQL Injection
+- All queries use parameterized `$1`, `$2` placeholders via `pg` pool — no interpolation
+
+### Sensitive Data
+- Conversation transcripts contain player messages — access gated behind `requireManagement`
+- Error messages return generic text, do not expose SQL errors or stack traces to client
+
+### Known Notes
+- Pre-existing npm vulnerabilities (23 total, 1 critical: `fast-xml-parser` DoS) — not introduced by this PR, tracked for future sprint
+
