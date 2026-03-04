@@ -152,6 +152,10 @@
         window.location.href = '/';
         return;
       }
+
+      // Initialize Maya socket after auth — userId is now available
+      initMayaSocket(currentUser.id);
+      initMayaNotesSocket();
     } catch (_) {
       window.location.href = '/';
       return;
@@ -890,16 +894,17 @@
   var currentConversation = null;
   var mayaSocket = null;
 
-  /** Initialize Socket.IO for real-time Maya updates */
-  function initMayaSocket() {
+  /**
+   * Initialize Socket.IO for real-time Maya updates.
+   * Must be called after currentUser is populated (from init()).
+   * @param {string} userId - Discord ID of the authenticated admin user
+   */
+  function initMayaSocket(userId) {
     if (typeof io === 'undefined') return;
+    if (!userId) return;
     try {
-      var userId = null;
-      var metaEl = document.querySelector('meta[name="user-id"]');
-      if (metaEl) userId = metaEl.getAttribute('content');
-      
       mayaSocket = io('/maya-admin', {
-        auth: { userId: userId || 'admin' },
+        auth: { userId: userId },
         transports: ['websocket', 'polling']
       });
 
@@ -923,8 +928,8 @@
         }
       });
 
-      mayaSocket.on('connect_error', function() {
-        // Socket auth failed — disable real-time silently
+      mayaSocket.on('connect_error', function(err) {
+        console.warn('[maya-admin] Socket connection failed:', err.message);
       });
     } catch (e) {
       // Socket.IO not available
@@ -1419,14 +1424,10 @@
       loadMayaChat();
       loadMayaNotes();
       fetchTemplates();
-      initMayaSocket();
-      initMayaNotesSocket();
     });
   } else {
     loadMayaChat();
     loadMayaNotes();
     fetchTemplates();
-    initMayaSocket();
-    initMayaNotesSocket();
   }
 })();
