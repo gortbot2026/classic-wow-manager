@@ -28,6 +28,71 @@
     'death knight': '#C41F3B'
   };
 
+  /**
+   * Light-theme fallback colors for classes whose default color is too
+   * bright to read on a white/light background (Priest, Rogue).
+   * Used only when the page is NOT in dark mode.
+   */
+  const CLASS_COLORS_LIGHT = {
+    priest: '#AAAAAA',
+    rogue: '#D4B200'
+  };
+
+  /**
+   * Lookup map: lowercase character name → WoW class string.
+   * Built once from playerData.characters in buildCharNameLookup().
+   * @type {Map<string, string>}
+   */
+  var charNameToClass = new Map();
+
+  /**
+   * Populate the charNameToClass lookup from playerData.characters.
+   * Must be called after playerData is loaded.
+   */
+  function buildCharNameLookup() {
+    charNameToClass = new Map();
+    if (!playerData || !playerData.characters) return;
+    playerData.characters.forEach(function (c) {
+      if (c.characterName && c.class) {
+        charNameToClass.set(c.characterName.toLowerCase(), c.class.toLowerCase());
+      }
+    });
+  }
+
+  /**
+   * Detect whether dark mode is currently active.
+   * Checks for the .dark class on <html> or the prefers-color-scheme media query.
+   * @returns {boolean}
+   */
+  function isDarkMode() {
+    return document.documentElement.classList.contains('dark') ||
+      (!localStorage.getItem('admin-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+
+  /**
+   * Wrap a character name in a <span> with the appropriate WoW class color.
+   * Falls back to uncolored escaped text if the character is not in the lookup.
+   * Uses esc() for XSS safety on the name text content.
+   *
+   * @param {string} name - The character name to colorize
+   * @returns {string} HTML string with colored span (or plain escaped text)
+   */
+  function classColorSpan(name) {
+    if (!name) return esc(name);
+    var cls = charNameToClass.get(name.toLowerCase());
+    if (!cls) return esc(name);
+
+    var color = CLASS_COLORS[cls];
+    if (!color) return esc(name);
+
+    // In light mode, swap to readable fallback for very bright class colors
+    if (!isDarkMode() && CLASS_COLORS_LIGHT[cls]) {
+      color = CLASS_COLORS_LIGHT[cls];
+    }
+
+    return '<span class="class-color-text" style="color:' + color + ';font-weight:600">' + esc(name) + '</span>';
+  }
+
   /** Return a CSS class string for a WoW class name */
   function classSlug(className) {
     if (!className) return '';
@@ -104,6 +169,9 @@
 
       document.getElementById('loading').style.display = 'none';
       document.getElementById('content').style.display = 'block';
+
+      // Build character-name-to-class lookup for class-colored text
+      buildCharNameLookup();
 
       renderIdentity();
       renderStats();
@@ -441,7 +509,7 @@
       html += '<tr>' +
         '<td>' + fmtDate(r.eventDate) + '</td>' +
         '<td>' + esc(r.eventName || r.eventId) + '</td>' +
-        '<td>' + esc(r.characterUsed || '-') + '</td>' +
+        '<td>' + (r.characterUsed ? classColorSpan(r.characterUsed) : '-') + '</td>' +
         '<td>' + (r.damageDealt != null ? fmtNum(r.damageDealt) : '-') + '</td>' +
         '<td>' + (r.healingDone != null ? fmtNum(r.healingDone) : '-') + '</td>' +
         '<td>' + esc(r.specName || '-') + '</td>' +
@@ -609,7 +677,7 @@
           html += '<td' + (charNames.length > 1 ? ' rowspan="' + charNames.length + '"' : '') +
             ' style="vertical-align:middle;font-weight:600">' + esc(eventId) + '</td>';
         }
-        html += '<td>' + esc(charName) + '</td>';
+        html += '<td>' + classColorSpan(charName) + '</td>';
         allBuffNames.forEach(function (bn) {
           var buffData = chars[charName][bn];
           if (buffData) {
@@ -657,7 +725,7 @@
       var ok = frVal >= 100;
       html += '<tr>' +
         '<td>' + esc(f.eventId) + '</td>' +
-        '<td>' + esc(f.characterName) + '</td>' +
+        '<td>' + classColorSpan(f.characterName) + '</td>' +
         '<td style="font-weight:600">' + esc(f.frostResistance) + '</td>' +
         '<td>' + (ok
           ? '<i class="fas fa-check-circle status-accepted"></i> OK'
@@ -694,7 +762,7 @@
         '<td>' + esc(a.eventId) + '</td>' +
         '<td>' + esc(a.boss) + '</td>' +
         '<td>' + esc(a.assignment || '-') + '</td>' +
-        '<td>' + esc(a.characterName) + '</td>' +
+        '<td>' + classColorSpan(a.characterName) + '</td>' +
         '<td>' + statusHtml + '</td>' +
       '</tr>';
     });

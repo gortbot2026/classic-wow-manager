@@ -458,6 +458,16 @@
         .class-death-knight { border-color: #C41F3B !important; }
         .class-death-knight .class-badge { background: #C41F3B; }
 
+        /* Class-colored text: light-theme visibility for bright class colors */
+        .class-color-text {
+            /* text-shadow provides a subtle outline for readability in both themes */
+            text-shadow: 0 0 1px rgba(0, 0, 0, 0.15);
+        }
+        html:not(.dark) .class-color-text {
+            /* Stronger shadow in light mode to help bright colors stand out */
+            text-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
+        }
+
         @media (max-width: 768px) {
             .identity-header { flex-direction: column; text-align: center; }
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
