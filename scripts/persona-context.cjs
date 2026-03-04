@@ -734,11 +734,18 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     // --- Last raid info queries (run in parallel) ---
     const lastRaidQueries = [];
 
-    // Last raid name from attendance_cache
+    // Last raid name: try attendance_cache first, fall back to last_boss + day-of-week from rewards_snapshot_events
     lastRaidQueries.push(
       lastRaidEventId
         ? pool.query(
-            `SELECT channel_name FROM attendance_cache WHERE event_id = $1 LIMIT 1`,
+            `SELECT
+               ac.channel_name,
+               rse.last_boss,
+               rse.locked_at
+             FROM rewards_snapshot_events rse
+             LEFT JOIN attendance_cache ac ON ac.event_id = rse.event_id
+             WHERE rse.event_id = $1
+             LIMIT 1`,
             [lastRaidEventId]
           )
         : Promise.resolve({ rows: [] })
@@ -800,9 +807,34 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       await Promise.all(lastRaidQueries);
 
     // Last raid name
-    const rawRaidName = raidNameRes.rows.length > 0 && raidNameRes.rows[0].channel_name
-      ? raidNameRes.rows[0].channel_name : null;
-    const lastRaidName = rawRaidName ? humanizeRaidName(stripDateSuffix(rawRaidName)) : 'unknown';
+    // Resolve raid name: prefer attendance_cache channel_name, fall back to last_boss + day-of-week
+    let lastRaidName = 'unknown';
+    if (raidNameRes.rows.length > 0) {
+      const row = raidNameRes.rows[0];
+      if (row.channel_name) {
+        lastRaidName = humanizeRaidName(stripDateSuffix(row.channel_name));
+      } else if (row.last_boss) {
+        // Map last boss to raid instance name
+        const BOSS_TO_RAID = {
+          "kel'thuzad": 'Naxx', "kelthuzad": 'Naxx',
+          "c'thun": 'AQ40', "cthun": 'AQ40',
+          "viscidus": 'AQ20', "ossirian": 'AQ20',
+          "nefarian": 'BWL',
+          "ragnaros": 'Molten Core',
+          "hakkar": 'Zul Gurub',
+          "onyxia": 'Onyxia'
+        };
+        const bossKey = (row.last_boss || '').toLowerCase().replace(/[^a-z']/g, '');
+        const raidInstance = BOSS_TO_RAID[bossKey] || row.last_boss;
+        if (row.locked_at) {
+          const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+          const day = dayNames[new Date(row.locked_at).getDay()];
+          lastRaidName = `${day} ${raidInstance}`;
+        } else {
+          lastRaidName = raidInstance;
+        }
+      }
+    }
     vars.set('last_raid_name', lastRaidName);
     vars.set('raid_name', lastRaidName); // backward compat alias
 
