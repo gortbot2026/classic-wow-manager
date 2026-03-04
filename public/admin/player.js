@@ -153,13 +153,17 @@
         return;
       }
 
-      // Initialize Maya socket after auth — userId is now available
-      initMayaSocket(currentUser.id);
-      initMayaNotesSocket();
     } catch (_) {
       window.location.href = '/';
       return;
     }
+
+    // Signal to Maya chat panel (second IIFE) that auth is ready.
+    // Placed outside the auth try-catch so any socket init errors
+    // in the event listener won't trigger a redirect to home.
+    window.dispatchEvent(new CustomEvent('maya-admin-ready', {
+      detail: { userId: currentUser.id }
+    }));
 
     try {
       const resp = await fetch('/api/admin/player/' + encodeURIComponent(discordId));
@@ -1418,7 +1422,7 @@
     });
   }
 
-  // Initialize on DOM ready
+  // Initialize REST-based loaders on DOM ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
       loadMayaChat();
@@ -1430,4 +1434,13 @@
     loadMayaNotes();
     fetchTemplates();
   }
+
+  // Initialize socket after auth completes in the first IIFE.
+  // The 'maya-admin-ready' event carries the authenticated userId,
+  // avoiding cross-IIFE function calls that would cause ReferenceErrors.
+  window.addEventListener('maya-admin-ready', function(e) {
+    var userId = e.detail && e.detail.userId;
+    initMayaSocket(userId);
+    initMayaNotesSocket();
+  });
 })();
