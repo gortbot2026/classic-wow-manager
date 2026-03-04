@@ -214,7 +214,7 @@ async function buildPlayerContext(pool, discordId) {
       parts.push(`Guild: ${templateVars.get('guild_name') || '1Principles'}`);
       parts.push(`Total gold earned: ${totalGold}g`);
       if (lastRaidName !== 'unknown') {
-        parts.push(`Last raid (${lastRaidName}): earned ${goldEarnedLast}g, spent ${goldSpentLast}g, manual rewards ${manualRewards}g, manual deductions ${manualDeductions}g, items won: ${itemsWon}`);
+        parts.push(`Last raid (${lastRaidName}): earned ${goldEarnedLast}g, spent ${goldSpentLast}g, manual reward points ${manualRewards} pts, manual deduction points ${manualDeductions} pts, items won: ${itemsWon}`);
       }
 
       parts.push('\n=== Guild Membership ===');
@@ -900,16 +900,10 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       );
       vars.set('total_gold_earned', String(totalResult.totalGold));
 
-      // Gold earned last raid only
-      if (lastRaidEventId && sharedPotByEvent.has(lastRaidEventId)) {
-        const lastRaidPot = new Map([[lastRaidEventId, sharedPotByEvent.get(lastRaidEventId)]]);
-        const lastRaidResult = computeGoldFromEntries(
-          snapshotRes.rows.filter(r => r.event_id === lastRaidEventId),
-          confirmedRes.rows.filter(r => r.event_id === lastRaidEventId),
-          lastRaidPot,
-          playerCharNames
-        );
-        vars.set('gold_earned_last_raid', String(lastRaidResult.totalGold));
+      // Gold earned last raid only — use goldByEvent from the full calculation
+      // (re-running computeGoldFromEntries on filtered data breaks the per-event totals)
+      if (lastRaidEventId && totalResult.goldByEvent[lastRaidEventId] !== undefined) {
+        vars.set('gold_earned_last_raid', String(totalResult.goldByEvent[lastRaidEventId]));
       } else {
         vars.set('gold_earned_last_raid', '0');
       }
