@@ -27746,19 +27746,19 @@ if (attachChatIo) {
         });
       });
       console.log('✅ Maya admin Socket.IO namespace initialized');
-
-      // Initialize persona bot after Socket.IO is ready
-      if (createPersonaBot) {
-        try {
-          personaBotInstance = createPersonaBot({ pool, io });
-          await personaBotInstance.start();
-          console.log('✅ Maya persona bot initialized');
-        } catch (err) {
-          console.error('❌ Failed to initialize persona bot:', err?.message || err);
-        }
-      }
     } catch (err) {
       console.error('❌ Failed to initialize Site chat Socket.IO:', err && err.message ? err.message : err);
+    }
+
+    // Initialize persona bot independently — runs even if Socket.IO failed above
+    if (createPersonaBot) {
+      try {
+        personaBotInstance = createPersonaBot({ pool, io: app.get('io') });
+        await personaBotInstance.start();
+        console.log('✅ Maya persona bot initialized');
+      } catch (err) {
+        console.error('❌ Failed to initialize Maya persona bot:', err?.message || err);
+      }
     }
   })();
 }
