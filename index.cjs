@@ -55,6 +55,20 @@ try {
   getMemberEvents = null;
 }
 
+// Persona bot (Maya) — separate Discord client for AI persona DMs
+let createPersonaBot = null;
+try {
+  const personaModule = require('./scripts/persona-bot.cjs');
+  createPersonaBot = personaModule.createPersonaBot;
+  console.log('[init] Persona bot module loaded:', { hasCreatePersonaBot: !!createPersonaBot });
+} catch (err) {
+  console.error('[init] Failed to load persona bot module:', err?.message || err);
+  createPersonaBot = null;
+}
+
+// Global reference to persona bot instance (set after initialization)
+let personaBotInstance = null;
+
 // Fallback voiceStateMap if bridge module not available
 const fallbackVoiceStateMap = new Map();
 
@@ -393,6 +407,23 @@ function getTopic(scope, eventId) {
   return `${s}:${e}`;
 }
 
+/**
+ * Fires a Maya auto-trigger template for a player. Non-blocking.
+ * @param {string} triggerType - 'welcome' | 'item_won' | 'post_raid'
+ * @param {string} discordId - Player's Discord ID
+ * @param {string} [playerName] - Player's character name
+ */
+function fireMayaTrigger(triggerType, discordId, playerName) {
+  if (!personaBotInstance || !discordId) return;
+  setImmediate(async () => {
+    try {
+      await personaBotInstance.triggerTemplate(triggerType, '', [{ discord_id: discordId, player_name: playerName || null }]);
+    } catch (err) {
+      console.error(`[maya-trigger] ${triggerType} trigger error for ${discordId}:`, err?.message || err);
+    }
+  });
+}
+
 function broadcastUpdate(scope, eventId, data) {
   try {
     const topic = getTopic(scope, eventId);
@@ -641,6 +672,9 @@ migratePlayerConfirmedLogsTable();
       // Table may not exist yet — that's fine, ensureLogDataTable will create it with these columns
       if (e.code !== '42P01') console.error('log_data migration error:', e.message);
     }
+
+    // Initialize Maya persona bot tables
+    await initializeMayaTables();
   })
   .catch(err => {
     console.error('Error connecting to PostgreSQL database:', err.stack);
@@ -989,6 +1023,123 @@ async function ensureInitialPoll() {
     console.log(`✅ Seeded initial poll ${pollId}`);
   } catch (error) {
     console.error('❌ Error seeding initial poll:', error);
+  }
+}
+
+/**
+ * Initialize Maya persona bot database tables.
+ * Creates 5 tables: bot_persona, bot_conversations, bot_messages,
+ * bot_templates, raid_voice_transcripts.
+ */
+async function initializeMayaTables() {
+  try {
+    // bot_persona — Maya's soul/system prompt and model config
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bot_persona (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT 'Maya',
+        system_prompt TEXT NOT NULL,
+        model TEXT NOT NULL DEFAULT 'claude-haiku-4-5',
+        max_context_messages INT DEFAULT 20,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // bot_conversations — One row per player conversation thread
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bot_conversations (
+        id TEXT PRIMARY KEY,
+        discord_id TEXT NOT NULL,
+        player_name TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        started_by TEXT NOT NULL DEFAULT 'auto',
+        template_id TEXT,
+        admin_override BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_conversations_discord_id ON bot_conversations(discord_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_conversations_status ON bot_conversations(status)`);
+
+    // bot_messages — Individual messages in a conversation
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bot_messages (
+        id SERIAL PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        model_used TEXT,
+        sent_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_id ON bot_messages(conversation_id)`);
+
+    // bot_templates — Conversation templates for auto-triggered outreach
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bot_templates (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        opening_message TEXT NOT NULL,
+        agent_instructions TEXT NOT NULL,
+        model_override TEXT,
+        auto_trigger BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // raid_voice_transcripts — Phase 2 voice transcription (create table now for schema readiness)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS raid_voice_transcripts (
+        id SERIAL PRIMARY KEY,
+        event_id TEXT,
+        speaker_discord_id TEXT,
+        speaker_name TEXT,
+        transcript_text TEXT NOT NULL,
+        spoken_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_raid_voice_transcripts_speaker ON raid_voice_transcripts(event_id, speaker_discord_id)`);
+
+    // Seed default Maya persona if table is empty
+    const personaCount = await pool.query(`SELECT COUNT(*) AS cnt FROM bot_persona`);
+    if (parseInt(personaCount.rows[0].cnt) === 0) {
+      await pool.query(`
+        INSERT INTO bot_persona (name, system_prompt, model, max_context_messages)
+        VALUES ($1, $2, $3, $4)
+      `, [
+        'Maya',
+        `You are Maya, a friendly and knowledgeable guild contact for 1Principles — a Classic WoW GDKP guild. You reach out to players after raids to congratulate them, discuss their performance, and build relationships.
+
+Your personality:
+- Warm, genuine, and enthusiastic about WoW
+- Knowledgeable about Classic WoW raiding, classes, and GDKP systems
+- Casual and conversational — you talk like a real guild member, not a corporate bot
+- You reference specific raid data, loot, and performance when available
+- You're encouraging but honest — if someone did well, celebrate it; if there's room to improve, mention it tactfully
+- You subtly promote guild membership to PUG players who perform well
+- Keep messages relatively short (2-4 sentences usually) unless the player asks for details
+- Use occasional emojis but don't overdo it
+- Never reveal that you are an AI — you are Maya, a real person in the guild leadership
+
+Important guidelines:
+- Always reference actual player data when available (character names, raids attended, loot won)
+- For GDKP-related questions, be helpful and transparent about how gold distribution works
+- If a player seems upset or has complaints, be empathetic and offer to escalate to guild leadership
+- Never discuss internal guild politics or other players' data
+- If you don't have enough context to answer something, say you'll check and get back to them`,
+        'claude-haiku-4-5',
+        20
+      ]);
+      console.log('✅ Seeded default Maya persona');
+    }
+
+    console.log('✅ Maya persona bot tables initialized');
+  } catch (error) {
+    console.error('❌ Error initializing Maya tables:', error?.message || error);
   }
 }
 
@@ -2629,6 +2780,470 @@ app.get('/admin/raid-channels', (req, res) => {
 app.get('/admin/player/:discordId', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin', 'player.html'));
 });
+
+app.get('/admin/maya-settings', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin', 'maya-settings.html'));
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// Maya Persona Bot — Admin API Endpoints
+// ════════════════════════════════════════════════════════════════════════
+
+// --- Conversation Management ---
+
+/** List all conversations with pagination and status filter */
+app.get('/api/admin/maya/conversations', requireManagement, async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+
+    let query = `SELECT c.*, 
+      (SELECT COUNT(*) FROM bot_messages WHERE conversation_id = c.id) AS message_count,
+      (SELECT content FROM bot_messages WHERE conversation_id = c.id ORDER BY sent_at DESC LIMIT 1) AS last_message,
+      (SELECT sent_at FROM bot_messages WHERE conversation_id = c.id ORDER BY sent_at DESC LIMIT 1) AS last_message_at
+      FROM bot_conversations c`;
+    const params = [];
+
+    if (status) {
+      query += ` WHERE c.status = $1`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY c.updated_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+
+    // Get total count
+    let countQuery = `SELECT COUNT(*) AS total FROM bot_conversations`;
+    const countParams = [];
+    if (status) {
+      countQuery += ` WHERE status = $1`;
+      countParams.push(status);
+    }
+    const countRes = await pool.query(countQuery, countParams);
+
+    res.json({
+      success: true,
+      conversations: result.rows,
+      total: parseInt(countRes.rows[0].total),
+      limit,
+      offset
+    });
+  } catch (err) {
+    console.error('[maya-api] Error listing conversations:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error listing conversations' });
+  }
+});
+
+/** Get full conversation thread */
+app.get('/api/admin/maya/conversations/:conversationId', requireManagement, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const convRes = await pool.query(
+      `SELECT * FROM bot_conversations WHERE id = $1`, [conversationId]
+    );
+    if (convRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+    const messagesRes = await pool.query(
+      `SELECT id, role, content, model_used, sent_at FROM bot_messages 
+       WHERE conversation_id = $1 ORDER BY sent_at ASC`,
+      [conversationId]
+    );
+    res.json({
+      success: true,
+      conversation: convRes.rows[0],
+      messages: messagesRes.rows
+    });
+  } catch (err) {
+    console.error('[maya-api] Error getting conversation:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error getting conversation' });
+  }
+});
+
+/** Start a new conversation */
+app.post('/api/admin/maya/conversations', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { discordId, templateId, openingMessage } = req.body;
+    if (!discordId) {
+      return res.status(400).json({ success: false, message: 'discordId is required' });
+    }
+
+    // Check for existing active conversation
+    const existingRes = await pool.query(
+      `SELECT id FROM bot_conversations WHERE discord_id = $1 AND status = 'active' LIMIT 1`,
+      [discordId]
+    );
+    if (existingRes.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Active conversation already exists',
+        conversationId: existingRes.rows[0].id
+      });
+    }
+
+    // Get player name from players table
+    const playerRes = await pool.query(
+      `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`, [discordId]
+    );
+    const playerName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : null;
+
+    const convId = require('crypto').randomUUID();
+    await pool.query(
+      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id)
+       VALUES ($1, $2, $3, 'active', 'admin', $4)`,
+      [convId, discordId, playerName, templateId || null]
+    );
+
+    // Determine opening message
+    let message = openingMessage || null;
+    if (!message && templateId) {
+      const tplRes = await pool.query(`SELECT opening_message FROM bot_templates WHERE id = $1`, [templateId]);
+      if (tplRes.rows.length > 0) {
+        message = tplRes.rows[0].opening_message;
+        if (playerName) {
+          message = message.replace(/\{\{player_name\}\}/g, playerName);
+        }
+      }
+    }
+
+    // Send opening message if provided
+    if (message) {
+      await pool.query(
+        `INSERT INTO bot_messages (conversation_id, role, content) VALUES ($1, 'maya', $2)`,
+        [convId, message]
+      );
+      // Send via Discord
+      if (personaBotInstance) {
+        await personaBotInstance.sendDM(discordId, message);
+      }
+    }
+
+    res.json({ success: true, conversationId: convId });
+  } catch (err) {
+    console.error('[maya-api] Error creating conversation:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error creating conversation' });
+  }
+});
+
+/** Update conversation status or admin_override */
+app.patch('/api/admin/maya/conversations/:conversationId', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { status, admin_override } = req.body;
+    const updates = [];
+    const params = [];
+    let paramIdx = 1;
+
+    if (status !== undefined) {
+      if (!['active', 'paused', 'closed'].includes(status)) {
+        return res.status(400).json({ success: false, message: 'Invalid status' });
+      }
+      updates.push(`status = $${paramIdx++}`);
+      params.push(status);
+    }
+    if (admin_override !== undefined) {
+      updates.push(`admin_override = $${paramIdx++}`);
+      params.push(!!admin_override);
+    }
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'No fields to update' });
+    }
+
+    updates.push(`updated_at = NOW()`);
+    params.push(conversationId);
+
+    const result = await pool.query(
+      `UPDATE bot_conversations SET ${updates.join(', ')} WHERE id = $${paramIdx} RETURNING *`,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    // Emit status change
+    const io = app.get('io');
+    if (io) {
+      try { io.of('/maya-admin').emit('maya:status', { conversationId, ...result.rows[0] }); } catch (_) {}
+    }
+
+    res.json({ success: true, conversation: result.rows[0] });
+  } catch (err) {
+    console.error('[maya-api] Error updating conversation:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error updating conversation' });
+  }
+});
+
+/** Admin sends a message as Maya */
+app.post('/api/admin/maya/conversations/:conversationId/messages', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { content } = req.body;
+    if (!content || typeof content !== 'string' || content.trim().length === 0) {
+      return res.status(400).json({ success: false, message: 'Message content is required' });
+    }
+
+    // Get conversation to find discord_id
+    const convRes = await pool.query(
+      `SELECT discord_id FROM bot_conversations WHERE id = $1`, [conversationId]
+    );
+    if (convRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    // Store message as admin role
+    const msgRes = await pool.query(
+      `INSERT INTO bot_messages (conversation_id, role, content) 
+       VALUES ($1, 'admin', $2) RETURNING id, sent_at`,
+      [conversationId, content.trim()]
+    );
+
+    // Update conversation timestamp
+    await pool.query(`UPDATE bot_conversations SET updated_at = NOW() WHERE id = $1`, [conversationId]);
+
+    // Send via Discord (using persona bot, so it appears from Maya)
+    const discordId = convRes.rows[0].discord_id;
+    let sent = false;
+    if (personaBotInstance) {
+      sent = await personaBotInstance.sendDM(discordId, content.trim());
+    }
+
+    // Emit real-time update
+    const io = app.get('io');
+    if (io) {
+      try {
+        io.of('/maya-admin').emit('maya:message', {
+          conversationId,
+          role: 'admin',
+          content: content.trim(),
+          sentAt: msgRes.rows[0].sent_at,
+          messageId: msgRes.rows[0].id
+        });
+      } catch (_) {}
+    }
+
+    res.json({ success: true, messageId: msgRes.rows[0].id, discordSent: sent });
+  } catch (err) {
+    console.error('[maya-api] Error sending admin message:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error sending message' });
+  }
+});
+
+// --- Persona Management ---
+
+/** Get current persona config */
+app.get('/api/admin/maya/persona', requireManagement, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM bot_persona ORDER BY id LIMIT 1`);
+    res.json({ success: true, persona: result.rows[0] || null });
+  } catch (err) {
+    console.error('[maya-api] Error getting persona:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error getting persona' });
+  }
+});
+
+/** Update persona config */
+app.patch('/api/admin/maya/persona', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { system_prompt, model, max_context_messages } = req.body;
+    const updates = [];
+    const params = [];
+    let paramIdx = 1;
+
+    if (system_prompt !== undefined) {
+      updates.push(`system_prompt = $${paramIdx++}`);
+      params.push(system_prompt);
+    }
+    if (model !== undefined) {
+      updates.push(`model = $${paramIdx++}`);
+      params.push(model);
+    }
+    if (max_context_messages !== undefined) {
+      updates.push(`max_context_messages = $${paramIdx++}`);
+      params.push(parseInt(max_context_messages) || 20);
+    }
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'No fields to update' });
+    }
+    updates.push(`updated_at = NOW()`);
+
+    const result = await pool.query(
+      `UPDATE bot_persona SET ${updates.join(', ')} WHERE id = (SELECT id FROM bot_persona ORDER BY id LIMIT 1) RETURNING *`,
+      params
+    );
+    res.json({ success: true, persona: result.rows[0] || null });
+  } catch (err) {
+    console.error('[maya-api] Error updating persona:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error updating persona' });
+  }
+});
+
+// --- Template Management ---
+
+/** List all templates */
+app.get('/api/admin/maya/templates', requireManagement, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM bot_templates ORDER BY created_at DESC`);
+    res.json({ success: true, templates: result.rows });
+  } catch (err) {
+    console.error('[maya-api] Error listing templates:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error listing templates' });
+  }
+});
+
+/** Create template */
+app.post('/api/admin/maya/templates', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger } = req.body;
+    if (!name || !trigger_type || !opening_message || !agent_instructions) {
+      return res.status(400).json({ success: false, message: 'name, trigger_type, opening_message, and agent_instructions are required' });
+    }
+    if (!['post_raid', 'welcome', 'item_won', 'manual'].includes(trigger_type)) {
+      return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
+    }
+    const id = require('crypto').randomUUID();
+    const result = await pool.query(
+      `INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [id, name, trigger_type, opening_message, agent_instructions, model_override || null, auto_trigger || false]
+    );
+    res.json({ success: true, template: result.rows[0] });
+  } catch (err) {
+    console.error('[maya-api] Error creating template:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error creating template' });
+  }
+});
+
+/** Update template */
+app.patch('/api/admin/maya/templates/:templateId', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { templateId } = req.params;
+    const { name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger } = req.body;
+    const updates = [];
+    const params = [];
+    let paramIdx = 1;
+
+    if (name !== undefined) { updates.push(`name = $${paramIdx++}`); params.push(name); }
+    if (trigger_type !== undefined) {
+      if (!['post_raid', 'welcome', 'item_won', 'manual'].includes(trigger_type)) {
+        return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
+      }
+      updates.push(`trigger_type = $${paramIdx++}`); params.push(trigger_type);
+    }
+    if (opening_message !== undefined) { updates.push(`opening_message = $${paramIdx++}`); params.push(opening_message); }
+    if (agent_instructions !== undefined) { updates.push(`agent_instructions = $${paramIdx++}`); params.push(agent_instructions); }
+    if (model_override !== undefined) { updates.push(`model_override = $${paramIdx++}`); params.push(model_override || null); }
+    if (auto_trigger !== undefined) { updates.push(`auto_trigger = $${paramIdx++}`); params.push(!!auto_trigger); }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'No fields to update' });
+    }
+    updates.push(`updated_at = NOW()`);
+    params.push(templateId);
+
+    const result = await pool.query(
+      `UPDATE bot_templates SET ${updates.join(', ')} WHERE id = $${paramIdx} RETURNING *`,
+      params
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Template not found' });
+    }
+    res.json({ success: true, template: result.rows[0] });
+  } catch (err) {
+    console.error('[maya-api] Error updating template:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error updating template' });
+  }
+});
+
+/** Delete template */
+app.delete('/api/admin/maya/templates/:templateId', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { templateId } = req.params;
+    const result = await pool.query(`DELETE FROM bot_templates WHERE id = $1 RETURNING id`, [templateId]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Template not found' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[maya-api] Error deleting template:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error deleting template' });
+  }
+});
+
+// --- Dashboard Stats ---
+
+/** Get Maya conversation stats */
+app.get('/api/admin/maya/stats', requireManagement, async (req, res) => {
+  try {
+    const [statusCounts, todayMessages, activeConvos] = await Promise.all([
+      pool.query(`SELECT status, COUNT(*) AS count FROM bot_conversations GROUP BY status`),
+      pool.query(`SELECT COUNT(*) AS count FROM bot_messages WHERE sent_at >= CURRENT_DATE`),
+      pool.query(
+        `SELECT c.id, c.discord_id, c.player_name, c.status, c.admin_override, c.updated_at,
+         (SELECT COUNT(*) FROM bot_messages WHERE conversation_id = c.id) AS message_count
+         FROM bot_conversations c WHERE c.status = 'active' ORDER BY c.updated_at DESC LIMIT 20`
+      )
+    ]);
+
+    const stats = { active: 0, paused: 0, closed: 0 };
+    for (const row of statusCounts.rows) {
+      stats[row.status] = parseInt(row.count);
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        ...stats,
+        messagesToday: parseInt(todayMessages.rows[0].count),
+        activeConversations: activeConvos.rows
+      }
+    });
+  } catch (err) {
+    console.error('[maya-api] Error getting stats:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error getting stats' });
+  }
+});
+
+/** Get conversations for a specific player by discord ID */
+app.get('/api/admin/maya/conversations/by-discord/:discordId', requireManagement, async (req, res) => {
+  try {
+    const { discordId } = req.params;
+    if (!discordId || !/^[0-9]{1,20}$/.test(discordId)) {
+      return res.status(400).json({ success: false, message: 'Invalid Discord ID' });
+    }
+    const convRes = await pool.query(
+      `SELECT * FROM bot_conversations WHERE discord_id = $1 ORDER BY created_at DESC`,
+      [discordId]
+    );
+    // Get messages for the most recent active conversation
+    let messages = [];
+    const activeConv = convRes.rows.find(c => c.status === 'active') || convRes.rows[0];
+    if (activeConv) {
+      const msgRes = await pool.query(
+        `SELECT id, role, content, model_used, sent_at FROM bot_messages 
+         WHERE conversation_id = $1 ORDER BY sent_at ASC`,
+        [activeConv.id]
+      );
+      messages = msgRes.rows;
+    }
+    res.json({
+      success: true,
+      conversations: convRes.rows,
+      activeConversation: activeConv || null,
+      messages
+    });
+  } catch (err) {
+    console.error('[maya-api] Error getting player conversations:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error getting conversations' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// End Maya Admin API
+// ════════════════════════════════════════════════════════════════════════
 
 app.get('/voice-check', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'voice-check.html'));
@@ -12874,6 +13489,8 @@ app.post('/api/roster/:eventId/convert-placeholder', requireRosterManager, async
             ON CONFLICT (discord_id, character_name, class) DO NOTHING`,
             [discordId, characterName, characterClass]
         );
+        // Maya welcome trigger for new player
+        fireMayaTrigger('welcome', discordId, characterName);
         
         // Update the placeholder with Discord ID
         await client.query(`
@@ -13017,6 +13634,8 @@ app.post('/api/roster/:eventId/add-character', requireRosterManager, async (req,
             ON CONFLICT (discord_id, character_name, class) DO NOTHING`,
             [discordId, characterName, characterClass]
         );
+        // Maya welcome trigger for new player
+        fireMayaTrigger('welcome', discordId, characterName);
 
         // Then, upsert into roster_overrides using explicit existence check
         const existingOverride = await client.query(
@@ -19311,6 +19930,22 @@ app.post('/api/rewards-snapshot/:eventId/publish', requireManagement, async (req
     );
     await client.query('COMMIT');
     try { broadcastUpdate('raidlogs', eventId, { type: 'snapshot_published' }); } catch {}
+    // Maya auto-trigger: fire post_raid templates for confirmed attendees
+    setImmediate(async () => {
+      try {
+        if (!personaBotInstance) return;
+        const attendeesRes = await pool.query(
+          `SELECT DISTINCT pcl.discord_id, pcl.character_name AS player_name
+           FROM player_confirmed_logs pcl WHERE pcl.raid_id = $1 AND pcl.discord_id IS NOT NULL`,
+          [eventId]
+        );
+        if (attendeesRes.rows.length > 0) {
+          await personaBotInstance.triggerTemplate('post_raid', eventId, attendeesRes.rows);
+        }
+      } catch (triggerErr) {
+        console.error('[maya-trigger] Post-raid trigger error:', triggerErr?.message || triggerErr);
+      }
+    });
     return res.json({ success: true, header: finalHdr.rows && finalHdr.rows[0] ? finalHdr.rows[0] : null });
   } catch (error) {
     if (client) await client.query('ROLLBACK');
@@ -23465,6 +24100,28 @@ app.post('/api/loot/import', async (req, res) => {
     console.log(`[LOOT] Successfully imported ${insertedCount} items for event ${eventId}`);
 
     try { broadcastUpdate('loot', eventId, { type: 'loot_changed', byUserId: req.user?.id || null, count: insertedCount }); } catch {}
+    // Maya item_won trigger: fire for each loot item that has a player
+    setImmediate(async () => {
+      try {
+        if (!personaBotInstance) return;
+        for (const item of items) {
+          if (!item.player_name) continue;
+          // Look up discord_id from player name
+          const playerRes = await pool.query(
+            `SELECT discord_id FROM players WHERE character_name = $1 LIMIT 1`,
+            [item.player_name]
+          );
+          if (playerRes.rows.length > 0 && playerRes.rows[0].discord_id) {
+            await personaBotInstance.triggerTemplate('item_won', eventId, [{
+              discord_id: playerRes.rows[0].discord_id,
+              player_name: item.player_name
+            }]);
+          }
+        }
+      } catch (triggerErr) {
+        console.error('[maya-trigger] Item-won trigger error:', triggerErr?.message || triggerErr);
+      }
+    });
     res.json({
       success: true,
       message: `Successfully imported ${insertedCount} items`,
@@ -26990,6 +27647,43 @@ if (attachChatIo) {
       const { io } = await attachChatIo(server);
       console.log('✅ Site chat Socket.IO initialized');
       app.set('io', io);
+
+      // Set up /maya-admin Socket.IO namespace for real-time admin updates
+      const mayaAdminNsp = io.of('/maya-admin');
+      mayaAdminNsp.use(async (socket, next) => {
+        // Verify management role on connection
+        try {
+          const userId = socket.handshake?.auth?.userId;
+          if (!userId) {
+            return next(new Error('Authentication required'));
+          }
+          const hasMgmt = await hasManagementRoleById(userId);
+          if (!hasMgmt) {
+            return next(new Error('Management role required'));
+          }
+          next();
+        } catch (err) {
+          next(new Error('Authentication failed'));
+        }
+      });
+      mayaAdminNsp.on('connection', (socket) => {
+        console.log('[maya-admin] Admin connected:', socket.id);
+        socket.on('disconnect', () => {
+          console.log('[maya-admin] Admin disconnected:', socket.id);
+        });
+      });
+      console.log('✅ Maya admin Socket.IO namespace initialized');
+
+      // Initialize persona bot after Socket.IO is ready
+      if (createPersonaBot) {
+        try {
+          personaBotInstance = createPersonaBot({ pool, io });
+          await personaBotInstance.start();
+          console.log('✅ Maya persona bot initialized');
+        } catch (err) {
+          console.error('❌ Failed to initialize persona bot:', err?.message || err);
+        }
+      }
     } catch (err) {
       console.error('❌ Failed to initialize Site chat Socket.IO:', err && err.message ? err.message : err);
     }

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maya Settings - Admin</title>
+    <link rel="stylesheet" href="/style.css?v=maya-1">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script>
+        (function() {
+            const stored = localStorage.getItem('admin-theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (stored === 'dark' || (!stored && prefersDark)) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --bg: #f4f4f4;
+            --text: #333333;
+            --heading: #2c3e50;
+            --muted: #7f8c8d;
+            --panel-bg: #ffffff;
+            --border: #e5e7eb;
+            --accent: #3498db;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+        }
+        html.dark {
+            --bg: #1a1a2e;
+            --text: #e0e0e0;
+            --heading: #ffffff;
+            --muted: #a0a0b0;
+            --panel-bg: #16213e;
+            --border: #2a2a4a;
+            --accent: #4fa3e0;
+            --success: #2ecc71;
+            --warning: #f1c40f;
+            --danger: #e74c3c;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        .admin-nav {
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .admin-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .admin-nav a:hover { text-decoration: underline; }
+        .admin-nav a.active { color: var(--heading); font-weight: 700; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        h1 { color: var(--heading); margin-bottom: 24px; font-size: 24px; }
+        h2 { color: var(--heading); margin-bottom: 16px; font-size: 18px; }
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 12px;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 13px;
+            resize: vertical;
+        }
+        select, input[type="number"], input[type="text"] {
+            padding: 8px 12px;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-success { background: var(--success); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-warning { background: var(--warning); color: white; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .form-row { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+        .form-row label { font-weight: 500; min-width: 120px; }
+        .template-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 16px;
+        }
+        .template-card {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .template-card h3 { font-size: 16px; margin-bottom: 8px; color: var(--heading); }
+        .template-card .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+        .template-card .preview { font-size: 13px; color: var(--text); opacity: 0.8; white-space: pre-wrap; max-height: 80px; overflow: hidden; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge-active { background: var(--success); color: white; }
+        .badge-paused { background: var(--warning); color: white; }
+        .badge-closed { background: var(--muted); color: white; }
+        .badge-trigger { background: var(--accent); color: white; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--heading); }
+        tr:hover { background: var(--bg); }
+        .clickable-row { cursor: pointer; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.active { background: var(--success); }
+        .status-dot.paused { background: var(--warning); }
+        .status-dot.closed { background: var(--muted); }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-card .number { font-size: 28px; font-weight: 700; color: var(--accent); }
+        .stat-card .label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal h2 { margin-bottom: 16px; }
+        .modal .form-group { margin-bottom: 12px; }
+        .modal .form-group label { display: block; margin-bottom: 4px; font-weight: 500; font-size: 13px; }
+        .modal .form-group input,
+        .modal .form-group textarea,
+        .modal .form-group select { width: 100%; }
+        .modal .form-group textarea { min-height: 100px; }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            background: var(--success);
+            color: white;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 2000;
+            display: none;
+        }
+        .toast.show { display: block; }
+    </style>
+</head>
+<body>
+    <nav class="admin-nav">
+        <a href="/admin"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+        <a href="/admin/points"><i class="fas fa-coins"></i> Points</a>
+        <a href="/admin/raid-channels"><i class="fas fa-headset"></i> Channels</a>
+        <a href="/admin/maya-settings" class="active"><i class="fas fa-robot"></i> Maya</a>
+    </nav>
+
+    <div class="container">
+        <h1><i class="fas fa-robot"></i> Maya — AI Persona Settings</h1>
+
+        <!-- Stats -->
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card"><div class="number" id="stat-active">-</div><div class="label">Active Conversations</div></div>
+            <div class="stat-card"><div class="number" id="stat-paused">-</div><div class="label">Paused</div></div>
+            <div class="stat-card"><div class="number" id="stat-closed">-</div><div class="label">Closed</div></div>
+            <div class="stat-card"><div class="number" id="stat-messages-today">-</div><div class="label">Messages Today</div></div>
+        </div>
+
+        <!-- Soul Editor -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2><i class="fas fa-brain"></i> Soul Editor</h2>
+                <button class="btn btn-primary" onclick="savePersona()"><i class="fas fa-save"></i> Save</button>
+            </div>
+            <textarea id="system-prompt" placeholder="Loading Maya's system prompt..."></textarea>
+            <div class="form-row" style="margin-top: 12px;">
+                <label>Model:</label>
+                <select id="model-select">
+                    <option value="claude-haiku-4-5">claude-haiku-4-5 (Fast, cheap)</option>
+                    <option value="claude-sonnet-4-5">claude-sonnet-4-5 (Smarter, pricier)</option>
+                </select>
+                <label>Max Context:</label>
+                <input type="number" id="max-context" min="5" max="100" value="20" style="width: 80px;">
+            </div>
+        </div>
+
+        <!-- Templates -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2><i class="fas fa-file-alt"></i> Conversation Templates</h2>
+                <button class="btn btn-success" onclick="openTemplateModal()"><i class="fas fa-plus"></i> New Template</button>
+            </div>
+            <div class="template-grid" id="templates-grid">
+                <p style="color: var(--muted);">Loading templates...</p>
+            </div>
+        </div>
+
+        <!-- Voice Transcription (Phase 2) -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2><i class="fas fa-microphone"></i> Voice Transcription (Phase 2)</h2>
+            </div>
+            <div style="color: var(--muted); font-size: 14px;">
+                <p>Voice transcription requires the worker dyno and Phase 2 dependencies.</p>
+                <div class="form-row" style="margin-top: 12px;">
+                    <label>Voice Channel ID:</label>
+                    <input type="text" id="voice-channel-id" placeholder="e.g. 1234567890" disabled style="opacity:0.5;">
+                    <button class="btn btn-primary btn-sm" disabled style="opacity:0.5;"><i class="fas fa-play"></i> Start Recording</button>
+                </div>
+                <div style="margin-top: 12px;">
+                    <h3 style="font-size: 14px; margin-bottom: 8px;">Recent Transcripts</h3>
+                    <div id="voice-transcripts" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg);">
+                        <p style="color: var(--muted); font-size: 13px;">No transcripts available. Install Phase 2 dependencies and start the worker dyno.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Active Conversations -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2><i class="fas fa-comments"></i> Active Conversations</h2>
+            </div>
+            <table id="conversations-table">
+                <thead>
+                    <tr>
+                        <th>Player</th>
+                        <th>Status</th>
+                        <th>Messages</th>
+                        <th>Last Activity</th>
+                        <th>Mode</th>
+                    </tr>
+                </thead>
+                <tbody id="conversations-body">
+                    <tr><td colspan="5" style="color: var(--muted);">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Template Modal -->
+    <div class="modal-overlay" id="template-modal">
+        <div class="modal">
+            <h2 id="template-modal-title">New Template</h2>
+            <input type="hidden" id="template-id">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="tpl-name" placeholder="Post-Raid Congratulations">
+            </div>
+            <div class="form-group">
+                <label>Trigger Type</label>
+                <select id="tpl-trigger-type">
+                    <option value="post_raid">Post Raid</option>
+                    <option value="welcome">Welcome</option>
+                    <option value="item_won">Item Won</option>
+                    <option value="manual">Manual</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Opening Message (use {{player_name}} for personalization)</label>
+                <textarea id="tpl-opening-message" placeholder="Hey {{player_name}}! Great raid tonight..."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Agent Instructions (injected into system prompt for this template)</label>
+                <textarea id="tpl-agent-instructions" placeholder="Focus on congratulating the player and asking about their experience..."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Model Override (optional)</label>
+                <select id="tpl-model-override">
+                    <option value="">Use Default</option>
+                    <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+                    <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="tpl-auto-trigger"> Auto-trigger (fires automatically on event)</label>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-danger" onclick="closeTemplateModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveTemplate()"><i class="fas fa-save"></i> Save Template</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="/admin/maya-settings.js"></script>
+</body>
+</html>

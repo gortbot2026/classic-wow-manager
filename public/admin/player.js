@@ -872,3 +872,271 @@
   // ── Init ──────────────────────────────────────────────────────────────
   init();
 })();
+
+// ════════════════════════════════════════════════════════════════════════
+// Maya Chat Panel — Player Profile Integration
+// ════════════════════════════════════════════════════════════════════════
+
+(function() {
+  // Extract discord ID from URL
+  var pathParts = window.location.pathname.split('/');
+  var discordId = pathParts[pathParts.length - 1];
+  if (!discordId || !/^[0-9]{1,20}$/.test(discordId)) return;
+
+  var currentConversation = null;
+  var mayaSocket = null;
+
+  /** Initialize Socket.IO for real-time Maya updates */
+  function initMayaSocket() {
+    if (typeof io === 'undefined') return;
+    try {
+      // Get user info from page context for auth
+      var userId = null;
+      var metaEl = document.querySelector('meta[name="user-id"]');
+      if (metaEl) userId = metaEl.getAttribute('content');
+      
+      mayaSocket = io('/maya-admin', {
+        auth: { userId: userId || 'admin' },
+        transports: ['websocket', 'polling']
+      });
+
+      mayaSocket.on('connect', function() {
+        console.log('[maya-chat] Connected to /maya-admin');
+      });
+
+      mayaSocket.on('maya:message', function(data) {
+        if (currentConversation && data.conversationId === currentConversation.id) {
+          appendMessage(data.role, data.content, data.sentAt);
+          scrollMessages();
+        }
+      });
+
+      mayaSocket.on('maya:typing', function(data) {
+        if (currentConversation && data.conversationId === currentConversation.id) {
+          var indicator = document.getElementById('maya-typing-indicator');
+          if (indicator) indicator.style.display = data.typing ? 'block' : 'none';
+        }
+      });
+
+      mayaSocket.on('maya:status', function(data) {
+        if (currentConversation && data.conversationId === currentConversation.id) {
+          loadMayaChat();
+        }
+      });
+
+      mayaSocket.on('connect_error', function() {
+        // Socket auth failed — that's okay, just disable real-time
+      });
+    } catch (e) {
+      // Socket.IO not available
+    }
+  }
+
+  /** Load Maya conversation for this player */
+  function loadMayaChat() {
+    fetch('/api/admin/maya/conversations/by-discord/' + discordId, { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.success) return;
+        if (data.activeConversation) {
+          currentConversation = data.activeConversation;
+          showConversation(data.activeConversation, data.messages);
+        } else if (data.conversations && data.conversations.length > 0) {
+          // Show most recent (even if closed)
+          currentConversation = data.conversations[0];
+          showConversation(data.conversations[0], data.messages);
+        } else {
+          document.getElementById('maya-no-conversation').style.display = 'block';
+          document.getElementById('maya-conversation').style.display = 'none';
+        }
+      })
+      .catch(function() {
+        // API error — hide maya section silently
+      });
+  }
+
+  /** Render conversation UI */
+  function showConversation(conv, messages) {
+    document.getElementById('maya-no-conversation').style.display = 'none';
+    document.getElementById('maya-conversation').style.display = 'block';
+
+    // Status badge
+    var statusEl = document.getElementById('maya-conv-status');
+    statusEl.textContent = conv.status;
+    statusEl.className = 'badge badge-' + conv.status;
+
+    // Admin override toggle
+    document.getElementById('maya-admin-override').checked = conv.admin_override;
+
+    // Pause/Resume buttons
+    document.getElementById('maya-pause-btn').style.display = conv.status === 'active' ? '' : 'none';
+    document.getElementById('maya-resume-btn').style.display = conv.status === 'paused' ? '' : 'none';
+
+    // Messages
+    var container = document.getElementById('maya-messages');
+    container.innerHTML = '';
+    if (messages && messages.length > 0) {
+      messages.forEach(function(m) {
+        appendMessage(m.role, m.content, m.sent_at);
+      });
+    } else {
+      container.innerHTML = '<p style="color:var(--muted);font-size:13px;">No messages yet.</p>';
+    }
+    scrollMessages();
+  }
+
+  /** Append a message to the chat display */
+  function appendMessage(role, content, sentAt) {
+    var container = document.getElementById('maya-messages');
+    var div = document.createElement('div');
+    div.style.marginBottom = '8px';
+    div.style.padding = '8px 12px';
+    div.style.borderRadius = '8px';
+    div.style.fontSize = '13px';
+    div.style.lineHeight = '1.4';
+
+    if (role === 'maya') {
+      div.style.background = '#2563eb22';
+      div.style.borderLeft = '3px solid #2563eb';
+    } else if (role === 'admin') {
+      div.style.background = '#f59e0b22';
+      div.style.borderLeft = '3px solid #f59e0b';
+    } else {
+      div.style.background = 'var(--border)';
+      div.style.borderLeft = '3px solid var(--muted)';
+    }
+
+    var label = role === 'maya' ? '🤖 Maya' : role === 'admin' ? '👑 Admin (as Maya)' : '💬 Player';
+    var time = sentAt ? new Date(sentAt).toLocaleString() : '';
+    div.innerHTML = '<div style="font-size:11px;color:var(--muted);margin-bottom:2px;">' +
+      label + ' · ' + escapeHtml(time) + '</div>' +
+      '<div>' + escapeHtml(content) + '</div>';
+
+    container.appendChild(div);
+  }
+
+  function scrollMessages() {
+    var container = document.getElementById('maya-messages');
+    if (container) container.scrollTop = container.scrollHeight;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  /** Send admin message as Maya */
+  window.mayaSendMessage = function() {
+    if (!currentConversation) return;
+    var input = document.getElementById('maya-message-input');
+    var content = input.value.trim();
+    if (!content) return;
+
+    input.value = '';
+    // Optimistic UI — append immediately
+    appendMessage('admin', content, new Date().toISOString());
+    scrollMessages();
+
+    fetch('/api/admin/maya/conversations/' + currentConversation.id + '/messages', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) {
+        alert('Failed to send message');
+      }
+    });
+  };
+
+  /** Toggle AI/Manual mode */
+  window.mayaToggleOverride = function() {
+    if (!currentConversation) return;
+    var override = document.getElementById('maya-admin-override').checked;
+    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_override: override })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        currentConversation.admin_override = override;
+      }
+    });
+  };
+
+  /** Pause conversation */
+  window.mayaPauseConversation = function() {
+    if (!currentConversation) return;
+    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'paused' })
+    }).then(function() { loadMayaChat(); });
+  };
+
+  /** Resume conversation */
+  window.mayaResumeConversation = function() {
+    if (!currentConversation) return;
+    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'active' })
+    }).then(function() { loadMayaChat(); });
+  };
+
+  /** Close conversation */
+  window.mayaCloseConversation = function() {
+    if (!currentConversation) return;
+    if (!confirm('Close this conversation? Maya will stop responding to this player.')) return;
+    fetch('/api/admin/maya/conversations/' + currentConversation.id, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'closed' })
+    }).then(function() { loadMayaChat(); });
+  };
+
+  /** Start a new conversation */
+  window.mayaStartConversation = function() {
+    var openingMessage = prompt('Opening message from Maya (or leave empty for default):');
+    if (openingMessage === null) return; // Cancelled
+
+    fetch('/api/admin/maya/conversations', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        discordId: discordId,
+        openingMessage: openingMessage || undefined
+      })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        loadMayaChat();
+      } else {
+        alert(data.message || 'Failed to start conversation');
+      }
+    });
+  };
+
+  // Initialize on DOM ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+      loadMayaChat();
+      initMayaSocket();
+    });
+  } else {
+    loadMayaChat();
+    initMayaSocket();
+  }
+})();

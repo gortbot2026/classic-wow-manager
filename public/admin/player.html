@@ -589,9 +589,53 @@
                 </div>
                 <div class="section-body" id="poll-votes-body"></div>
             </div>
+
+            <!-- Maya Chat Panel -->
+            <div class="section" id="maya-chat-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-robot"></i> Maya Chat</h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="maya-chat-body">
+                    <div id="maya-no-conversation" style="color: var(--muted); padding: 12px;">
+                        <p>No active conversation with this player.</p>
+                        <button class="btn btn-primary" onclick="mayaStartConversation()" style="margin-top:8px;">
+                            <i class="fas fa-plus"></i> Start Conversation
+                        </button>
+                    </div>
+                    <div id="maya-conversation" style="display:none;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <span id="maya-conv-status" class="badge badge-active">active</span>
+                                <label style="font-size:13px; display:flex; align-items:center; gap:4px; cursor:pointer;">
+                                    <input type="checkbox" id="maya-admin-override" onchange="mayaToggleOverride()">
+                                    <span>Manual Mode</span>
+                                </label>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                                <button class="btn btn-warning btn-sm" onclick="mayaPauseConversation()" id="maya-pause-btn">Pause</button>
+                                <button class="btn btn-success btn-sm" onclick="mayaResumeConversation()" id="maya-resume-btn" style="display:none;">Resume</button>
+                                <button class="btn btn-danger btn-sm" onclick="mayaCloseConversation()">Close</button>
+                            </div>
+                        </div>
+                        <div id="maya-messages" style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:12px; background:var(--bg);">
+                        </div>
+                        <div id="maya-typing-indicator" style="display:none; color:var(--muted); font-size:12px; padding:4px 0;">
+                            <i class="fas fa-circle-notch fa-spin"></i> Maya is typing...
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="maya-message-input" placeholder="Type a message as Maya..." 
+                                   style="flex:1; padding:8px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"
+                                   onkeydown="if(event.key==='Enter')mayaSendMessage()">
+                            <button class="btn btn-primary" onclick="mayaSendMessage()"><i class="fas fa-paper-plane"></i> Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
+    <script src="/socket.io/socket.io.js"></script>
     <script src="/admin/player.js"></script>
 </body>
 </html>
