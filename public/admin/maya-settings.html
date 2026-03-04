@@ -344,11 +344,22 @@
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{character_name}}')">{{character_name}}</code><span style="color:var(--muted);">Main character name</span>
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{discord_name}}')">{{discord_name}}</code><span style="color:var(--muted);">Discord username</span>
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{guild_name}}')">{{guild_name}}</code><span style="color:var(--muted);">Guild name (1Principles)</span>
-                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{raid_name}}')">{{raid_name}}</code><span style="color:var(--muted);">Raid/event name</span>
-                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{gold_earned}}')">{{gold_earned}}</code><span style="color:var(--muted);">Gold earned in last raid</span>
-                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{items_won}}')">{{items_won}}</code><span style="color:var(--muted);">Items won in last raid</span>
-                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{raids_attended}}')">{{raids_attended}}</code><span style="color:var(--muted);">Total raids attended</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{total_gold_earned}}')">{{total_gold_earned}}</code><span style="color:var(--muted);">Total gold earned across all raids</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{gold_earned_last_raid}}')">{{gold_earned_last_raid}}</code><span style="color:var(--muted);">Gold earned in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{gold_spent_last_raid}}')">{{gold_spent_last_raid}}</code><span style="color:var(--muted);">Gold spent on loot in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{manual_rewards_last_raid}}')">{{manual_rewards_last_raid}}</code><span style="color:var(--muted);">Manual reward points in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{manual_deductions_last_raid}}')">{{manual_deductions_last_raid}}</code><span style="color:var(--muted);">Manual deductions in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{last_raid_name}}')">{{last_raid_name}}</code><span style="color:var(--muted);">Name of the last raid (e.g. Thursday Naxx)</span>
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{last_raid_date}}')">{{last_raid_date}}</code><span style="color:var(--muted);">Date of most recent raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{total_raids_attended}}')">{{total_raids_attended}}</code><span style="color:var(--muted);">Total number of raids attended</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{items_won_last_raid}}')">{{items_won_last_raid}}</code><span style="color:var(--muted);">Items won in last raid</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{guild_join_date}}')">{{guild_join_date}}</code><span style="color:var(--muted);">Date player first joined raids</span>
+                        <div style="grid-column: 1 / -1; border-top: 1px solid var(--border); margin: 4px 0;"></div>
+                        <div style="grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-style: italic;">Backward-compatible aliases:</div>
+                        <code style="cursor:pointer; color:var(--accent); opacity:0.7;" onclick="insertVariable('{{raid_name}}')">{{raid_name}}</code><span style="color:var(--muted);">= {{last_raid_name}}</span>
+                        <code style="cursor:pointer; color:var(--accent); opacity:0.7;" onclick="insertVariable('{{gold_earned}}')">{{gold_earned}}</code><span style="color:var(--muted);">= {{gold_earned_last_raid}}</span>
+                        <code style="cursor:pointer; color:var(--accent); opacity:0.7;" onclick="insertVariable('{{items_won}}')">{{items_won}}</code><span style="color:var(--muted);">= {{items_won_last_raid}}</span>
+                        <code style="cursor:pointer; color:var(--accent); opacity:0.7;" onclick="insertVariable('{{raids_attended}}')">{{raids_attended}}</code><span style="color:var(--muted);">= {{total_raids_attended}}</span>
                     </div>
                 </div>
             </div>

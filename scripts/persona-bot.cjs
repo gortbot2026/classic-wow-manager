@@ -14,7 +14,7 @@
 const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js');
 const crypto = require('crypto');
 const { generateResponse } = require('./persona-llm.cjs');
-const { buildPlayerContext, buildVoiceContext, resolvePlayerName } = require('./persona-context.cjs');
+const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
 
 /**
  * TEST MODE: When set, all Maya DMs go to this Discord ID instead of the actual player.
@@ -166,24 +166,30 @@ function createPersonaBot(options = {}) {
    * @returns {Promise<{systemPrompt: string, messages: Array<{role: string, content: string}>}>}
    */
   async function buildContext(conversationId, discordId, persona) {
-    // Get conversation details (for template instructions)
+    // Get conversation details (for template instructions and event_id)
     const convRes = await pool.query(
-      `SELECT template_id FROM bot_conversations WHERE id = $1`,
+      `SELECT template_id, event_id FROM bot_conversations WHERE id = $1`,
       [conversationId]
     );
     const conv = convRes.rows[0];
 
+    // Resolve template variables for agent_instructions substitution
+    const templateVars = await resolveTemplateVariables(
+      pool, discordId, conv?.event_id || null, conversationId
+    );
+
     // Start with persona system prompt
     let systemPrompt = persona.system_prompt;
 
-    // Add template-specific instructions if applicable
+    // Add template-specific instructions if applicable (with variable resolution)
     if (conv && conv.template_id) {
       const tplRes = await pool.query(
         `SELECT agent_instructions, model_override FROM bot_templates WHERE id = $1`,
         [conv.template_id]
       );
       if (tplRes.rows.length > 0 && tplRes.rows[0].agent_instructions) {
-        systemPrompt += '\n\n=== Conversation-Specific Instructions ===\n' + tplRes.rows[0].agent_instructions;
+        const resolvedInstructions = applyTemplateVariables(tplRes.rows[0].agent_instructions, templateVars);
+        systemPrompt += '\n\n=== Conversation-Specific Instructions ===\n' + resolvedInstructions;
       }
     }
 
@@ -409,19 +415,26 @@ function createPersonaBot(options = {}) {
             }
           }
 
-          // Create conversation
+          // Create conversation (with event_id if provided)
           const convId = crypto.randomUUID();
           await pool.query(
-            `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id)
-             VALUES ($1, $2, $3, 'active', 'template', $4)`,
-            [convId, attendee.discord_id, attendee.player_name || null, template.id]
+            `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, event_id)
+             VALUES ($1, $2, $3, 'active', 'template', $4, $5)`,
+            [convId, attendee.discord_id, attendee.player_name || null, template.id, eventId || null]
           );
 
-          // Personalize opening message (replace {{player_name}} if present)
-          let opening = template.opening_message;
-          if (attendee.player_name) {
-            opening = opening.replace(/\{\{player_name\}\}/g, attendee.player_name);
+          // Resolve template variables and apply to opening message
+          const templateVars = await resolveTemplateVariables(
+            pool, attendee.discord_id, eventId || null, convId
+          );
+          // Also resolve player_name via resolvePlayerName for consistency
+          const resolvedName = await resolvePlayerName(pool, attendee.discord_id, convId);
+          if (resolvedName) {
+            templateVars.set('player_name', resolvedName);
+          } else if (attendee.player_name) {
+            templateVars.set('player_name', attendee.player_name);
           }
+          let opening = applyTemplateVariables(template.opening_message, templateVars);
 
           // Store and send the opening message
           const model = template.model_override || 'claude-haiku-4-5';

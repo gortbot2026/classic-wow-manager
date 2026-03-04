@@ -66,6 +66,17 @@ try {
   createPersonaBot = null;
 }
 
+// Persona context helpers for template variable resolution
+let resolveTemplateVariables = null;
+let applyTemplateVariables = null;
+try {
+  const contextModule = require('./scripts/persona-context.cjs');
+  resolveTemplateVariables = contextModule.resolveTemplateVariables;
+  applyTemplateVariables = contextModule.applyTemplateVariables;
+} catch (err) {
+  console.error('[init] Failed to load persona context module:', err?.message || err);
+}
+
 // Global reference to persona bot instance (set after initialization)
 let personaBotInstance = null;
 
@@ -1065,6 +1076,9 @@ async function initializeMayaTables() {
 
     // Migration: add preferred_name column for smart name resolution (Fix 4)
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS preferred_name TEXT`);
+
+    // Migration: add event_id column for raid-specific variable resolution
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS event_id TEXT`);
 
     // bot_messages — Individual messages in a conversation
     await pool.query(`
@@ -2932,16 +2946,35 @@ app.post('/api/admin/maya/conversations', requireManagement, express.json(), asy
       [convId, discordId, playerName, templateId || null, preferredName || null]
     );
 
-    // Determine opening message
+    // Determine opening message with full template variable resolution
     let message = openingMessage || null;
     if (!message && templateId) {
       const tplRes = await pool.query(`SELECT opening_message FROM bot_templates WHERE id = $1`, [templateId]);
       if (tplRes.rows.length > 0) {
         message = tplRes.rows[0].opening_message;
+      }
+    }
+    // Apply template variable resolution to the message
+    if (message && resolveTemplateVariables && applyTemplateVariables) {
+      try {
+        const templateVars = await resolveTemplateVariables(pool, discordId, null, convId);
+        // Also set player_name from preferred name or player table
+        if (preferredName) {
+          templateVars.set('player_name', preferredName);
+        } else if (playerName) {
+          templateVars.set('player_name', playerName);
+        }
+        message = applyTemplateVariables(message, templateVars);
+      } catch (varErr) {
+        console.error('[maya-api] Error resolving template variables:', varErr.message || varErr);
+        // Fallback: at minimum replace player_name
         if (playerName) {
           message = message.replace(/\{\{player_name\}\}/g, playerName);
         }
       }
+    } else if (message && playerName) {
+      // Fallback if modules not loaded
+      message = message.replace(/\{\{player_name\}\}/g, playerName);
     }
 
     // Send opening message if provided
