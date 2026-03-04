@@ -189,6 +189,10 @@
       renderPollVotes();
 
       document.title = (playerData.identity.username || discordId) + ' — Player Profile';
+
+      // Update Maya notes panel header with player name
+      var notesNameEl = document.getElementById('maya-notes-player-name');
+      if (notesNameEl) notesNameEl.textContent = playerData.identity.username || discordId;
     } catch (err) {
       document.getElementById('loading').innerHTML =
         '<div style="color:var(--danger)"><i class="fas fa-exclamation-triangle"></i></div>' +
@@ -1247,16 +1251,182 @@
     });
   };
 
+  // ── Maya Notes ──
+
+  /**
+   * Formats a date as short month + day (e.g. "Mar 4").
+   * @param {string} dateStr - ISO date string
+   * @returns {string} Formatted short date
+   */
+  function formatNoteDate(dateStr) {
+    var d = new Date(dateStr);
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return months[d.getMonth()] + ' ' + d.getDate();
+  }
+
+  /**
+   * Escapes HTML entities in a string for safe DOM insertion.
+   * @param {string} str - Raw string
+   * @returns {string} HTML-escaped string
+   */
+  function escNote(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  /**
+   * Renders a single note element.
+   * @param {{ id: number, note: string, created_at: string, source_conversation_id: string|null }} n - Note object
+   * @returns {HTMLElement} Note DOM element
+   */
+  function renderNoteEl(n) {
+    var el = document.createElement('div');
+    el.setAttribute('data-note-id', n.id);
+    el.style.cssText = 'display:flex; justify-content:space-between; align-items:flex-start; padding:6px 0; border-bottom:1px solid var(--border);';
+    var source = n.source_conversation_id ? ' 🤖' : ' ✍️';
+    el.innerHTML = '<span style="flex:1; font-size:14px; color:var(--text);"><span style="color:var(--muted); font-size:12px;">[' + escNote(formatNoteDate(n.created_at)) + ']' + source + '</span> ' + escNote(n.note) + '</span>' +
+      '<button onclick="deleteMayaNote(' + n.id + ')" style="background:none; border:none; color:var(--muted); cursor:pointer; padding:2px 6px; font-size:14px; flex-shrink:0;" title="Delete note">&times;</button>';
+    return el;
+  }
+
+  /** Fetches and renders all Maya notes for the current player */
+  function loadMayaNotes(targetDiscordId) {
+    var id = targetDiscordId || discordId;
+    fetch('/api/admin/maya/notes/' + encodeURIComponent(id), { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var list = document.getElementById('maya-notes-list');
+        var empty = document.getElementById('maya-notes-empty');
+        if (!list) return;
+        // Clear existing notes (keep empty message element)
+        list.innerHTML = '';
+        if (!data.success || !data.notes || data.notes.length === 0) {
+          var emptyP = document.createElement('p');
+          emptyP.id = 'maya-notes-empty';
+          emptyP.style.cssText = 'color: var(--muted); margin:0;';
+          emptyP.textContent = 'No notes yet. Maya will automatically extract insights from conversations, or you can add notes manually.';
+          list.appendChild(emptyP);
+          return;
+        }
+        data.notes.forEach(function(n) {
+          list.appendChild(renderNoteEl(n));
+        });
+      })
+      .catch(function(err) {
+        console.error('[maya-notes] Failed to load notes:', err);
+      });
+  }
+  window.loadMayaNotes = loadMayaNotes;
+
+  /** Adds a manual note for the current player */
+  function addMayaNote() {
+    var input = document.getElementById('maya-note-input');
+    if (!input) return;
+    var text = input.value.trim();
+    if (!text) return;
+    if (text.length > 500) {
+      alert('Note must be 500 characters or fewer.');
+      return;
+    }
+    input.disabled = true;
+    fetch('/api/admin/maya/notes/' + encodeURIComponent(discordId), {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: text })
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        input.disabled = false;
+        if (data.success && data.note) {
+          input.value = '';
+          // Remove empty state message if present
+          var empty = document.getElementById('maya-notes-empty');
+          if (empty) empty.remove();
+          // Prepend the new note (newest first)
+          var list = document.getElementById('maya-notes-list');
+          if (list) list.prepend(renderNoteEl(data.note));
+        }
+      })
+      .catch(function() {
+        input.disabled = false;
+      });
+  }
+  window.addMayaNote = addMayaNote;
+
+  /** Deletes a note by ID */
+  function deleteMayaNote(noteId) {
+    fetch('/api/admin/maya/notes/' + noteId, {
+      method: 'DELETE',
+      credentials: 'include'
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success) {
+          var el = document.querySelector('[data-note-id="' + noteId + '"]');
+          if (el) el.remove();
+          // Show empty state if no notes left
+          var list = document.getElementById('maya-notes-list');
+          if (list && list.children.length === 0) {
+            var emptyP = document.createElement('p');
+            emptyP.id = 'maya-notes-empty';
+            emptyP.style.cssText = 'color: var(--muted); margin:0;';
+            emptyP.textContent = 'No notes yet. Maya will automatically extract insights from conversations, or you can add notes manually.';
+            list.appendChild(emptyP);
+          }
+        }
+      })
+      .catch(function(err) {
+        console.error('[maya-notes] Failed to delete note:', err);
+      });
+  }
+  window.deleteMayaNote = deleteMayaNote;
+
+  /** Wire up Socket.io listeners for real-time note updates */
+  function initMayaNotesSocket() {
+    if (!mayaSocket) return;
+    mayaSocket.on('maya:note-added', function(data) {
+      if (data.discordId !== discordId) return;
+      var list = document.getElementById('maya-notes-list');
+      if (!list) return;
+      // Remove empty state
+      var empty = document.getElementById('maya-notes-empty');
+      if (empty) empty.remove();
+      // Avoid duplicates — check if note ID already rendered
+      if (data.note && data.note.id && document.querySelector('[data-note-id="' + data.note.id + '"]')) return;
+      if (data.note) list.prepend(renderNoteEl(data.note));
+    });
+    mayaSocket.on('maya:note-deleted', function(data) {
+      if (data.discordId !== discordId) return;
+      var el = document.querySelector('[data-note-id="' + data.noteId + '"]');
+      if (el) el.remove();
+      // Show empty state if no notes left
+      var list = document.getElementById('maya-notes-list');
+      if (list && list.children.length === 0) {
+        var emptyP = document.createElement('p');
+        emptyP.id = 'maya-notes-empty';
+        emptyP.style.cssText = 'color: var(--muted); margin:0;';
+        emptyP.textContent = 'No notes yet. Maya will automatically extract insights from conversations, or you can add notes manually.';
+        list.appendChild(emptyP);
+      }
+    });
+  }
+
   // Initialize on DOM ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
       loadMayaChat();
+      loadMayaNotes();
       fetchTemplates();
       initMayaSocket();
+      initMayaNotesSocket();
     });
   } else {
     loadMayaChat();
+    loadMayaNotes();
     fetchTemplates();
     initMayaSocket();
+    initMayaNotesSocket();
   }
 })();

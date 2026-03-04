@@ -453,6 +453,10 @@ function createPersonaBot(options = {}) {
 
           // Send via Discord DM
           await message.channel.send(replyText);
+
+          // Fire-and-forget: extract notes from this exchange
+          extractPlayerNotes(pool, io, discordId, conversation.id, message.content, replyText)
+            .catch(err => console.error('[persona-bot] Note extraction failed (non-blocking):', err.message || err));
         }
       } finally {
         generationLocks.delete(conversation.id);
@@ -603,6 +607,66 @@ function createPersonaBot(options = {}) {
     getClient: () => client,
     triggerTemplate
   };
+}
+
+/**
+ * Extracts personal facts from a player-Maya exchange and stores them as notes.
+ * Runs asynchronously — failures are logged but never block the main reply flow.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {import('socket.io').Server|null} io - Socket.IO server for real-time events
+ * @param {string} discordId - Player's Discord ID
+ * @param {string} conversationId - Current conversation ID
+ * @param {string} playerMessage - The player's message text
+ * @param {string} mayaReply - Maya's reply text
+ */
+async function extractPlayerNotes(pool, io, discordId, conversationId, playerMessage, mayaReply) {
+  // Fetch existing notes for deduplication context
+  const existingRes = await pool.query(
+    `SELECT note FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
+    [discordId]
+  );
+  const existingNotes = existingRes.rows.map(r => r.note);
+
+  const existingContext = existingNotes.length > 0
+    ? `\n\nExisting notes about this player (DO NOT repeat these):\n${existingNotes.map(n => `- ${n}`).join('\n')}`
+    : '';
+
+  const extractionPrompt = `You are an information extraction assistant. Based on this exchange between a guild bot and a player, extract any personal facts, opinions, preferences, or useful details about the player. Return a JSON array of short note strings. Return empty array [] if nothing notable. Do not include facts about game mechanics or the bot itself — only facts about the player as a person or their relationship with the guild. Each note should be a single concise sentence.${existingContext}`;
+
+  const exchangeMessages = [
+    { role: 'user', content: `Player said: "${playerMessage}"\n\nMaya replied: "${mayaReply}"\n\nExtract notable personal facts as JSON array:` }
+  ];
+
+  const rawResponse = await generateResponse(extractionPrompt, exchangeMessages, 'claude-haiku-4-5');
+
+  // Parse JSON array from response — handle markdown code fences
+  let notes = [];
+  try {
+    const cleaned = rawResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    notes = JSON.parse(cleaned);
+  } catch (_) {
+    // Try to find a JSON array in the response
+    const match = rawResponse.match(/\[[\s\S]*?\]/);
+    if (match) {
+      try { notes = JSON.parse(match[0]); } catch (__) { /* no valid JSON */ }
+    }
+  }
+
+  if (!Array.isArray(notes)) return;
+
+  for (const note of notes) {
+    if (typeof note !== 'string' || note.trim().length === 0) continue;
+    const trimmed = note.trim().slice(0, 500);
+    const insertRes = await pool.query(
+      `INSERT INTO bot_player_notes (discord_id, note, source_conversation_id)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [discordId, trimmed, conversationId]
+    );
+    if (io) {
+      try { io.of('/maya-admin').emit('maya:note-added', { discordId, note: insertRes.rows[0] }); } catch (_) {}
+    }
+  }
 }
 
 module.exports = { createPersonaBot };

@@ -185,6 +185,25 @@ async function buildPlayerContext(pool, discordId) {
       console.error('[persona-context] Error building gold/guild context:', err.message || err);
     }
 
+    // Player notes — facts Maya has learned from conversations
+    try {
+      const notesRes = await pool.query(
+        `SELECT note, created_at FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [discordId]
+      );
+      if (notesRes.rows.length > 0) {
+        parts.push('\n=== What I know about this player ===');
+        for (const row of notesRes.rows) {
+          const d = new Date(row.created_at);
+          const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          const shortDate = months[d.getMonth()] + ' ' + d.getDate();
+          parts.push(`- [${shortDate}] ${row.note}`);
+        }
+      }
+    } catch (err) {
+      console.error('[persona-context] Error fetching player notes:', err.message || err);
+    }
+
     return parts.join('\n');
   } catch (err) {
     console.error('[persona-context] Error building player context:', err.message || err);

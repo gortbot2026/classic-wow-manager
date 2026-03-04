@@ -1121,6 +1121,18 @@ async function initializeMayaTables() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_raid_voice_transcripts_speaker ON raid_voice_transcripts(event_id, speaker_discord_id)`);
 
+    // bot_player_notes — Facts Maya has learned about players from conversations
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bot_player_notes (
+        id SERIAL PRIMARY KEY,
+        discord_id TEXT NOT NULL,
+        note TEXT NOT NULL,
+        source_conversation_id TEXT REFERENCES bot_conversations(id),
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_player_notes_discord_id ON bot_player_notes(discord_id)`);
+
     // Seed default Maya persona if table is empty
     const personaCount = await pool.query(`SELECT COUNT(*) AS cnt FROM bot_persona`);
     if (parseInt(personaCount.rows[0].cnt) === 0) {
@@ -3345,6 +3357,81 @@ app.get('/api/admin/maya/transcripts', requireManagement, async (req, res) => {
   } catch (err) {
     console.error('[maya-api] Error getting transcripts:', err.message || err);
     res.status(500).json({ success: false, message: 'Error getting transcripts' });
+  }
+});
+
+// --- Maya Player Notes ---
+
+/** Get all notes for a player, sorted newest first */
+app.get('/api/admin/maya/notes/:discordId', requireManagement, async (req, res) => {
+  try {
+    const { discordId } = req.params;
+    if (!discordId || !/^[0-9]{1,20}$/.test(discordId)) {
+      return res.status(400).json({ success: false, message: 'Invalid Discord ID' });
+    }
+    const result = await pool.query(
+      `SELECT id, discord_id, note, source_conversation_id, created_at
+       FROM bot_player_notes
+       WHERE discord_id = $1
+       ORDER BY created_at DESC`,
+      [discordId]
+    );
+    res.json({ success: true, notes: result.rows });
+  } catch (err) {
+    console.error('[maya-api] Error getting player notes:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error getting player notes' });
+  }
+});
+
+/** Create a manual note for a player */
+app.post('/api/admin/maya/notes/:discordId', requireManagement, express.json(), async (req, res) => {
+  try {
+    const { discordId } = req.params;
+    if (!discordId || !/^[0-9]{1,20}$/.test(discordId)) {
+      return res.status(400).json({ success: false, message: 'Invalid Discord ID' });
+    }
+    const { note } = req.body || {};
+    if (!note || typeof note !== 'string' || note.trim().length === 0) {
+      return res.status(400).json({ success: false, message: 'Note text is required' });
+    }
+    if (note.length > 500) {
+      return res.status(400).json({ success: false, message: 'Note must be 500 characters or fewer' });
+    }
+    const result = await pool.query(
+      `INSERT INTO bot_player_notes (discord_id, note, source_conversation_id)
+       VALUES ($1, $2, NULL) RETURNING *`,
+      [discordId, note.trim()]
+    );
+    const newNote = result.rows[0];
+    try { io.of('/maya-admin').emit('maya:note-added', { discordId, note: newNote }); } catch (_) {}
+    res.status(201).json({ success: true, note: newNote });
+  } catch (err) {
+    console.error('[maya-api] Error creating player note:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error creating note' });
+  }
+});
+
+/** Delete a note by ID */
+app.delete('/api/admin/maya/notes/:noteId', requireManagement, async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    const noteIdNum = parseInt(noteId, 10);
+    if (isNaN(noteIdNum) || noteIdNum < 1) {
+      return res.status(400).json({ success: false, message: 'Invalid note ID' });
+    }
+    const result = await pool.query(
+      `DELETE FROM bot_player_notes WHERE id = $1 RETURNING discord_id`,
+      [noteIdNum]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, message: 'Note not found' });
+    }
+    const discordId = result.rows[0].discord_id;
+    try { io.of('/maya-admin').emit('maya:note-deleted', { discordId, noteId: noteIdNum }); } catch (_) {}
+    res.json({ success: true, message: 'Note deleted' });
+  } catch (err) {
+    console.error('[maya-api] Error deleting player note:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error deleting note' });
   }
 });
 

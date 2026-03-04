@@ -592,6 +592,25 @@
                 </div>
             </div>
 
+            <!-- Maya Notes Panel -->
+            <div class="section" id="maya-notes-section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h2><i class="fas fa-brain"></i> What Maya knows about <span id="maya-notes-player-name">this player</span></h2>
+                    <i class="fas fa-chevron-down chevron"></i>
+                </div>
+                <div class="section-body" id="maya-notes-body">
+                    <div id="maya-notes-list" style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:12px; background:var(--bg);">
+                        <p id="maya-notes-empty" style="color: var(--muted); margin:0;">No notes yet. Maya will automatically extract insights from conversations, or you can add notes manually.</p>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="maya-note-input" placeholder="Add a note about this player..." maxlength="500"
+                               style="flex:1; padding:8px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"
+                               onkeydown="if(event.key==='Enter')addMayaNote()">
+                        <button class="btn btn-primary" onclick="addMayaNote()"><i class="fas fa-plus"></i> Add note</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Roles Section -->
             <div class="section" id="roles-section">
                 <div class="section-header" onclick="toggleSection(this)">
