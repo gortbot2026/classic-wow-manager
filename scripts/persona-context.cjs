@@ -83,11 +83,13 @@ async function buildPlayerContext(pool, discordId) {
          WHERE ld.hps_value > 0`,
         [discordId]
       ).catch(() => ({ rows: [] })),
-      // Guild membership status from guildies table
+      // Guild membership status from guildies table (joined via players for discord_id)
       client.query(
-        `SELECT character_name, class, rank_name, main_alt, join_date
-         FROM guildies WHERE discord_id = $1
-         ORDER BY level DESC
+        `SELECT g.character_name, g.class, g.rank_name, g.main_alt, g.join_date
+         FROM guildies g
+         JOIN players p ON LOWER(p.character_name) = LOWER(g.character_name)
+         WHERE p.discord_id = $1
+         ORDER BY g.level DESC
          LIMIT 5`,
         [discordId]
       ).catch(() => ({ rows: [] }))
@@ -95,6 +97,22 @@ async function buildPlayerContext(pool, discordId) {
 
     // Build the context string
     const parts = [];
+
+    // Discord identity (best-effort)
+    try {
+      const duRes = await client.query(
+        `SELECT username FROM discord_users WHERE discord_id = $1 LIMIT 1`,
+        [discordId]
+      ).catch(() => ({ rows: [] }));
+      if (duRes.rows.length > 0 && duRes.rows[0].username) {
+        const raw = duRes.rows[0].username;
+        const sanitized = raw.replace(/[^a-zA-Z]/g, '');
+        const displayName = sanitized.length >= 2
+          ? sanitized.charAt(0).toUpperCase() + sanitized.slice(1).toLowerCase()
+          : null;
+        if (displayName) parts.push(`Discord username: ${displayName}`);
+      }
+    } catch (_) { /* non-critical */ }
 
     // Characters
     const characters = charactersRes.rows;
