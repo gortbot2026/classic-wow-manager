@@ -1092,6 +1092,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 });
             });
+
+            // Show player data page — open admin profile in new tab
+            cell.querySelectorAll('[data-action="show-player-page"]').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    const { userid } = e.currentTarget.dataset;
+                    if (userid) window.open('/admin/player/' + userid, '_blank');
+                });
+            });
         }
     };
 
@@ -1863,6 +1871,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 content += `<div class=\"dropdown-item\" data-action=\"prompt-invite\" data-userid=\"${player.userid}\"><i class=\"fas fa-envelope-open-text menu-icon\"></i>Prompt for invite</div>`;
             }
         } catch {}
+
+        // Show player data page — opens admin profile in new tab
+        const showPlayerDisabled = !player.userid;
+        content += `<div class="dropdown-item${showPlayerDisabled ? ' disabled' : ''}" data-action="show-player-page" data-userid="${player.userid || ''}"${showPlayerDisabled ? ' style="opacity:0.4;cursor:not-allowed;pointer-events:none;"' : ''}><i class="fas fa-external-link-alt menu-icon"></i>Show player data page</div>`;
 
                 // Build complete character list (main + alts)
         const allCharacters = [];
