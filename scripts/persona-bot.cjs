@@ -901,13 +901,6 @@ function createPersonaBot(options = {}) {
         return false;
       }
 
-      // Generate the summary — pass characterName so LLM knows who the player is
-      const summary = await generateRaidleaderSummary(pool, conversationId, characterName);
-      if (!summary) {
-        console.warn(`[persona-bot] Failed to generate raidleader summary for conversation ${conversationId}`);
-        return false;
-      }
-
       // Get the player's identity for the summary header
       // Use conversation's actual discord_id (not playerDiscordId which may be TEST MODE overridden)
       const convDiscordRes = await pool.query(
@@ -943,6 +936,13 @@ function createPersonaBot(options = {}) {
         }
       }
       characterName = characterName || 'Unknown Player';
+
+      // Generate the summary — pass characterName so LLM knows who the player is (not the raidleader)
+      const summary = await generateRaidleaderSummary(pool, conversationId, characterName);
+      if (!summary) {
+        console.warn(`[persona-bot] Failed to generate raidleader summary for conversation ${conversationId}`);
+        return false;
+      }
 
       // Get next upcoming raid name for intro line
       let raidLabel = 'tonight\'s raid';
