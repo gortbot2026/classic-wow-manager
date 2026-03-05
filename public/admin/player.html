@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Player Profile - Admin</title>
     <link rel="stylesheet" href="/style.css?v=sandbox-fix-3">
+    <link rel="stylesheet" href="/admin-styles.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script>
         /* Apply dark mode immediately to prevent flash */
@@ -68,7 +69,6 @@
 
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg);
             color: var(--text);
             line-height: 1.6;
         }
@@ -571,6 +571,48 @@
     </style>
 </head>
 <body>
+    <nav class="admin-nav-bar">
+        <div class="admin-nav-container">
+            <div class="admin-nav-content">
+                <!-- Logo & Brand -->
+                <div class="admin-nav-logo">
+                    <img src="/images/1p_logo.png" alt="1Principles" width="110" height="30">
+                    <span class="admin-nav-logo-text">Admin</span>
+                </div>
+
+                <!-- Navigation Links -->
+                <div class="admin-nav-links">
+                    <a href="/admin" class="admin-nav-link">
+                        <i class="fas fa-home"></i> Admin Home
+                    </a>
+                    <a href="/admin/raid-channels" class="admin-nav-link">
+                        <i class="fas fa-hashtag"></i> Raid Channels
+                    </a>
+                    <a href="/admin/points" class="admin-nav-link">
+                        <i class="fas fa-trophy"></i> Points
+                    </a>
+                    <a href="/admin/maya-settings" class="admin-nav-link">
+                        <i class="fas fa-robot"></i> Maya
+                    </a>
+                </div>
+
+                <!-- Actions -->
+                <div class="admin-nav-actions">
+                    <!-- Dark Mode Toggle -->
+                    <button id="dark-mode-toggle" class="dark-mode-toggle-nav" aria-label="Toggle dark mode">
+                        <i class="fas fa-moon"></i>
+                    </button>
+                    
+                    <!-- Exit Admin -->
+                    <a href="/" class="admin-nav-exit-btn">
+                        <i class="fas fa-sign-out-alt"></i> Exit Admin
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="admin-page-content bg-gray-50 dark:bg-gray-900">
     <div class="container">
         <a href="/guild-members" class="back-link"><i class="fas fa-arrow-left"></i> Back to Guild Members</a>
 
@@ -780,7 +822,10 @@
         </div>
     </div>
 
+    </div><!-- end admin-page-content -->
+
     <script src="/socket.io/socket.io.js"></script>
     <script src="/admin/player.js"></script>
+    <script src="/admin-dark-mode.js"></script>
 </body>
 </html>
