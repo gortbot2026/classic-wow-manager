@@ -211,8 +211,34 @@ async function resolveEventFromMessage(pool, messageContent) {
     }
   }
 
-  // 2. "last raid" — most recent past event
-  if (/\blast\s+raid\b/i.test(text)) {
+  // 2. "last raid" or "last [day]" — most recent past event from roster_overrides
+  const lastDayMatch = text.match(/\blast\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|raid)\b/i);
+  if (lastDayMatch) {
+    const dayName = lastDayMatch[1].toLowerCase();
+    let pastQuery, pastParams;
+    if (DAY_MAP[dayName] !== undefined) {
+      // "last Thursday" → most recent past event on that day
+      pastQuery = `
+        SELECT DISTINCT event_id
+        FROM roster_overrides
+        WHERE EXTRACT(DOW FROM to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0)) = $1
+          AND to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0) < NOW()
+        ORDER BY event_id DESC LIMIT 1`;
+      pastParams = [DAY_MAP[dayName]];
+    } else {
+      // "last week" or "last raid" → most recent event in roster_overrides
+      pastQuery = `
+        SELECT DISTINCT event_id
+        FROM roster_overrides
+        WHERE to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0) < NOW()
+        ORDER BY event_id DESC LIMIT 1`;
+      pastParams = [];
+    }
+    try {
+      const pastRes = await pool.query(pastQuery, pastParams);
+      if (pastRes.rows.length > 0) return String(pastRes.rows[0].event_id);
+    } catch (_) {}
+    // Also try events_cache past events
     const past = allEvents
       .filter(e => e.startTime && parseInt(e.startTime, 10) <= now)
       .sort((a, b) => parseInt(b.startTime, 10) - parseInt(a.startTime, 10));
