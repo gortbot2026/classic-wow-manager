@@ -2997,11 +2997,39 @@ app.post('/api/admin/maya/conversations', requireManagement, express.json(), asy
     );
     const playerName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : null;
 
+    // Auto-resolve event_id for pre_raid_briefing templates
+    let resolvedEventId = null;
+    if (templateId) {
+      try {
+        const tplTypeRes = await pool.query(
+          `SELECT trigger_type FROM bot_templates WHERE id = $1`, [templateId]
+        );
+        if (tplTypeRes.rows[0]?.trigger_type === 'pre_raid_briefing') {
+          const cacheRes = await pool.query(
+            `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
+          );
+          if (cacheRes.rows.length > 0 && cacheRes.rows[0].events_data) {
+            const eventsData = cacheRes.rows[0].events_data;
+            const events = Array.isArray(eventsData) ? eventsData : (eventsData.postedEvents || []);
+            const nowUnix = Math.floor(Date.now() / 1000);
+            const upcoming = events
+              .filter(e => e.startTime && e.startTime > nowUnix)
+              .sort((a, b) => a.startTime - b.startTime);
+            if (upcoming.length > 0) {
+              resolvedEventId = String(upcoming[0].id);
+            }
+          }
+        }
+      } catch (evtErr) {
+        console.error('[maya-api] Could not resolve event_id for pre_raid_briefing:', evtErr.message);
+      }
+    }
+
     const convId = require('crypto').randomUUID();
     await pool.query(
-      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, preferred_name)
-       VALUES ($1, $2, $3, 'active', 'admin', $4, $5)`,
-      [convId, discordId, playerName, templateId || null, preferredName || null]
+      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, preferred_name, event_id)
+       VALUES ($1, $2, $3, 'active', 'admin', $4, $5, $6)`,
+      [convId, discordId, playerName, templateId || null, preferredName || null, resolvedEventId]
     );
 
     // Determine opening message — use LLM generation when a template is selected
