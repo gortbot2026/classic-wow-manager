@@ -13257,10 +13257,25 @@ async function getRosterDataFromApi(eventId) {
                 'User-Agent': 'Classic-WoW-Manager/1.0'
             }
         });
-        if (!rosterResponse.data || !rosterResponse.data.raidDrop) {
-            throw new Error('Roster data not found or is invalid from Raid Helper API.');
+        const data = rosterResponse.data;
+        if (!data) throw new Error('Roster data not found from Raid Helper API.');
+
+        // Handle new API format: slots[] with id field (replaces old raidDrop[] with userid field)
+        if (!data.raidDrop && Array.isArray(data.slots)) {
+            data.raidDrop = data.slots.map(s => ({
+                userid: s.id,
+                name: s.name,
+                class: s.className,
+                spec: s.specName,
+                spec_emote: s.specEmoteId,
+                isConfirmed: s.isConfirmed === 'confirmed',
+                partyId: s.groupNumber,
+                slotId: s.slotNumber,
+            }));
         }
-        return rosterResponse.data;
+
+        if (!data.raidDrop) throw new Error('Roster data has no raidDrop or slots from Raid Helper API.');
+        return data;
     } catch (error) {
         console.error(`Failed to fetch roster data from Raid Helper API for event ${eventId}:`, error.message);
         
