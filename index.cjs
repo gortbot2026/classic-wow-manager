@@ -13260,28 +13260,31 @@ async function getRosterDataFromApi(eventId) {
         const data = rosterResponse.data;
         if (!data) throw new Error('Roster data not found from Raid Helper API.');
 
-        // Handle new API format: slots[] with id field (replaces old raidDrop[] with userid field)
-        // Build raidDrop from slots so isConfirmed lookups work, but preserve other expected fields
-        if (!data.raidDrop && Array.isArray(data.slots) && data.slots.length > 0) {
-            data.raidDrop = data.slots.map(s => ({
-                userid: s.id,
-                name: s.name,
-                class: s.className,
-                spec: s.specName,
-                spec_emote: s.specEmoteId,
-                isConfirmed: s.isConfirmed === 'confirmed',
-            }));
-            // Provide expected roster structure fields that managed roster renderer needs
-            data.partyPerRaid = data.groupCount || 8;
-            data.slotPerParty = data.slotCount ? Math.ceil(data.slotCount / (data.groupCount || 8)) : 5;
-            data.partyNames = (data.groups || []).map(g => g.name).filter(Boolean);
-            if (data.partyNames.length === 0) {
-                data.partyNames = Array.from({ length: data.partyPerRaid }, (_, i) => `Group ${i + 1}`);
-            }
+        // Old API format: has raidDrop[] directly
+        if (data.raidDrop) return data;
+
+        // New API format: has slots[] with id field instead of raidDrop[] with userid field
+        if (Array.isArray(data.slots) && data.slots.length > 0) {
+            const groupCount = data.groupCount || 8;
+            const partyNames = (data.groups || []).map(g => g.name).filter(Boolean);
+            // Return a clean structure matching what the roster renderer expects
+            return {
+                raidDrop: data.slots.map(s => ({
+                    userid: s.id,
+                    name: s.name,
+                    class: s.className,
+                    spec: s.specName,
+                    spec_emote: s.specEmoteId,
+                    isConfirmed: s.isConfirmed === 'confirmed',
+                })),
+                partyPerRaid: groupCount,
+                slotPerParty: data.slotCount ? Math.ceil(data.slotCount / groupCount) : 5,
+                partyNames: partyNames.length > 0 ? partyNames : Array.from({ length: groupCount }, (_, i) => `Group ${i + 1}`),
+                title: data.title || '',
+            };
         }
 
-        if (!data.raidDrop) throw new Error('Roster data has no raidDrop or slots from Raid Helper API.');
-        return data;
+        throw new Error('Roster data has no raidDrop or slots from Raid Helper API.');
     } catch (error) {
         console.error(`Failed to fetch roster data from Raid Helper API for event ${eventId}:`, error.message);
         
