@@ -494,15 +494,20 @@ async function fetchLogData(pool, eventId) {
   try {
     const [dpsRes, hpsRes] = await Promise.all([
       pool.query(
-        `SELECT character_name, character_class, dps_value
-         FROM log_data WHERE event_id = $1 AND dps_value > 0
-         ORDER BY dps_value DESC LIMIT 10`,
+        `SELECT character_name, character_class,
+           COALESCE(NULLIF(dps_value,0), damage_amount) as dps_val
+         FROM log_data WHERE event_id = $1
+           AND (dps_value > 0 OR damage_amount > 0)
+         ORDER BY COALESCE(NULLIF(dps_value,0), damage_amount) DESC LIMIT 10`,
         [eventId]
       ),
       pool.query(
-        `SELECT character_name, character_class, hps_value
-         FROM log_data WHERE event_id = $1 AND hps_value > 0
-         ORDER BY hps_value DESC LIMIT 10`,
+        `SELECT character_name, character_class, role_detected,
+           COALESCE(NULLIF(hps_value,0), healing_amount) as hps_val
+         FROM log_data WHERE event_id = $1
+           AND (hps_value > 0 OR healing_amount > 0)
+           AND (role_detected = 'healer' OR (hps_value > 0 OR healing_amount > 100000))
+         ORDER BY COALESCE(NULLIF(hps_value,0), healing_amount) DESC LIMIT 10`,
         [eventId]
       )
     ]);
@@ -512,13 +517,13 @@ async function fetchLogData(pool, eventId) {
     const parts = [];
     if (dpsRes.rows.length > 0) {
       const dpsLines = dpsRes.rows.map((r, i) =>
-        `${i + 1}. ${r.character_name}(${r.character_class || '?'}) ${Math.round(r.dps_value)} DPS`
+        `${i + 1}. ${r.character_name}(${r.character_class || '?'}) ${Math.round(r.dps_val).toLocaleString()}`
       );
       parts.push(`Top DPS:\n${dpsLines.join('\n')}`);
     }
     if (hpsRes.rows.length > 0) {
       const hpsLines = hpsRes.rows.map((r, i) =>
-        `${i + 1}. ${r.character_name}(${r.character_class || '?'}) ${Math.round(r.hps_value)} HPS`
+        `${i + 1}. ${r.character_name}(${r.character_class || '?'}) ${Math.round(r.hps_val).toLocaleString()} HPS`
       );
       parts.push(`Top HPS:\n${hpsLines.join('\n')}`);
     }
@@ -1017,6 +1022,19 @@ const MANAGEMENT_TOOLS = [
       },
       required: ['event_id']
     }
+  },
+  {
+    name: 'get_cross_raid_stats',
+    description: 'Find top performers across multiple raids in a time window. Use for questions like "who did the most healing in a single raid in Feb", "best DPS across all raids last month", etc. Returns top N players by damage or healing across a date range.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        stat: { type: 'string', enum: ['damage', 'healing'], description: 'Whether to rank by damage or healing' },
+        months: { type: 'number', description: 'How many months back to search (default 1)' },
+        limit: { type: 'number', description: 'Number of top results to return (default 5)' }
+      },
+      required: ['stat']
+    }
   }
 ];
 
@@ -1035,6 +1053,45 @@ const MANAGEMENT_TOOLS = [
  * @param {import('pg').Pool} pool - PostgreSQL connection pool
  * @returns {Promise<string>} Formatted event list string for system prompt injection
  */
+
+/**
+ * Cross-raid stats: find top performers by damage or healing across recent raids.
+ * Uses damage_amount/healing_amount columns (not dps_value/hps_value which may be 0).
+ */
+async function fetchCrossRaidStats(pool, stat, months, limit) {
+  const col = stat === 'healing' ? 'healing_amount' : 'damage_amount';
+  const label = stat === 'healing' ? 'Healing' : 'Damage';
+  const cacheKey = `crossRaidStats:${stat}:${months}:${limit}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    // Best single-raid performance per player within the time window
+    const res = await pool.query(`
+      SELECT ld.character_name, ld.character_class, ld.event_id,
+        ld.${col} as amount,
+        to_timestamp(((ld.event_id::bigint >> 22) + 1420070400000) / 1000.0)::date as raid_date
+      FROM log_data ld
+      WHERE ld.${col} > 0
+        AND to_timestamp(((ld.event_id::bigint >> 22) + 1420070400000) / 1000.0) > NOW() - ($1 || ' months')::interval
+      ORDER BY ld.${col} DESC
+      LIMIT $2
+    `, [String(months), limit]);
+
+    if (res.rows.length === 0) return `No ${label} data found in the last ${months} month(s).`;
+
+    const lines = res.rows.map((r, i) =>
+      `${i + 1}. ${r.character_name} (${r.character_class || '?'}) — ${Number(r.amount).toLocaleString()} ${label} on ${r.raid_date}`
+    );
+    const result = `**Top ${label} in a single raid (last ${months} month${months !== 1 ? 's' : ''}):**\n${lines.join('\n')}`;
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchCrossRaidStats error:', err.message);
+    return `Error fetching cross-raid ${label} stats: ${err.message}`;
+  }
+}
+
 async function getEventList(pool) {
   const cacheKey = 'eventList:all';
   const cached = cacheGet(cacheKey);
@@ -1388,6 +1445,9 @@ async function executeManagementTool(name, input, pool) {
 
       case 'get_world_buffs':
         return (await fetchWorldBuffs(pool, input.event_id)) || 'No world buff data found for this event.';
+
+      case 'get_cross_raid_stats':
+        return await fetchCrossRaidStats(pool, input.stat, input.months || 1, input.limit || 5);
 
       default:
         return `Unknown tool: ${name}`;
