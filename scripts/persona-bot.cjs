@@ -626,8 +626,8 @@ function createPersonaBot(options = {}) {
         return false;
       }
 
-      // Generate the summary
-      const summary = await generateRaidleaderSummary(pool, conversationId);
+      // Generate the summary — pass characterName so LLM knows who the player is
+      const summary = await generateRaidleaderSummary(pool, conversationId, characterName);
       if (!summary) {
         console.warn(`[persona-bot] Failed to generate raidleader summary for conversation ${conversationId}`);
         return false;
@@ -1195,7 +1195,7 @@ async function generateConversationSummary(pool, conversationId) {
  * @param {string} conversationId - The conversation to summarize
  * @returns {Promise<string|null>} Bullet-point summary text, or null on failure
  */
-async function generateRaidleaderSummary(pool, conversationId) {
+async function generateRaidleaderSummary(pool, conversationId, playerCharacterName) {
   try {
     const msgRes = await pool.query(
       `SELECT role, content FROM bot_messages
@@ -1211,7 +1211,12 @@ async function generateRaidleaderSummary(pool, conversationId) {
       content: m.content
     }));
 
+    const playerContext = playerCharacterName
+      ? `This conversation was with the player: ${playerCharacterName}. Do NOT confuse them with the raidleader or other names mentioned in the conversation.\n\n`
+      : '';
+
     const systemPrompt =
+      playerContext +
       'Summarize this pre-raid briefing conversation as bullet points for the raidleader. ' +
       'Output ONLY bullet points (lines starting with "- "). No prose, no greeting, no sign-off.\n\n' +
       'Include:\n' +
