@@ -526,11 +526,14 @@ function createPersonaBot(options = {}) {
           const typeDelay = typingDelay(replyText);
           await simulateTypingWithPauses(message.channel, typeDelay);
 
+          // Strip structured signal tags before sending to Discord
+          const sendText = replyText.replace(/\[SEND_BRIEFING\]/gi, '').trim();
+
           // Store and send the response
           await storeMessage(conversation.id, 'maya', replyText, model);
 
           // Send via Discord DM
-          await message.channel.send(replyText);
+          await message.channel.send(sendText);
 
           // Fire-and-forget: extract notes from this exchange
           extractPlayerNotes(pool, io, discordId, conversation.id, message.content, replyText)
@@ -802,21 +805,8 @@ function createPersonaBot(options = {}) {
 
       // Check for marker phrase in the response
       const lowerResponse = responseText.toLowerCase();
-      const briefingMarkerPhrases = [
-        'forward this to the raidleader',
-        'forward it to the raidleader',
-        'forwarded to the raidleader',
-        'forwarding this to',
-        'forwarded to zaappi',
-        'send this to the raidleader',
-        'get this forwarded',
-        'sending this to',
-        'pass this on to',
-        'ill forward',
-        "i'll forward",
-        'let the raidleader know'
-      ];
-      if (briefingMarkerPhrases.some(phrase => lowerResponse.includes(phrase))) {
+      // Structured signal: Maya outputs [SEND_BRIEFING] tag when ready to forward
+      if (lowerResponse.includes('[send_briefing]')) {
         // Start 10-minute timeout (only if not already set)
         if (!briefingTimeouts.has(conversationId)) {
           console.log(`[persona-bot] Detected final Q&A marker in conversation ${conversationId}, starting 10-min timeout`);
