@@ -562,6 +562,21 @@
             background: var(--bg);
         }
         .maya-history-transcript.expanded { display: block; }
+        .maya-history-delete-btn {
+            background: none;
+            border: none;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 4px 6px;
+            font-size: 13px;
+            border-radius: 4px;
+            transition: color 0.2s, background 0.2s;
+            flex-shrink: 0;
+        }
+        .maya-history-delete-btn:hover {
+            color: var(--danger);
+            background: rgba(255, 82, 82, 0.1);
+        }
 
         @media (max-width: 768px) {
             .identity-header { flex-direction: column; text-align: center; }

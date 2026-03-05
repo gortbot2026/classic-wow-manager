@@ -938,6 +938,20 @@
         }
       });
 
+      // Sync conversation deletions from other admin tabs
+      mayaSocket.on('maya:conversation-deleted', function(data) {
+        if (!data || !data.conversationId) return;
+        var cid = data.conversationId;
+        allConversations = allConversations.filter(function(c) { return c.id !== cid; });
+        delete transcriptCache[cid];
+        if (currentConversation && currentConversation.id === cid) {
+          currentConversation = null;
+          var messagesDiv = document.getElementById('maya-messages');
+          if (messagesDiv) messagesDiv.innerHTML = '';
+        }
+        renderConversationHistory(allConversations);
+      });
+
       mayaSocket.on('connect_error', function(err) {
         console.warn('[maya-admin] Socket connection failed:', err.message);
       });
@@ -1348,7 +1362,12 @@
       html += '<div class="maya-history-entry" onclick="mayaToggleHistoryEntry(\'' + escapeHtml(conv.id) + '\')">' +
         '<div class="maya-history-entry-header">' +
           '<span>' + escapeHtml(dateStr) + '</span>' +
-          '<span class="badge ' + statusClass + '">' + escapeHtml(conv.status || 'unknown') + '</span>' +
+          '<span style="display:flex;align-items:center;gap:6px;">' +
+            '<span class="badge ' + statusClass + '">' + escapeHtml(conv.status || 'unknown') + '</span>' +
+            '<button class="maya-history-delete-btn" title="Delete conversation" onclick="event.stopPropagation(); mayaDeleteConversation(\'' + escapeHtml(conv.id) + '\')">' +
+              '<i class="fas fa-trash-alt"></i>' +
+            '</button>' +
+          '</span>' +
         '</div>' +
         '<div class="maya-history-meta">' + msgCount + ' message' + (msgCount !== 1 ? 's' : '') + '</div>' +
         (preview ? '<div class="maya-history-preview">' + escapeHtml(preview) + '</div>' : '') +
@@ -1395,6 +1414,46 @@
       })
       .catch(function() {
         el.innerHTML = '<p style="color: var(--muted); font-size: 12px;">Error loading transcript.</p>';
+      });
+  };
+
+  /**
+   * Permanently deletes a conversation after user confirmation.
+   * Calls DELETE /api/admin/maya/conversations/:id, then updates local state.
+   * @param {string} conversationId - The conversation ID to delete
+   */
+  window.mayaDeleteConversation = function(conversationId) {
+    if (!confirm('Delete this conversation and all its messages? This cannot be undone.')) {
+      return;
+    }
+
+    fetch('/api/admin/maya/conversations/' + encodeURIComponent(conversationId), {
+      method: 'DELETE',
+      credentials: 'include'
+    })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(result) {
+        if (!result.ok) {
+          alert(result.data.message || 'Failed to delete conversation.');
+          return;
+        }
+
+        // Remove from local state
+        allConversations = allConversations.filter(function(c) { return c.id !== conversationId; });
+        delete transcriptCache[conversationId];
+
+        // Reset chat panel if the deleted conversation was active/current
+        if (currentConversation && currentConversation.id === conversationId) {
+          currentConversation = null;
+          var messagesDiv = document.getElementById('maya-messages');
+          if (messagesDiv) messagesDiv.innerHTML = '';
+        }
+
+        // Re-render history panel
+        renderConversationHistory(allConversations);
+      })
+      .catch(function() {
+        alert('Network error while deleting conversation.');
       });
   };
 

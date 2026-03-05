@@ -3209,6 +3209,90 @@ app.patch('/api/admin/maya/conversations/:conversationId', requireManagement, ex
   }
 });
 
+/**
+ * DELETE /api/admin/maya/conversations/:conversationId
+ * Permanently deletes a conversation and all associated records.
+ * Deletion order respects FK constraints: bot_messages → bot_player_notes nullification
+ * → pending_raidleader_summaries → bot_conversations.
+ * Active conversations cannot be deleted (must be closed first).
+ * Emits maya:conversation-deleted on /maya-admin namespace for cross-tab sync.
+ */
+app.delete('/api/admin/maya/conversations/:conversationId', requireManagement, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { conversationId } = req.params;
+
+    // Check conversation exists and is not active
+    const convResult = await client.query(
+      'SELECT id, status, discord_user_id FROM bot_conversations WHERE id = $1',
+      [conversationId]
+    );
+
+    if (convResult.rows.length === 0) {
+      client.release();
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    const conversation = convResult.rows[0];
+
+    if (conversation.status === 'active') {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete an active conversation. Close it first.'
+      });
+    }
+
+    // Transaction: delete in FK-safe order
+    await client.query('BEGIN');
+
+    // 1. Delete all messages for this conversation
+    await client.query(
+      'DELETE FROM bot_messages WHERE conversation_id = $1',
+      [conversationId]
+    );
+
+    // 2. Nullify source_conversation_id on player notes (preserve the notes themselves)
+    await client.query(
+      'UPDATE bot_player_notes SET source_conversation_id = NULL WHERE source_conversation_id = $1',
+      [conversationId]
+    );
+
+    // 3. Delete pending raid leader summaries
+    await client.query(
+      'DELETE FROM pending_raidleader_summaries WHERE conversation_id = $1',
+      [conversationId]
+    );
+
+    // 4. Delete the conversation itself
+    await client.query(
+      'DELETE FROM bot_conversations WHERE id = $1',
+      [conversationId]
+    );
+
+    await client.query('COMMIT');
+    client.release();
+
+    // Emit Socket.io event for cross-tab sync
+    const io = app.get('io');
+    if (io) {
+      try {
+        io.of('/maya-admin').emit('maya:conversation-deleted', {
+          conversationId,
+          discordUserId: conversation.discord_user_id
+        });
+      } catch (_) { /* non-critical */ }
+    }
+
+    res.json({ success: true, conversationId });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+    console.error('[maya-api] Error deleting conversation:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error deleting conversation' });
+  }
+});
+
 /** Admin sends a message as Maya */
 app.post('/api/admin/maya/conversations/:conversationId/messages', requireManagement, express.json(), async (req, res) => {
   try {
