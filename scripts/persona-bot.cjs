@@ -1500,10 +1500,12 @@ async function generateRaidleaderSummary(pool, conversationId, playerCharacterNa
 
     if (msgRes.rows.length === 0) return null;
 
-    const messages = msgRes.rows.map(m => ({
-      role: m.role === 'maya' || m.role === 'admin' ? 'assistant' : 'user',
-      content: m.content
-    }));
+    // Format conversation as plain text to avoid role-ordering issues with Anthropic API
+    // (Maya's opening message would be 'assistant' first, which Claude rejects)
+    const conversationText = msgRes.rows.map(m => {
+      const speaker = (m.role === 'maya' || m.role === 'admin') ? 'Maya' : 'Player';
+      return `${speaker}: ${m.content}`;
+    }).join('\n');
 
     const playerContext = playerCharacterName
       ? `This conversation was with the player: ${playerCharacterName}. Do NOT confuse them with the raidleader or other names mentioned in the conversation.\n\n`
@@ -1524,7 +1526,8 @@ async function generateRaidleaderSummary(pool, conversationId, playerCharacterNa
       'Do NOT include a line about whether it is their first raid — that is already known.\n' +
       'Keep it concise and factual. The raidleader needs quick, actionable info.';
 
-    const summary = await generateResponse(systemPrompt, messages, 'claude-haiku-4-5');
+    const userMessage = [{ role: 'user', content: `Here is the conversation to summarize:\n\n${conversationText}` }];
+    const summary = await generateResponse(systemPrompt, userMessage, 'claude-haiku-4-5');
 
     if (summary && typeof summary === 'string' && summary.trim().length > 0) {
       return summary.trim();
