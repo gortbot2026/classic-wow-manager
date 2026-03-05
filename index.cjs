@@ -3224,7 +3224,7 @@ app.delete('/api/admin/maya/conversations/:conversationId', requireManagement, a
 
     // Check conversation exists and is not active
     const convResult = await client.query(
-      'SELECT id, status, discord_user_id FROM bot_conversations WHERE id = $1',
+      'SELECT id, status, discord_id FROM bot_conversations WHERE id = $1',
       [conversationId]
     );
 
@@ -3279,7 +3279,7 @@ app.delete('/api/admin/maya/conversations/:conversationId', requireManagement, a
       try {
         io.of('/maya-admin').emit('maya:conversation-deleted', {
           conversationId,
-          discordUserId: conversation.discord_user_id
+          discordUserId: conversation.discord_id
         });
       } catch (_) { /* non-critical */ }
     }
