@@ -633,15 +633,61 @@ function createPersonaBot(options = {}) {
         return false;
       }
 
-      // Get the player's character name for the summary header
+      // Get the player's identity for the summary header
+      // Use conversation's actual discord_id (not playerDiscordId which may be TEST MODE overridden)
+      const convDiscordRes = await pool.query(
+        `SELECT discord_id FROM bot_conversations WHERE id = $1`, [conversationId]
+      );
+      const actualDiscordId = convDiscordRes.rows[0]?.discord_id || playerDiscordId;
+
+      // Try players table first, then roster_overrides, then discord_users
       const charRes = await pool.query(
         `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`,
-        [playerDiscordId]
+        [actualDiscordId]
       );
-      const characterName = charRes.rows[0]?.character_name || 'Unknown Player';
+      let characterName = charRes.rows[0]?.character_name;
 
-      // Format the summary DM
-      const summaryDM = `**Pre-raid briefing summary for ${characterName}:**\n${summary}`;
+      if (!characterName && eventId) {
+        const rosterRes = await pool.query(
+          `SELECT assigned_char_name FROM roster_overrides WHERE event_id = $1 AND discord_user_id = $2 LIMIT 1`,
+          [eventId, actualDiscordId]
+        );
+        characterName = rosterRes.rows[0]?.assigned_char_name;
+      }
+
+      if (!characterName) {
+        const duRes = await pool.query(
+          `SELECT username FROM discord_users WHERE discord_id = $1 LIMIT 1`, [actualDiscordId]
+        );
+        if (duRes.rows[0]?.username) {
+          const raw = duRes.rows[0].username;
+          const sanitized = raw.replace(/[^a-zA-Z]/g, '');
+          characterName = sanitized.length >= 2
+            ? sanitized.charAt(0).toUpperCase() + sanitized.slice(1).toLowerCase()
+            : raw;
+        }
+      }
+      characterName = characterName || 'Unknown Player';
+
+      // Get next upcoming raid name for intro line
+      let raidLabel = 'tonight\'s raid';
+      if (eventId) {
+        const evtRes = await pool.query(
+          `SELECT raidleader_name FROM event_metadata WHERE event_id = $1`, [eventId]
+        );
+        // Try events_cache for title
+        const cacheRes = await pool.query(
+          `SELECT e->>'title' as title FROM events_cache, jsonb_array_elements(events_data) e WHERE cache_key = 'raid_helper_events' AND e->>'id' = $1 LIMIT 1`,
+          [eventId]
+        ).catch(() => ({ rows: [] }));
+        if (cacheRes.rows[0]?.title) {
+          raidLabel = cacheRes.rows[0].title.replace(/\s*\|\s*/g, ' ').trim();
+        }
+      }
+
+      // Format the summary DM with intro line
+      const introLine = `I just spoke to **${characterName}** about ${raidLabel}. Here's a quick briefing summary:`;
+      const summaryDM = `${introLine}\n\n${summary}`;
 
       // Look up raidleader for this event
       const rlRes = await pool.query(
@@ -1160,11 +1206,14 @@ async function generateRaidleaderSummary(pool, conversationId) {
       'Summarize this pre-raid briefing conversation as bullet points for the raidleader. ' +
       'Output ONLY bullet points (lines starting with "- "). No prose, no greeting, no sign-off.\n\n' +
       'Include:\n' +
-      '- Player character name and class\n' +
-      '- Whether this is their first raid with 1Principles\n' +
-      '- Key takeaway from each Q&A answer\n' +
+      '- Player character name and class (if mentioned)\n' +
+      '- Naxxramas/tactics familiarity\n' +
+      '- Discord availability (voice/text)\n' +
+      '- Raid role (buyer with budget, or performance raider)\n' +
+      '- Any class-specific notes (e.g. Priest PI, Mage decurse)\n' +
       '- Any special requests, concerns, or notable information\n' +
       '- Any mention of needing to leave early or schedule constraints\n\n' +
+      'Do NOT include a line about whether it is their first raid — that is already known.\n' +
       'Keep it concise and factual. The raidleader needs quick, actionable info.';
 
     const summary = await generateResponse(systemPrompt, messages, 'claude-haiku-4-5');
