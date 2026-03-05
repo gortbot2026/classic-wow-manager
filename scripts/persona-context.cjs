@@ -925,11 +925,11 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     if (!resolvedEventId) {
       try {
         const cacheRes = await pool.query(
-          `SELECT events_data FROM events_cache WHERE cache_key = 'events' AND expires_at > NOW()`
+          `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
         );
         if (cacheRes.rows.length > 0 && cacheRes.rows[0].events_data) {
           const eventsData = cacheRes.rows[0].events_data;
-          const postedEvents = eventsData.postedEvents || [];
+          const postedEvents = Array.isArray(eventsData) ? eventsData : (eventsData.postedEvents || []);
           const nowUnix = Math.floor(Date.now() / 1000);
           const upcoming = postedEvents
             .filter(e => e.startTime && e.startTime > nowUnix)
@@ -962,11 +962,11 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     let nextRaid = 'No upcoming raids scheduled';
     try {
       const cacheRes = await pool.query(
-        `SELECT events_data FROM events_cache WHERE cache_key = 'events' AND expires_at > NOW()`
+        `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
       );
       if (cacheRes.rows.length > 0 && cacheRes.rows[0].events_data) {
         const eventsData = cacheRes.rows[0].events_data;
-        const postedEvents = eventsData.postedEvents || [];
+        const postedEvents = Array.isArray(eventsData) ? eventsData : (eventsData.postedEvents || []);
         const nowUnix = Math.floor(Date.now() / 1000);
         const upcoming = postedEvents
           .filter(e => e.startTime && e.startTime > nowUnix)
