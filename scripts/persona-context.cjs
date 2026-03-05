@@ -973,15 +973,10 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
           .sort((a, b) => a.startTime - b.startTime);
         if (upcoming.length > 0) {
           const evt = upcoming[0];
-          const raidName = evt.title || evt.channelName || 'Raid';
-          const raidDate = new Date(evt.startTime * 1000);
-          const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-          const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-            'July', 'August', 'September', 'October', 'November', 'December'];
-          const dayName = dayNames[raidDate.getUTCDay()];
-          const monthName = monthNames[raidDate.getUTCMonth()];
-          const dateNum = raidDate.getUTCDate();
-          nextRaid = `${raidName} on ${dayName}, ${monthName} ${dateNum}`;
+          // Use title as-is (e.g. "Nax | Thursday | 20:30") — already contains day + time
+          // Replace " | " separators with spaces for cleaner LLM output
+          const rawTitle = evt.title || evt.channelName || 'Raid';
+          nextRaid = rawTitle.replace(/\s*\|\s*/g, ' ').trim();
         }
       }
     } catch (_) {
