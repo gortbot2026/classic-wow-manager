@@ -808,6 +808,15 @@ function createPersonaBot(options = {}) {
       console.log(`[persona-bot] Pre-raid briefing timeout for conversation ${conversationId}`);
       briefingTimeouts.delete(conversationId);
 
+      // Check if the summary was already sent (conversation already closed by player reply)
+      const convCheck = await pool.query(
+        `SELECT status FROM bot_conversations WHERE id = $1`, [conversationId]
+      );
+      if (convCheck.rows[0]?.status === 'closed') {
+        console.log(`[persona-bot] Conversation ${conversationId} already closed — skipping timeout send`);
+        return false;
+      }
+
       // Generate and send summary to raidleader
       await sendSummaryToRaidleader(conversationId, playerDiscordId);
 
