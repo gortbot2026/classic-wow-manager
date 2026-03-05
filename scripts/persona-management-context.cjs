@@ -1042,10 +1042,14 @@ async function getEventList(pool) {
 
   try {
     // Fetch distinct event IDs from roster_overrides with derived dates
+    // Only include real raids (>=10 players) to exclude test/partial events
     const res = await pool.query(`
-      SELECT DISTINCT ro.event_id,
-        to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0) AS event_date
+      SELECT ro.event_id,
+        to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0) AS event_date,
+        COUNT(*) as player_count
       FROM roster_overrides ro
+      GROUP BY ro.event_id
+      HAVING COUNT(*) >= 10
       ORDER BY ro.event_id DESC
       LIMIT 30
     `);
@@ -1081,7 +1085,7 @@ async function getEventList(pool) {
       const date = new Date(row.event_date);
       const dateStr = date.toISOString().split('T')[0];
       const dayName = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
-      return `- event_id: ${eventId} | ${title} | ${dayName} ${dateStr}`;
+      return `- event_id: ${eventId} | ${title} | ${dayName} ${dateStr} | ${row.player_count} players`;
     });
 
     const result = `Available raid events (most recent first):\n${lines.join('\n')}`;
