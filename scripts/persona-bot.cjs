@@ -370,7 +370,7 @@ function createPersonaBot(options = {}) {
       }));
 
       // Build management system prompt
-      let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked. You have full player lookup capability — when leadership asks about a player, their full profile data will be provided below if the player was identified by character name, Discord username, or Discord ID in the message. If player data is provided below, use it to inform your answer.`;
+      let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked.\n\nIMPORTANT: Any data injected into this prompt under --- PLAYER DATA --- or --- RAID INTELLIGENCE --- is fetched live from the database for THIS specific message. Always trust and use injected data — it is authoritative. Do NOT fall back on anything you said in prior conversation messages if injected data is provided below.`;
 
       // Scan the triggering message for player names and enrich context
       const playerLookup = await lookupPlayersInMessage(message.content);
@@ -388,7 +388,10 @@ function createPersonaBot(options = {}) {
             pool, contextNeeds, message.content, eventId, playerLookup.discordIds
           );
           if (mgmtContext) {
-            systemPrompt += `\n\n--- RAID INTELLIGENCE ---\n${mgmtContext}`;
+            console.log(`[persona-bot] Management context fetched for event ${eventId}, length=${mgmtContext.length}`);
+            systemPrompt += `\n\n--- RAID INTELLIGENCE (fetched from database for this message) ---\n${mgmtContext}`;
+          } else {
+            console.log(`[persona-bot] Management context empty for event ${eventId}, needs=${JSON.stringify(contextNeeds)}`);
           }
         } catch (ctxErr) {
           console.error('[persona-bot] Management context fetch error:', ctxErr.message || ctxErr);
