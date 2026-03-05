@@ -15,6 +15,7 @@ const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js
 const crypto = require('crypto');
 const { generateResponse } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
+const { detectContextNeeds, resolveEventFromMessage, fetchManagementContext } = require('./persona-management-context.cjs');
 
 /**
  * Sanitizes LLM response text by removing em-dashes (U+2014) and en-dashes (U+2013).
@@ -372,9 +373,26 @@ function createPersonaBot(options = {}) {
       let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked. You have full player lookup capability — when leadership asks about a player, their full profile data will be provided below if the player was identified by character name, Discord username, or Discord ID in the message. If player data is provided below, use it to inform your answer.`;
 
       // Scan the triggering message for player names and enrich context
-      const playerDataSections = await lookupPlayersInMessage(message.content);
-      if (playerDataSections) {
-        systemPrompt += `\n\n--- PLAYER DATA ---\n${playerDataSections}`;
+      const playerLookup = await lookupPlayersInMessage(message.content);
+      if (playerLookup.text) {
+        systemPrompt += `\n\n--- PLAYER DATA ---\n${playerLookup.text}`;
+      }
+
+      // Detect context needs and fetch raid intelligence
+      const contextNeeds = detectContextNeeds(message.content);
+      const hasAnyNeed = Object.values(contextNeeds).some(Boolean);
+      if (hasAnyNeed) {
+        try {
+          const eventId = await resolveEventFromMessage(pool, message.content);
+          const mgmtContext = await fetchManagementContext(
+            pool, contextNeeds, message.content, eventId, playerLookup.discordIds
+          );
+          if (mgmtContext) {
+            systemPrompt += `\n\n--- RAID INTELLIGENCE ---\n${mgmtContext}`;
+          }
+        } catch (ctxErr) {
+          console.error('[persona-bot] Management context fetch error:', ctxErr.message || ctxErr);
+        }
       }
 
       // Get persona for model selection
@@ -551,10 +569,13 @@ function createPersonaBot(options = {}) {
         }
       }
 
-      return sections.length > 0 ? sections.join('\n\n') : null;
+      return {
+        text: sections.length > 0 ? sections.join('\n\n') : null,
+        discordIds: [...processedIds]
+      };
     } catch (err) {
       console.error('[persona-bot] Player lookup error:', err.message || err);
-      return null;
+      return { text: null, discordIds: [] };
     }
   }
 
