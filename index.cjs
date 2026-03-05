@@ -13278,7 +13278,7 @@ async function getRosterDataFromApi(eventId) {
                     isConfirmed: s.isConfirmed === 'confirmed',
                 })),
                 partyPerRaid: groupCount,
-                slotPerParty: data.slotCount ? Math.ceil(data.slotCount / groupCount) : 5,
+                slotPerParty: data.slotCount || 5, // slotCount = slots per group (not total)
                 partyNames: partyNames.length > 0 ? partyNames : Array.from({ length: groupCount }, (_, i) => `Group ${i + 1}`),
                 title: data.title || '',
             };
