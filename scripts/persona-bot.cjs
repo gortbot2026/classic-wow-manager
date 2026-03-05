@@ -373,7 +373,14 @@ function createPersonaBot(options = {}) {
       const eventList = await getEventList(pool);
 
       // Build management system prompt with event list and tool-use instructions
+      const now = new Date();
+      const currentDateTime = now.toLocaleString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short'
+      });
       const systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked.
+
+Current date/time: ${currentDateTime}
 
 --- RECENT RAID EVENTS ---
 ${eventList}
