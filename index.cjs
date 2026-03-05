@@ -13275,7 +13275,10 @@ async function getRosterDataFromApi(eventId) {
                     class: s.className,
                     spec: s.specName,
                     spec_emote: s.specEmoteId,
+                    class_emote: s.classEmoteId,
                     isConfirmed: s.isConfirmed === 'confirmed',
+                    partyId: s.groupNumber || null,
+                    slotId: s.slotNumber || null,
                 })),
                 partyPerRaid: groupCount,
                 slotPerParty: data.slotCount || 5, // slotCount = slots per group (not total)
