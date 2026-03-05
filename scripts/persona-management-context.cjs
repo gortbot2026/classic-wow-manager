@@ -906,8 +906,509 @@ async function fetchHistoricalAttendance(pool, messageContent) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Tool-Use: Anthropic Tool Definitions
+// ---------------------------------------------------------------------------
+
+/**
+ * Anthropic tool definitions for the management channel tool-use flow.
+ * Each tool has a name, description, and input_schema conforming to the
+ * Anthropic Messages API tools parameter format.
+ *
+ * @type {Array<{name: string, description: string, input_schema: object}>}
+ */
+const MANAGEMENT_TOOLS = [
+  {
+    name: 'get_roster',
+    description: 'Get the raid roster for a specific event. Returns players grouped by party with class, spec, and bench status.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_logs',
+    description: 'Get top DPS and HPS performance data from Warcraft Logs for a specific event.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_gold',
+    description: 'Get gold earnings, GDKP pot, and loot items won from published snapshots for a specific event.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_signups',
+    description: 'Get Raid Helper sign-up data for a specific event. Returns players grouped by class with status (confirmed/tentative/absent).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_assignments',
+    description: 'Get raid assignments grouped by boss for a specific event. Includes debuff assignments, interrupts, marks, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_player_data',
+    description: 'Get comprehensive player profile including alts, conversation stats, notes, and recent conversations. Accepts character name, Discord username, or Discord ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: 'Character name, Discord username, or Discord snowflake ID' }
+      },
+      required: ['identifier']
+    }
+  },
+  {
+    name: 'get_historical_attendance',
+    description: 'Get historical raid attendance stats for a specific WoW class over time. Shows unique players and their raid count.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        class: { type: 'string', description: 'Lowercase WoW class name (priest, warrior, mage, druid, shaman, rogue, warlock, hunter, paladin)' },
+        months: { type: 'number', description: 'Number of months to look back (default: 3, max: 12)' }
+      },
+      required: ['class']
+    }
+  },
+  {
+    name: 'get_player_notes',
+    description: 'Get bot notes and management notes for a specific player. Accepts character name, Discord username, or Discord ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: 'Character name, Discord username, or Discord snowflake ID' }
+      },
+      required: ['identifier']
+    }
+  },
+  {
+    name: 'get_world_buffs',
+    description: 'Get world buff status for a specific event. Shows which players have or are missing buffs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  }
+];
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Event List (injected into system prompt)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetches the last 30 raid events from roster_overrides, enriched with titles
+ * from events_cache. Used to inject an event reference list into the management
+ * channel system prompt so Maya can identify event IDs.
+ *
+ * Event dates are derived from Discord snowflake epoch:
+ * (event_id::bigint >> 22) + 1420070400000 = Unix timestamp in ms
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @returns {Promise<string>} Formatted event list string for system prompt injection
+ */
+async function getEventList(pool) {
+  const cacheKey = 'eventList:all';
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    // Fetch distinct event IDs from roster_overrides with derived dates
+    const res = await pool.query(`
+      SELECT DISTINCT ro.event_id,
+        to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0) AS event_date
+      FROM roster_overrides ro
+      ORDER BY ro.event_id DESC
+      LIMIT 30
+    `);
+
+    if (res.rows.length === 0) {
+      const result = 'Available raid events: None found.';
+      cacheSet(cacheKey, result);
+      return result;
+    }
+
+    // Fetch events_cache for title lookups
+    let titleMap = {};
+    try {
+      const cacheResult = await pool.query(
+        `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
+      );
+      if (cacheResult.rows.length > 0) {
+        const rawEvents = cacheResult.rows[0].events_data;
+        const allEvents = typeof rawEvents === 'string' ? JSON.parse(rawEvents) : rawEvents;
+        if (Array.isArray(allEvents)) {
+          for (const ev of allEvents) {
+            titleMap[String(ev.id)] = ev.channelName || ev.title || null;
+          }
+        }
+      }
+    } catch (titleErr) {
+      console.error('[persona-mgmt-ctx] getEventList title lookup error:', titleErr.message);
+    }
+
+    const lines = res.rows.map(row => {
+      const eventId = String(row.event_id);
+      const title = titleMap[eventId] || 'Unknown Raid';
+      const date = new Date(row.event_date);
+      const dateStr = date.toISOString().split('T')[0];
+      const dayName = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+      return `- event_id: ${eventId} | ${title} | ${dayName} ${dateStr}`;
+    });
+
+    const result = `Available raid events (most recent first):\n${lines.join('\n')}`;
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] getEventList error:', err.message);
+    return 'Available raid events: Error fetching event list.';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Player Resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves a flexible player identifier (character name, roster name,
+ * Discord username, or Discord snowflake ID) to a discord_id.
+ *
+ * Resolution order:
+ * 1. Exact match on players.character_name (case-insensitive)
+ * 2. Match on roster_overrides.assigned_char_name (case-insensitive, DISTINCT)
+ * 3. Match on discord_users.username (case-insensitive)
+ * 4. Match as Discord snowflake ID on players.discord_id
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} identifier - Character name, Discord username, or Discord snowflake ID
+ * @returns {Promise<{discordId: string, characterName: string}|null>} Resolved player or null
+ */
+async function resolvePlayerIdentifier(pool, identifier) {
+  if (!identifier || typeof identifier !== 'string') return null;
+  const trimmed = identifier.trim();
+  if (trimmed.length === 0) return null;
+
+  // 1. Exact match on players.character_name
+  try {
+    const res = await pool.query(
+      `SELECT discord_id, character_name FROM players WHERE LOWER(character_name) = LOWER($1) LIMIT 1`,
+      [trimmed]
+    );
+    if (res.rows.length > 0) {
+      return { discordId: res.rows[0].discord_id, characterName: res.rows[0].character_name };
+    }
+  } catch (_) { /* continue */ }
+
+  // 2. Match on roster_overrides.assigned_char_name
+  try {
+    const res = await pool.query(
+      `SELECT DISTINCT discord_user_id, assigned_char_name FROM roster_overrides
+       WHERE LOWER(assigned_char_name) = LOWER($1) AND discord_user_id IS NOT NULL LIMIT 1`,
+      [trimmed]
+    );
+    if (res.rows.length > 0) {
+      return { discordId: res.rows[0].discord_user_id, characterName: res.rows[0].assigned_char_name };
+    }
+  } catch (_) { /* continue */ }
+
+  // 3. Match on discord_users.username
+  try {
+    const res = await pool.query(
+      `SELECT discord_id, username FROM discord_users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
+      [trimmed]
+    );
+    if (res.rows.length > 0) {
+      // Try to get a character name from players table
+      const playerRes = await pool.query(
+        `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`,
+        [res.rows[0].discord_id]
+      );
+      const charName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : res.rows[0].username;
+      return { discordId: res.rows[0].discord_id, characterName: charName };
+    }
+  } catch (_) { /* continue */ }
+
+  // 4. Match as Discord snowflake ID
+  if (/^\d{17,20}$/.test(trimmed)) {
+    try {
+      const res = await pool.query(
+        `SELECT discord_id, character_name FROM players WHERE discord_id = $1 LIMIT 1`,
+        [trimmed]
+      );
+      if (res.rows.length > 0) {
+        return { discordId: res.rows[0].discord_id, characterName: res.rows[0].character_name || trimmed };
+      }
+    } catch (_) { /* continue */ }
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Player Data (enriched section builder)
+// ---------------------------------------------------------------------------
+
+const { buildPlayerContext } = require('./persona-context.cjs');
+
+/**
+ * Fetches comprehensive player data by resolving a flexible identifier.
+ * Builds the same enriched section as the old lookupPlayersInMessage:
+ * player context, notes, recent conversations, and conversation stats.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} identifier - Character name, Discord username, or Discord snowflake ID
+ * @returns {Promise<string>} Formatted player data string or error message
+ */
+async function fetchPlayerData(pool, identifier) {
+  const resolved = await resolvePlayerIdentifier(pool, identifier);
+  if (!resolved) {
+    return `No player found matching "${identifier}". Try using their exact character name, Discord username, or Discord ID.`;
+  }
+
+  const { discordId, characterName } = resolved;
+  const cacheKey = `playerData:${discordId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const playerContext = await buildPlayerContext(pool, discordId);
+
+    // Fetch Maya's notes about this player
+    const notesRes = await pool.query(
+      `SELECT note, created_at FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
+      [discordId]
+    );
+    const notesBlock = notesRes.rows.length > 0
+      ? notesRes.rows.map(n => {
+          const date = new Date(n.created_at).toISOString().split('T')[0];
+          return `- [${date}] ${n.note}`;
+        }).join('\n')
+      : 'No notes recorded.';
+
+    // Fetch recent conversations with message counts
+    const convsRes = await pool.query(
+      `SELECT bc.id, bc.status, bc.created_at, bc.summary,
+              (SELECT COUNT(*) FROM bot_messages bm WHERE bm.conversation_id = bc.id) as msg_count
+       FROM bot_conversations bc
+       WHERE bc.discord_id = $1
+       ORDER BY bc.created_at DESC LIMIT 5`,
+      [discordId]
+    );
+    const convsBlock = convsRes.rows.length > 0
+      ? convsRes.rows.map(c => {
+          const date = new Date(c.created_at).toISOString().split('T')[0];
+          const summary = c.summary ? ` - ${c.summary}` : '';
+          return `- [${c.status}] ${date}, ${c.msg_count} messages${summary}`;
+        }).join('\n')
+      : 'No conversations recorded.';
+
+    // Fetch conversation count and last chat date
+    const convCountRes = await pool.query(
+      `SELECT COUNT(*) as count, MAX(created_at) as last_chat FROM bot_conversations WHERE discord_id = $1`,
+      [discordId]
+    );
+    const convCount = parseInt(convCountRes.rows[0].count, 10) || 0;
+    const lastChat = convCountRes.rows[0].last_chat
+      ? new Date(convCountRes.rows[0].last_chat).toISOString().split('T')[0]
+      : 'Never';
+    const convStatsLine = `Total conversations: ${convCount}, Last chat: ${lastChat}`;
+
+    // Fetch alts
+    const altsResult = await fetchPlayerAlts(pool, [discordId]);
+
+    const result = `## ${characterName}\n${playerContext || 'No player data available.'}\n\n**Conversation Stats:** ${convStatsLine}\n\n**Maya's Notes:**\n${notesBlock}\n\n**Recent Conversations:**\n${convsBlock}${altsResult ? `\n\n${altsResult}` : ''}`;
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchPlayerData error:', err.message);
+    return `Error fetching player data for "${identifier}": ${err.message}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Historical Attendance (tool wrapper)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tool-friendly wrapper for historical attendance that accepts structured
+ * parameters instead of parsing message text.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} className - Lowercase WoW class name (priest, warrior, etc.)
+ * @param {number} [months=3] - Number of months to look back (max 12)
+ * @returns {Promise<string>} Formatted historical attendance data
+ */
+async function fetchHistoricalAttendanceTool(pool, className, months) {
+  const classFilter = (className || '').toLowerCase().trim();
+  const validClasses = ['priest', 'warrior', 'mage', 'druid', 'shaman', 'rogue', 'warlock', 'hunter', 'paladin'];
+  if (!validClasses.includes(classFilter)) {
+    return `Invalid class "${className}". Valid classes: ${validClasses.join(', ')}`;
+  }
+
+  const monthsVal = Math.min(Math.max(1, months || 3), 12);
+  const cacheKey = `historicalAttendance:${classFilter}:${monthsVal}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await pool.query(
+      `SELECT ro.assigned_char_name, ro.assigned_char_class,
+        to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0)::date as raid_date
+      FROM roster_overrides ro
+      WHERE LOWER(ro.assigned_char_class) LIKE $1
+        AND to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0) > NOW() - ($2 || ' months')::interval
+      ORDER BY ro.assigned_char_name, raid_date DESC`,
+      [`%${classFilter}%`, String(monthsVal)]
+    );
+
+    if (res.rows.length === 0) {
+      return `No historical attendance records found for ${classFilter}s in the last ${monthsVal} months.`;
+    }
+
+    const byPlayer = {};
+    for (const row of res.rows) {
+      const name = row.assigned_char_name;
+      if (!byPlayer[name]) byPlayer[name] = { cls: row.assigned_char_class, dates: [] };
+      byPlayer[name].dates.push(row.raid_date);
+    }
+
+    const lines = Object.entries(byPlayer)
+      .sort((a, b) => b[1].dates.length - a[1].dates.length)
+      .map(([name, d]) => `- ${name} (${d.cls}): ${d.dates.length} raid${d.dates.length !== 1 ? 's' : ''}, last: ${d.dates[0]}`);
+
+    const result = `Historical Attendance - ${classFilter.charAt(0).toUpperCase() + classFilter.slice(1)}s (last ${monthsVal} months, ${Object.keys(byPlayer).length} unique players, ${res.rows.length} appearances):\n${lines.join('\n')}`;
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchHistoricalAttendanceTool error:', err.message);
+    return `Error fetching historical attendance: ${err.message}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Player Notes (by identifier)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetches bot notes and management notes for a player identified by
+ * character name, Discord username, or Discord snowflake ID.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} identifier - Character name, Discord username, or Discord snowflake ID
+ * @returns {Promise<string>} Formatted player notes or error message
+ */
+async function fetchPlayerNotesTool(pool, identifier) {
+  const resolved = await resolvePlayerIdentifier(pool, identifier);
+  if (!resolved) {
+    return `No player found matching "${identifier}". Try using their exact character name, Discord username, or Discord ID.`;
+  }
+
+  const { discordId, characterName } = resolved;
+  const notesResult = await fetchPlayerNotes(pool, [discordId]);
+
+  if (!notesResult) {
+    return `No notes found for ${characterName}.`;
+  }
+
+  return `Notes for ${characterName}:\n${notesResult}`;
+}
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Executes a management tool by name with the given input parameters.
+ * Catches all errors and returns a friendly error string instead of throwing.
+ * Results are cached via the individual fetcher's caching mechanism.
+ *
+ * @param {string} name - Tool name (must match a MANAGEMENT_TOOLS entry)
+ * @param {object} input - Tool input parameters from the LLM
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @returns {Promise<string>} Tool result string (data or friendly error)
+ */
+async function executeManagementTool(name, input, pool) {
+  try {
+    switch (name) {
+      case 'get_roster':
+        return (await fetchRoster(pool, input.event_id)) || 'No roster data found for this event.';
+
+      case 'get_logs':
+        return (await fetchLogData(pool, input.event_id)) || 'No log data found for this event.';
+
+      case 'get_gold':
+        return (await fetchGoldLoot(pool, input.event_id)) || 'No gold/loot data found for this event.';
+
+      case 'get_signups':
+        return (await fetchSignups(input.event_id)) || 'No sign-up data found for this event.';
+
+      case 'get_assignments':
+        return (await fetchAssignments(pool, input.event_id)) || 'No assignments found for this event.';
+
+      case 'get_player_data':
+        return await fetchPlayerData(pool, input.identifier);
+
+      case 'get_historical_attendance':
+        return await fetchHistoricalAttendanceTool(pool, input.class, input.months);
+
+      case 'get_player_notes':
+        return await fetchPlayerNotesTool(pool, input.identifier);
+
+      case 'get_world_buffs':
+        return (await fetchWorldBuffs(pool, input.event_id)) || 'No world buff data found for this event.';
+
+      default:
+        return `Unknown tool: ${name}`;
+    }
+  } catch (err) {
+    console.error(`[persona-mgmt-ctx] executeManagementTool(${name}) error:`, err.message);
+    return `Error executing ${name}: ${err.message}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
 module.exports = {
+  // New tool-use exports
+  getEventList,
+  executeManagementTool,
+  MANAGEMENT_TOOLS,
+
+  // Legacy exports (kept for backward compatibility)
+  /** @deprecated Use MANAGEMENT_TOOLS + executeManagementTool instead */
   detectContextNeeds,
+  /** @deprecated Use getEventList + tool-use flow instead */
   resolveEventFromMessage,
+  /** @deprecated Use executeManagementTool instead */
   fetchManagementContext
 };

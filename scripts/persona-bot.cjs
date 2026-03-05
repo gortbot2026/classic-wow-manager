@@ -13,9 +13,9 @@
 
 const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js');
 const crypto = require('crypto');
-const { generateResponse } = require('./persona-llm.cjs');
+const { generateResponse, generateResponseWithTools } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
-const { detectContextNeeds, resolveEventFromMessage, fetchManagementContext } = require('./persona-management-context.cjs');
+const { getEventList, executeManagementTool, MANAGEMENT_TOOLS } = require('./persona-management-context.cjs');
 
 /**
  * Sanitizes LLM response text by removing em-dashes (U+2014) and en-dashes (U+2013).
@@ -348,15 +348,15 @@ function createPersonaBot(options = {}) {
 
     managementChannelLock = true;
 
-    // Start typing indicator with refresh interval
+    // Start typing indicator with refresh interval (persists through entire tool-use loop)
     message.channel.sendTyping().catch(() => {});
     const typingInterval = setInterval(() => {
       message.channel.sendTyping().catch(() => {});
     }, 8000);
 
     try {
-      // Fetch last 20 messages for context
-      const recentMessages = await message.channel.messages.fetch({ limit: 20 });
+      // Fetch last 10 messages for context (reduced from 20 to manage token usage with tool-use)
+      const recentMessages = await message.channel.messages.fetch({ limit: 10 });
       const sortedMessages = [...recentMessages.values()].sort(
         (a, b) => a.createdTimestamp - b.createdTimestamp
       );
@@ -369,44 +369,71 @@ function createPersonaBot(options = {}) {
           : `${msg.member?.displayName || msg.author.displayName || msg.author.username}: ${msg.content}`
       }));
 
-      // Build management system prompt
-      let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked.\n\nIMPORTANT: Any data injected into this prompt under --- PLAYER DATA --- or --- RAID INTELLIGENCE --- is fetched live from the database for THIS specific message. Always trust and use injected data — it is authoritative. Do NOT fall back on anything you said in prior conversation messages if injected data is provided below.`;
+      // Fetch event list for system prompt injection
+      const eventList = await getEventList(pool);
 
-      // Scan the triggering message for player names and enrich context
-      const playerLookup = await lookupPlayersInMessage(message.content);
-      if (playerLookup.text) {
-        systemPrompt += `\n\n--- PLAYER DATA ---\n${playerLookup.text}`;
-      }
+      // Build management system prompt with event list and tool-use instructions
+      const systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked.
 
-      // Detect context needs and fetch raid intelligence
-      const contextNeeds = detectContextNeeds(message.content);
-      const hasAnyNeed = Object.values(contextNeeds).some(Boolean);
-      if (hasAnyNeed) {
-        try {
-          const eventId = await resolveEventFromMessage(pool, message.content);
-          const mgmtContext = await fetchManagementContext(
-            pool, contextNeeds, message.content, eventId, playerLookup.discordIds
-          );
-          if (mgmtContext) {
-            console.log(`[persona-bot] Management context fetched for event ${eventId}, length=${mgmtContext.length}`);
-            systemPrompt += `\n\n--- RAID INTELLIGENCE (fetched from database for this message) ---\n${mgmtContext}`;
-          } else {
-            console.log(`[persona-bot] Management context empty for event ${eventId}, needs=${JSON.stringify(contextNeeds)}`);
-          }
-        } catch (ctxErr) {
-          console.error('[persona-bot] Management context fetch error:', ctxErr.message || ctxErr);
-        }
-      }
+--- RECENT RAID EVENTS ---
+${eventList}
+
+--- INSTRUCTIONS ---
+Use the available tools to look up any data you need. The event list above shows recent raids. Identify the relevant event_id(s) from the list before calling tools. You can call multiple tools in a single turn. If the user asks about a player, use get_player_data. If no tools are needed (e.g. general chat), respond directly.
+
+FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise.`;
 
       // Get persona for model selection
       const persona = await getPersona();
       const model = persona?.model || 'claude-sonnet-4-20250514';
 
-      // Generate response
-      const rawResponse = await generateResponse(systemPrompt, formattedMessages, model);
+      // Tool-use loop: call LLM, execute tools, repeat until text response or max iterations
+      let messages = [...formattedMessages];
+      let finalText = '';
+      const maxIterations = 5;
 
-      if (rawResponse) {
-        let replyText = sanitizeResponse(rawResponse);
+      for (let iteration = 0; iteration < maxIterations; iteration++) {
+        const response = await generateResponseWithTools(systemPrompt, messages, model, MANAGEMENT_TOOLS, 2048);
+
+        // Check if response contains tool_use blocks
+        const toolUseBlocks = (response.content || []).filter(block => block.type === 'tool_use');
+        const textBlocks = (response.content || []).filter(block => block.type === 'text');
+
+        if (response.stop_reason === 'end_turn' || toolUseBlocks.length === 0) {
+          // No tools requested — extract final text
+          finalText = textBlocks.map(b => b.text).join('\n').trim();
+          break;
+        }
+
+        // Append the assistant message (with tool_use blocks) to conversation
+        messages.push({ role: 'assistant', content: response.content });
+
+        // Execute each tool and build tool_result content blocks
+        const toolResults = [];
+        for (const toolBlock of toolUseBlocks) {
+          console.log(`[persona-bot] Management tool call: ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
+          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolBlock.id,
+            content: result
+          });
+        }
+
+        // Append tool results as a user message
+        messages.push({ role: 'user', content: toolResults });
+
+        // If this is the last iteration, the next loop will exit
+        if (iteration === maxIterations - 1) {
+          // Force a final call without tools to get a text summary
+          const finalResponse = await generateResponseWithTools(systemPrompt, messages, model, MANAGEMENT_TOOLS, 2048);
+          const lastTextBlocks = (finalResponse.content || []).filter(block => block.type === 'text');
+          finalText = lastTextBlocks.map(b => b.text).join('\n').trim();
+        }
+      }
+
+      if (finalText) {
+        let replyText = sanitizeResponse(finalText);
         replyText = sanitizeForDiscord(replyText);
 
         // Enforce Discord 2000-char limit
