@@ -1197,12 +1197,15 @@ async function generateOpeningMessage(pool, template, discordId, eventId, conver
   try {
     const playerContext = await buildPlayerContext(pool, discordId);
 
+    // Apply variable substitution to opening instructions so LLM sees actual values
+    const resolvedInstructions = applyTemplateVariables(template.opening_message, templateVars);
+
     const systemPrompt =
       'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
       'Generate an opening DM based on the instructions below. Keep it natural and conversational. ' +
       'Do not use em-dashes or en-dashes.\n\n' +
       '=== Opening Instructions ===\n' +
-      template.opening_message + '\n\n' +
+      resolvedInstructions + '\n\n' +
       '=== Player Data ===\n' +
       playerContext;
 
