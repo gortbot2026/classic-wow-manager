@@ -217,20 +217,23 @@ async function resolveEventFromMessage(pool, messageContent) {
     const dayName = lastDayMatch[1].toLowerCase();
     let pastQuery, pastParams;
     if (DAY_MAP[dayName] !== undefined) {
-      // "last Thursday" → most recent past event on that day
+      // "last Thursday" → most recent past event on that day with a real roster (≥10 players)
       pastQuery = `
-        SELECT DISTINCT event_id
+        SELECT event_id, COUNT(*) as player_count
         FROM roster_overrides
         WHERE EXTRACT(DOW FROM to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0)) = $1
           AND to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0) < NOW()
+        GROUP BY event_id
+        HAVING COUNT(*) >= 10
         ORDER BY event_id DESC LIMIT 1`;
       pastParams = [DAY_MAP[dayName]];
     } else {
-      // "last week" or "last raid" → most recent event in roster_overrides
+      // "last week" or "last raid" → most recent event in roster_overrides with a real roster
       pastQuery = `
-        SELECT DISTINCT event_id
+        SELECT event_id, COUNT(*) as player_count
         FROM roster_overrides
-        WHERE to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0) < NOW()
+        GROUP BY event_id
+        HAVING COUNT(*) >= 10
         ORDER BY event_id DESC LIMIT 1`;
       pastParams = [];
     }
