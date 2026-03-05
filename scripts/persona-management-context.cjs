@@ -1136,6 +1136,31 @@ async function getEventList(pool) {
       console.error('[persona-mgmt-ctx] getEventList title lookup error:', titleErr.message);
     }
 
+    // Also fetch upcoming events from events_cache
+    let upcomingLines = [];
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const cacheResult2 = await pool.query(
+        `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
+      );
+      if (cacheResult2.rows.length > 0) {
+        const rawEvents = cacheResult2.rows[0].events_data;
+        const allEvents = typeof rawEvents === 'string' ? JSON.parse(rawEvents) : rawEvents;
+        if (Array.isArray(allEvents)) {
+          const upcoming = allEvents
+            .filter(e => e.startTime && parseInt(e.startTime, 10) > now)
+            .sort((a, b) => parseInt(a.startTime, 10) - parseInt(b.startTime, 10));
+          for (const ev of upcoming) {
+            const title = ev.channelName || ev.title || 'Unknown Raid';
+            const d = new Date(parseInt(ev.startTime, 10) * 1000);
+            const dateStr = d.toISOString().split('T')[0];
+            const dayName = d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+            upcomingLines.push(`- event_id: ${ev.id} | ${title} | ${dayName} ${dateStr} | UPCOMING`);
+          }
+        }
+      }
+    } catch (_) {}
+
     const lines = res.rows.map(row => {
       const eventId = String(row.event_id);
       const title = titleMap[eventId] || 'Unknown Raid';
@@ -1145,7 +1170,10 @@ async function getEventList(pool) {
       return `- event_id: ${eventId} | ${title} | ${dayName} ${dateStr} | ${row.player_count} players`;
     });
 
-    const result = `Available raid events (most recent first):\n${lines.join('\n')}`;
+    const upcomingSection = upcomingLines.length > 0
+      ? `Upcoming events:\n${upcomingLines.join('\n')}\n\n`
+      : '';
+    const result = `${upcomingSection}Past raid events (most recent first):\n${lines.join('\n')}`;
     cacheSet(cacheKey, result);
     return result;
   } catch (err) {
