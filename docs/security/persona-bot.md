@@ -1,6 +1,6 @@
 # Security Notes: Maya Persona Bot
 
-_Last updated: 2026-03-04 by Security Gort (updated for typing delay feature)_
+_Last updated: 2026-03-05 by Security Gort (updated for pre-raid briefing summary feature)_
 
 ## Authentication Requirements
 
@@ -49,6 +49,48 @@ Added in card: "Maya: More realistic typing delays with thinking pauses"
   `channel.sendTyping()` Discord.js method. No new packages introduced.
 - **Pause count is capped.** `Math.min(Math.floor(totalTypingMs / 2500), 3)` ensures at most
   3 pauses regardless of message length. Prevents unbounded loops on edge-case inputs.
+
+## Pre-Raid Briefing Summary DM Security
+
+Added in card: "Maya: Pre-raid summary DM to raidleader + new template variables"
+
+### Summary Delivery
+- `sendSummaryToRaidleader()` always routes through `sendDM()`, which applies
+  `sanitizeForDiscord()` and respects `MAYA_TEST_MODE_DISCORD_ID` redirect.
+- `processPendingSummaries()` (5-min polling) also uses `sendDM()` — TEST_MODE redirect applies.
+- No new DM delivery paths exist outside of `sendDM()`.
+
+### SQL Injection
+- All queries in `sendSummaryToRaidleader()` and `processPendingSummaries()` use
+  parameterized statements (`$1`, `$2`). No string interpolation into SQL.
+- `pending_raidleader_summaries` table INSERT and UPDATE use parameterized queries only.
+
+### Timer Security
+- `briefingTimeouts` Map is in-memory only. All entries cleared on `disconnect` event.
+  No timer handles survive bot restart — stale timers are automatically garbage collected.
+- `pendingSummaryPollInterval` cleared on `disconnect`. No orphaned `setInterval` risk.
+
+### Socket.IO Emissions
+- `emitToAdmin('maya:error', ...)` for raidleader lookup failures contains only:
+  `type`, `eventId`, `raidleaderName`, `message` — no tokens, passwords, or Discord IDs.
+- Emitted to `/maya-admin` namespace, which is the internal admin UI only.
+
+### Known Behavioral Notes (LOW risk, non-security)
+1. **Retry loop on blocked raidleader**: In `processPendingSummaries`, if `sendDM()` returns
+   false (raidleader blocked Maya), `sent_at` is not updated. The 5-min poll will retry
+   indefinitely. No security impact; generates noisy logs. Consider adding a retry limit
+   or failed_at timestamp in a future sprint.
+2. **Path A fires on any reply**: `checkBriefingCompletion` triggers on ANY player reply
+   after the final Q&A marker — not only "nothing to add" replies. A follow-up question
+   from the player will also trigger summary delivery. Functional bug (not security).
+   QA should validate the expected UX flow.
+
+### New Template Variables
+- `{{raidleader_name}}` and `{{next_upcoming_raid}}` are resolved server-side in
+  `resolveTemplateVariables()` via read-only DB/cache queries. Values are substituted
+  into LLM prompts only — never rendered as HTML.
+- `raidleader_name` falls back to `'TBD'`; `next_upcoming_raid` falls back to
+  `'No upcoming raids scheduled'`. No user-controlled input influences these values.
 
 ## TEST MODE Warning ⚠️
 
