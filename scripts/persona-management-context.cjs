@@ -132,6 +132,14 @@ function detectContextNeeds(messageContent) {
     playerNotes: matchesKeyword(text, [
       'problem', 'problems', 'issue', 'issues', 'banned', 'blacklist',
       'blacklisted', 'warned', 'note', 'notes', 'flagged'
+    ]),
+    historicalAttendance: matchesKeyword(text, [
+      'last month', 'last 3 months', 'last week', 'past month', 'past raids',
+      'historically', 'attended before', 'have attended', 'has attended',
+      'all priests', 'all warriors', 'all mages', 'all druids', 'all shamans',
+      'all rogues', 'all warlocks', 'all hunters', 'all paladins',
+      'priests that', 'warriors that', 'mages that', 'druids that',
+      'joined us', 'raided with us', 'been in', 'months ago', 'weeks ago'
     ])
   };
 }
@@ -779,12 +787,94 @@ async function fetchManagementContext(pool, needs, messageContent, eventId, disc
   if (needs.playerNotes && discordIds && discordIds.length > 0) {
     fetchers.push(fetchPlayerNotes(pool, discordIds));
   }
+  if (needs.historicalAttendance) {
+    fetchers.push(fetchHistoricalAttendance(pool, messageContent));
+  }
 
   if (fetchers.length === 0) return '';
 
   const results = await Promise.all(fetchers);
   const combined = results.filter(r => r && r.length > 0).join('\n\n');
   return combined;
+}
+
+/**
+ * Fetches historical raid attendance by class across recent raids.
+ * Uses Discord snowflake timestamps to derive event dates without extra tables.
+ *
+ * @param {import('pg').Pool} pool
+ * @param {string} messageContent - To extract class filter and time range
+ * @returns {Promise<string>}
+ */
+async function fetchHistoricalAttendance(pool, messageContent) {
+  const text = messageContent.toLowerCase();
+
+  // Detect class filter
+  const classMap = {
+    priest: 'priest', priests: 'priest',
+    warrior: 'warrior', warriors: 'warrior',
+    mage: 'mage', mages: 'mage',
+    druid: 'druid', druids: 'druid',
+    shaman: 'shaman', shamans: 'shaman',
+    rogue: 'rogue', rogues: 'rogue',
+    warlock: 'warlock', warlocks: 'warlock',
+    hunter: 'hunter', hunters: 'hunter',
+    paladin: 'paladin', paladins: 'paladin',
+  };
+  let classFilter = null;
+  for (const [word, cls] of Object.entries(classMap)) {
+    if (text.includes(word)) { classFilter = cls; break; }
+  }
+
+  // Detect time range
+  let months = 3;
+  const m1 = text.match(/(\d+)\s*month/);
+  const m2 = text.match(/(\d+)\s*week/);
+  if (m1) months = Math.min(parseInt(m1[1], 10), 12);
+  else if (m2) months = Math.max(1, Math.round(parseInt(m2[1], 10) / 4));
+
+  const cacheKey = `historicalAttendance:${classFilter || 'all'}:${months}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    // Use Discord snowflake epoch to derive event date
+    let query, params;
+    if (classFilter) {
+      query = `
+        SELECT ro.assigned_char_name, ro.assigned_char_class,
+          to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0)::date as raid_date
+        FROM roster_overrides ro
+        WHERE LOWER(ro.assigned_char_class) LIKE $1
+          AND to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0) > NOW() - ($2 || ' months')::interval
+        ORDER BY ro.assigned_char_name, raid_date DESC`;
+      params = [`%${classFilter}%`, String(months)];
+    } else {
+      return '';
+    }
+
+    const res = await pool.query(query, params);
+    if (res.rows.length === 0) return `**Historical Attendance (${classFilter}, last ${months} months):** No records found.`;
+
+    // Group by character name, count raids
+    const byPlayer = {};
+    for (const row of res.rows) {
+      const name = row.assigned_char_name;
+      if (!byPlayer[name]) byPlayer[name] = { cls: row.assigned_char_class, dates: [] };
+      byPlayer[name].dates.push(row.raid_date);
+    }
+
+    const lines = Object.entries(byPlayer)
+      .sort((a, b) => b[1].dates.length - a[1].dates.length)
+      .map(([name, d]) => `- ${name} (${d.cls}): ${d.dates.length} raid${d.dates.length !== 1 ? 's' : ''}, last: ${d.dates[0]}`);
+
+    const result = `**Historical Attendance — ${classFilter.charAt(0).toUpperCase() + classFilter.slice(1)}s (last ${months} months, ${Object.keys(byPlayer).length} unique players, ${res.rows.length} appearances):**\n${lines.join('\n')}`;
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-management-context] fetchHistoricalAttendance error:', err.message);
+    return '';
+  }
 }
 
 module.exports = {
