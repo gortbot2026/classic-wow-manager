@@ -915,6 +915,80 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     // Backward compat alias
     vars.set('gold_earned', vars.get('gold_earned_last_raid'));
 
+    // --- Raidleader name and next upcoming raid ---
+
+    // Resolve {{raidleader_name}} — from event_metadata for this event, or next upcoming event
+    let raidleaderName = 'TBD';
+    let resolvedEventId = eventId || null;
+
+    // If no event_id, try to find the next upcoming event from events_cache
+    if (!resolvedEventId) {
+      try {
+        const cacheRes = await pool.query(
+          `SELECT events_data FROM events_cache WHERE cache_key = 'events' AND expires_at > NOW()`
+        );
+        if (cacheRes.rows.length > 0 && cacheRes.rows[0].events_data) {
+          const eventsData = cacheRes.rows[0].events_data;
+          const postedEvents = eventsData.postedEvents || [];
+          const nowUnix = Math.floor(Date.now() / 1000);
+          const upcoming = postedEvents
+            .filter(e => e.startTime && e.startTime > nowUnix)
+            .sort((a, b) => a.startTime - b.startTime);
+          if (upcoming.length > 0) {
+            resolvedEventId = String(upcoming[0].id);
+          }
+        }
+      } catch (_) {
+        // events_cache may not exist or be empty — non-critical
+      }
+    }
+
+    if (resolvedEventId) {
+      try {
+        const rlRes = await pool.query(
+          `SELECT raidleader_name FROM event_metadata WHERE event_id = $1`,
+          [resolvedEventId]
+        );
+        if (rlRes.rows.length > 0 && rlRes.rows[0].raidleader_name) {
+          raidleaderName = rlRes.rows[0].raidleader_name;
+        }
+      } catch (_) {
+        // event_metadata may not exist for this event — non-critical
+      }
+    }
+    vars.set('raidleader_name', raidleaderName);
+
+    // Resolve {{next_upcoming_raid}} — next future event from Raid-Helper cache
+    let nextRaid = 'No upcoming raids scheduled';
+    try {
+      const cacheRes = await pool.query(
+        `SELECT events_data FROM events_cache WHERE cache_key = 'events' AND expires_at > NOW()`
+      );
+      if (cacheRes.rows.length > 0 && cacheRes.rows[0].events_data) {
+        const eventsData = cacheRes.rows[0].events_data;
+        const postedEvents = eventsData.postedEvents || [];
+        const nowUnix = Math.floor(Date.now() / 1000);
+        const upcoming = postedEvents
+          .filter(e => e.startTime && e.startTime > nowUnix)
+          .sort((a, b) => a.startTime - b.startTime);
+        if (upcoming.length > 0) {
+          const evt = upcoming[0];
+          const raidName = evt.title || evt.channelName || 'Raid';
+          const raidDate = new Date(evt.startTime * 1000);
+          const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'];
+          const dayName = dayNames[raidDate.getUTCDay()];
+          const monthName = monthNames[raidDate.getUTCMonth()];
+          const dateNum = raidDate.getUTCDate();
+          nextRaid = `${raidName} on ${dayName}, ${monthName} ${dateNum}`;
+        }
+      }
+    } catch (_) {
+      // events_cache may not exist — non-critical
+    }
+    vars.set('next_upcoming_raid', nextRaid);
+
   } catch (err) {
     console.error('[persona-context] Error resolving template variables:', err.message || err);
     // Set safe defaults for any missing variables
@@ -924,7 +998,8 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       manual_rewards_last_raid: '0', manual_deductions_last_raid: '0',
       last_raid_name: 'unknown', total_raids_attended: '0', items_won_last_raid: '0',
       guild_join_date: 'Not in 1Principles Guild', last_raid_date: 'unknown',
-      raid_name: 'unknown', gold_earned: '0', items_won: '0', raids_attended: '0'
+      raid_name: 'unknown', gold_earned: '0', items_won: '0', raids_attended: '0',
+      raidleader_name: 'TBD', next_upcoming_raid: 'No upcoming raids scheduled'
     };
     for (const [key, val] of Object.entries(defaults)) {
       if (!vars.has(key)) vars.set(key, val);

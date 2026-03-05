@@ -1,6 +1,6 @@
 # Security Notes: Maya Persona Bot
 
-_Last updated: 2026-03-04 by Security Gort_
+_Last updated: 2026-03-04 by Security Gort (updated for typing delay feature)_
 
 ## Authentication Requirements
 
@@ -33,6 +33,22 @@ _Last updated: 2026-03-04 by Security Gort_
 
 - `setInterval` for Discord typing indicator refresh is always cleared in a `finally` block
   (wraps `generateResponse` call), ensuring no leaked intervals on LLM errors or timeouts.
+
+## Typing Simulation Security (`simulateTypingWithPauses`)
+
+Added in card: "Maya: More realistic typing delays with thinking pauses"
+
+- **No user input in timing logic.** `typingDelay(replyText)` takes word count of the
+  *sanitized LLM output* only. Raw player messages never influence timing calculations.
+- **Bounded loop.** The inner `while (remaining > 0)` loop uses `Math.min(remaining, 8000)`,
+  ensuring each iteration shrinks `remaining` by at least 1ms. No infinite loop risk.
+- **Discord API error handling.** All `channel.sendTyping()` calls use `.catch(() => {})`.
+  Failures are silently swallowed — typing indicator expiry never crashes the bot or
+  propagates to the player.
+- **No new dependencies.** Implementation uses only built-in `setTimeout` and the existing
+  `channel.sendTyping()` Discord.js method. No new packages introduced.
+- **Pause count is capped.** `Math.min(Math.floor(totalTypingMs / 2500), 3)` ensures at most
+  3 pauses regardless of message length. Prevents unbounded loops on edge-case inputs.
 
 ## TEST MODE Warning ⚠️
 

@@ -1139,6 +1139,20 @@ async function initializeMayaTables() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_player_notes_discord_id ON bot_player_notes(discord_id)`);
 
+    // pending_raidleader_summaries — Queued pre-raid briefing summaries awaiting raidleader assignment
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pending_raidleader_summaries (
+        id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        player_discord_id TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        sent_at TIMESTAMP
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_pending_summaries_event_id ON pending_raidleader_summaries(event_id)`);
+
     // Seed default Maya persona if table is empty
     const personaCount = await pool.query(`SELECT COUNT(*) AS cnt FROM bot_persona`);
     if (parseInt(personaCount.rows[0].cnt) === 0) {
@@ -3264,7 +3278,7 @@ app.post('/api/admin/maya/templates', requireManagement, express.json(), async (
     if (!name || !trigger_type || !opening_message || !agent_instructions) {
       return res.status(400).json({ success: false, message: 'name, trigger_type, opening_message, and agent_instructions are required' });
     }
-    if (!['post_raid', 'welcome', 'item_won', 'manual'].includes(trigger_type)) {
+    if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing'].includes(trigger_type)) {
       return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
     }
     const id = require('crypto').randomUUID();
@@ -3291,7 +3305,7 @@ app.patch('/api/admin/maya/templates/:templateId', requireManagement, express.js
 
     if (name !== undefined) { updates.push(`name = $${paramIdx++}`); params.push(name); }
     if (trigger_type !== undefined) {
-      if (!['post_raid', 'welcome', 'item_won', 'manual'].includes(trigger_type)) {
+      if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing'].includes(trigger_type)) {
         return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
       }
       updates.push(`trigger_type = $${paramIdx++}`); params.push(trigger_type);

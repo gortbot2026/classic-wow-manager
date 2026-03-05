@@ -457,6 +457,17 @@ function createPersonaBot(options = {}) {
         return;
       }
 
+      // Pre-raid briefing: if player replies while a timeout is active,
+      // pause the timer to prevent it firing during LLM response generation.
+      // The timeout will be fully cleared in checkBriefingCompletion after Maya responds.
+      if (briefingTimeouts.has(conversation.id)) {
+        const existingTimeout = briefingTimeouts.get(conversation.id);
+        clearTimeout(existingTimeout);
+        // Keep the key in the map (with null) so checkBriefingCompletion knows
+        // the final question was asked and this is a Path A reply
+        briefingTimeouts.set(conversation.id, null);
+      }
+
       // Check generation lock (one at a time per conversation)
       if (generationLocks.get(conversation.id)) {
         return; // Already generating, skip
@@ -524,6 +535,18 @@ function createPersonaBot(options = {}) {
           // Fire-and-forget: extract notes from this exchange
           extractPlayerNotes(pool, io, discordId, conversation.id, message.content, replyText)
             .catch(err => console.error('[persona-bot] Note extraction failed (non-blocking):', err.message || err));
+
+          // Pre-raid briefing: check if Maya's response contains the marker phrase
+          // to start the 10-minute timeout for raidleader summary forwarding
+          checkBriefingMarker(conversation.id, discordId, conversation.template_id, replyText)
+            .catch(err => console.error('[persona-bot] Briefing marker check failed (non-blocking):', err.message || err));
+
+          // Pre-raid briefing: if player replied after the final question (timeout was active),
+          // complete Path A — generate summary, forward to raidleader, confirm to player
+          const briefingCompleted = await checkBriefingCompletion(conversation.id, discordId, replyText);
+          if (briefingCompleted) {
+            // Conversation is now closed — skip further processing
+          }
         }
       } finally {
         generationLocks.delete(conversation.id);
@@ -559,6 +582,280 @@ function createPersonaBot(options = {}) {
       return true;
     } catch (err) {
       console.error('[persona-bot] Failed to send DM to', discordId, ':', err.message || err);
+      return false;
+    }
+  }
+
+  /**
+   * In-memory map tracking 10-minute reply timeouts for pre-raid briefing conversations.
+   * Key: conversationId, Value: NodeJS.Timeout handle.
+   * Cleared automatically on bot restart (in-memory only).
+   * @type {Map<string, NodeJS.Timeout>}
+   */
+  const briefingTimeouts = new Map();
+
+  /**
+   * Interval handle for polling pending raidleader summaries.
+   * @type {NodeJS.Timeout|null}
+   */
+  let pendingSummaryPollInterval = null;
+
+  /**
+   * Sends a pre-raid briefing summary DM to the raidleader for a given conversation.
+   * Resolves the raidleader via event_metadata -> players table lookup.
+   * If raidleader is not yet set, queues the summary in pending_raidleader_summaries.
+   *
+   * @param {string} conversationId - The conversation to summarize and forward
+   * @param {string} playerDiscordId - The player's Discord ID (for pending queue)
+   * @returns {Promise<boolean>} True if summary was sent or queued successfully
+   */
+  async function sendSummaryToRaidleader(conversationId, playerDiscordId) {
+    try {
+      // Get event_id from the conversation
+      const convRes = await pool.query(
+        `SELECT event_id FROM bot_conversations WHERE id = $1`,
+        [conversationId]
+      );
+      const eventId = convRes.rows[0]?.event_id;
+
+      if (!eventId) {
+        console.warn(`[persona-bot] Conversation ${conversationId} has no event_id, skipping summary forwarding`);
+        return false;
+      }
+
+      // Generate the summary
+      const summary = await generateRaidleaderSummary(pool, conversationId);
+      if (!summary) {
+        console.warn(`[persona-bot] Failed to generate raidleader summary for conversation ${conversationId}`);
+        return false;
+      }
+
+      // Get the player's character name for the summary header
+      const charRes = await pool.query(
+        `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`,
+        [playerDiscordId]
+      );
+      const characterName = charRes.rows[0]?.character_name || 'Unknown Player';
+
+      // Format the summary DM
+      const summaryDM = `**Pre-raid briefing summary for ${characterName}:**\n${summary}`;
+
+      // Look up raidleader for this event
+      const rlRes = await pool.query(
+        `SELECT raidleader_name FROM event_metadata WHERE event_id = $1`,
+        [eventId]
+      );
+      const raidleaderName = rlRes.rows[0]?.raidleader_name;
+
+      if (!raidleaderName) {
+        // Raidleader not yet set — queue the summary for later delivery
+        const pendingId = crypto.randomUUID();
+        await pool.query(
+          `INSERT INTO pending_raidleader_summaries (id, event_id, conversation_id, summary_text, player_discord_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [pendingId, eventId, conversationId, summaryDM, playerDiscordId]
+        );
+        console.log(`[persona-bot] Raidleader not set for event ${eventId}, queued summary ${pendingId}`);
+        return true;
+      }
+
+      // Resolve raidleader's discord_id from players table
+      const rlDiscordRes = await pool.query(
+        `SELECT discord_id FROM players WHERE character_name = $1 LIMIT 1`,
+        [raidleaderName]
+      );
+      const raidleaderDiscordId = rlDiscordRes.rows[0]?.discord_id;
+
+      if (!raidleaderDiscordId) {
+        console.warn(`[persona-bot] Raidleader "${raidleaderName}" has no discord_id in players table`);
+        emitToAdmin('maya:error', {
+          type: 'raidleader_lookup_failed',
+          eventId,
+          raidleaderName,
+          message: `Raidleader "${raidleaderName}" not found in players table (no discord_id). Summary for conversation ${conversationId} could not be delivered.`
+        });
+        return false;
+      }
+
+      // Send the summary DM to the raidleader
+      const sent = await sendDM(raidleaderDiscordId, summaryDM);
+      if (sent) {
+        console.log(`[persona-bot] Sent pre-raid summary to raidleader ${raidleaderName} (${raidleaderDiscordId})`);
+      } else {
+        console.warn(`[persona-bot] Failed to send pre-raid summary DM to raidleader ${raidleaderName}`);
+      }
+      return sent;
+    } catch (err) {
+      console.error('[persona-bot] Error in sendSummaryToRaidleader:', err.message || err);
+      return false;
+    }
+  }
+
+  /**
+   * Polls for pending raidleader summaries where the raidleader has now been set.
+   * Sends all queued summaries and updates their sent_at timestamps.
+   */
+  async function processPendingSummaries() {
+    try {
+      // Find pending summaries whose events now have a raidleader_name set
+      const pendingRes = await pool.query(
+        `SELECT prs.id, prs.event_id, prs.summary_text, prs.player_discord_id,
+                em.raidleader_name
+         FROM pending_raidleader_summaries prs
+         JOIN event_metadata em ON em.event_id = prs.event_id
+         WHERE prs.sent_at IS NULL
+           AND em.raidleader_name IS NOT NULL
+           AND em.raidleader_name != ''`
+      );
+
+      if (pendingRes.rows.length === 0) return;
+
+      console.log(`[persona-bot] Processing ${pendingRes.rows.length} pending raidleader summaries`);
+
+      for (const row of pendingRes.rows) {
+        // Resolve raidleader discord_id
+        const rlDiscordRes = await pool.query(
+          `SELECT discord_id FROM players WHERE character_name = $1 LIMIT 1`,
+          [row.raidleader_name]
+        );
+        const raidleaderDiscordId = rlDiscordRes.rows[0]?.discord_id;
+
+        if (!raidleaderDiscordId) {
+          console.warn(`[persona-bot] Pending summary ${row.id}: raidleader "${row.raidleader_name}" has no discord_id`);
+          emitToAdmin('maya:error', {
+            type: 'raidleader_lookup_failed',
+            eventId: row.event_id,
+            raidleaderName: row.raidleader_name,
+            message: `Raidleader "${row.raidleader_name}" not found in players table. Pending summary ${row.id} could not be delivered.`
+          });
+          continue;
+        }
+
+        const sent = await sendDM(raidleaderDiscordId, row.summary_text);
+        if (sent) {
+          await pool.query(
+            `UPDATE pending_raidleader_summaries SET sent_at = NOW() WHERE id = $1`,
+            [row.id]
+          );
+          console.log(`[persona-bot] Sent pending summary ${row.id} to raidleader ${row.raidleader_name}`);
+        }
+      }
+    } catch (err) {
+      console.error('[persona-bot] Error processing pending summaries:', err.message || err);
+    }
+  }
+
+  /**
+   * Handles the pre-raid briefing timeout (Path B).
+   * When a player doesn't reply within 10 minutes of the final Q&A question,
+   * generates and sends the summary to the raidleader, notifies the player,
+   * and closes the conversation.
+   *
+   * @param {string} conversationId - The timed-out conversation
+   * @param {string} playerDiscordId - The player's Discord ID
+   */
+  async function handleBriefingTimeout(conversationId, playerDiscordId) {
+    try {
+      console.log(`[persona-bot] Pre-raid briefing timeout for conversation ${conversationId}`);
+      briefingTimeouts.delete(conversationId);
+
+      // Generate and send summary to raidleader
+      await sendSummaryToRaidleader(conversationId, playerDiscordId);
+
+      // Notify the player
+      await sendDM(playerDiscordId, 'No reply, so I went ahead and forwarded it to the raidleader. Good luck tonight!');
+
+      // Store the timeout notification as a maya message
+      await storeMessage(conversationId, 'maya', 'No reply, so I went ahead and forwarded it to the raidleader. Good luck tonight!');
+
+      // Close the conversation
+      await pool.query(
+        `UPDATE bot_conversations SET status = 'closed', updated_at = NOW() WHERE id = $1`,
+        [conversationId]
+      );
+      emitToAdmin('maya:conversationUpdate', { conversationId, status: 'closed' });
+    } catch (err) {
+      console.error('[persona-bot] Error handling briefing timeout:', err.message || err);
+    }
+  }
+
+  /**
+   * Checks if a Maya response in a pre-raid briefing conversation contains
+   * the marker phrase indicating the final Q&A question has been asked.
+   * If detected, starts a 10-minute timeout timer.
+   *
+   * @param {string} conversationId - The conversation ID
+   * @param {string} playerDiscordId - The player's Discord ID
+   * @param {string} templateId - The template ID for the conversation
+   * @param {string} responseText - Maya's response text to check
+   */
+  async function checkBriefingMarker(conversationId, playerDiscordId, templateId, responseText) {
+    if (!templateId) return;
+
+    try {
+      // Check if this is a pre_raid_briefing template
+      const tplRes = await pool.query(
+        `SELECT trigger_type FROM bot_templates WHERE id = $1`,
+        [templateId]
+      );
+      if (tplRes.rows.length === 0 || tplRes.rows[0].trigger_type !== 'pre_raid_briefing') return;
+
+      // Check for marker phrase in the response
+      const lowerResponse = responseText.toLowerCase();
+      if (lowerResponse.includes('forward this to the raidleader') ||
+          lowerResponse.includes('forward it to the raidleader')) {
+        // Start 10-minute timeout (only if not already set)
+        if (!briefingTimeouts.has(conversationId)) {
+          console.log(`[persona-bot] Detected final Q&A marker in conversation ${conversationId}, starting 10-min timeout`);
+          const timeout = setTimeout(
+            () => handleBriefingTimeout(conversationId, playerDiscordId),
+            10 * 60 * 1000 // 10 minutes
+          );
+          briefingTimeouts.set(conversationId, timeout);
+        }
+      }
+    } catch (err) {
+      console.error('[persona-bot] Error checking briefing marker:', err.message || err);
+    }
+  }
+
+  /**
+   * Checks if a player's reply to a pre-raid briefing conversation indicates
+   * they have nothing more to add (Path A completion). Detects this by checking
+   * if a timeout was active (meaning the final question was asked) and the player replied.
+   *
+   * @param {string} conversationId - The conversation ID
+   * @param {string} playerDiscordId - The player's Discord ID
+   * @param {string} responseText - Maya's response to the player's reply
+   * @returns {Promise<boolean>} True if this was a Path A completion
+   */
+  async function checkBriefingCompletion(conversationId, playerDiscordId, responseText) {
+    // If there was an active timeout (or paused timeout), the player replied after the final question
+    if (!briefingTimeouts.has(conversationId)) return false;
+
+    // Clear the timeout — player replied (Path A)
+    const timeout = briefingTimeouts.get(conversationId);
+    if (timeout) clearTimeout(timeout);
+    briefingTimeouts.delete(conversationId);
+
+    try {
+      // Generate and send summary to raidleader
+      await sendSummaryToRaidleader(conversationId, playerDiscordId);
+
+      // Confirm to the player
+      await sendDM(playerDiscordId, 'Great, forwarded it! Good luck tonight.');
+      await storeMessage(conversationId, 'maya', 'Great, forwarded it! Good luck tonight.');
+
+      // Close the conversation
+      await pool.query(
+        `UPDATE bot_conversations SET status = 'closed', updated_at = NOW() WHERE id = $1`,
+        [conversationId]
+      );
+      emitToAdmin('maya:conversationUpdate', { conversationId, status: 'closed' });
+
+      return true;
+    } catch (err) {
+      console.error('[persona-bot] Error completing briefing (Path A):', err.message || err);
       return false;
     }
   }
@@ -643,14 +940,37 @@ function createPersonaBot(options = {}) {
 
   /**
    * Starts the persona bot and connects to Discord.
+   * Also starts the pending raidleader summary polling interval.
    */
   async function start() {
     client.once('ready', () => {
       ready = true;
       console.log(`[persona-bot] Maya ready as ${client.user?.tag || client.user?.id || 'persona-bot'}`);
+
+      // Start polling for pending raidleader summaries every 5 minutes
+      pendingSummaryPollInterval = setInterval(() => {
+        processPendingSummaries().catch(err =>
+          console.error('[persona-bot] Pending summary poll error:', err.message || err)
+        );
+      }, 5 * 60 * 1000);
+      console.log('[persona-bot] Started pending raidleader summary polling (5-min interval)');
     });
 
     client.on('messageCreate', handleDM);
+
+    // Clear polling interval and briefing timeouts on disconnect
+    client.on('disconnect', () => {
+      if (pendingSummaryPollInterval) {
+        clearInterval(pendingSummaryPollInterval);
+        pendingSummaryPollInterval = null;
+        console.log('[persona-bot] Cleared pending summary polling interval (disconnect)');
+      }
+      // Clear all briefing timeouts
+      for (const [convId, timeout] of briefingTimeouts) {
+        if (timeout) clearTimeout(timeout);
+      }
+      briefingTimeouts.clear();
+    });
 
     try {
       await client.login(token);
@@ -663,7 +983,8 @@ function createPersonaBot(options = {}) {
     start,
     sendDM,
     getClient: () => client,
-    triggerTemplate
+    triggerTemplate,
+    sendSummaryToRaidleader
   };
 }
 
@@ -798,6 +1119,53 @@ async function generateConversationSummary(pool, conversationId) {
 }
 
 /**
+ * Generates a structured bullet-point summary of a pre-raid briefing conversation.
+ * Used to forward key information to the raidleader.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} conversationId - The conversation to summarize
+ * @returns {Promise<string|null>} Bullet-point summary text, or null on failure
+ */
+async function generateRaidleaderSummary(pool, conversationId) {
+  try {
+    const msgRes = await pool.query(
+      `SELECT role, content FROM bot_messages
+       WHERE conversation_id = $1
+       ORDER BY sent_at ASC`,
+      [conversationId]
+    );
+
+    if (msgRes.rows.length === 0) return null;
+
+    const messages = msgRes.rows.map(m => ({
+      role: m.role === 'maya' || m.role === 'admin' ? 'assistant' : 'user',
+      content: m.content
+    }));
+
+    const systemPrompt =
+      'Summarize this pre-raid briefing conversation as bullet points for the raidleader. ' +
+      'Output ONLY bullet points (lines starting with "- "). No prose, no greeting, no sign-off.\n\n' +
+      'Include:\n' +
+      '- Player character name and class\n' +
+      '- Whether this is their first raid with 1Principles\n' +
+      '- Key takeaway from each Q&A answer\n' +
+      '- Any special requests, concerns, or notable information\n' +
+      '- Any mention of needing to leave early or schedule constraints\n\n' +
+      'Keep it concise and factual. The raidleader needs quick, actionable info.';
+
+    const summary = await generateResponse(systemPrompt, messages, 'claude-haiku-4-5');
+
+    if (summary && typeof summary === 'string' && summary.trim().length > 0) {
+      return summary.trim();
+    }
+    return null;
+  } catch (err) {
+    console.error('[persona-bot] Error generating raidleader summary:', err.message || err);
+    return null;
+  }
+}
+
+/**
  * Generates an AI-powered opening message for a Maya conversation.
  * 
  * Uses the template's opening_message as instructions (not a literal message)
@@ -851,4 +1219,4 @@ async function generateOpeningMessage(pool, template, discordId, eventId, conver
   return { generated, fallback, modelUsed: model };
 }
 
-module.exports = { createPersonaBot, generateConversationSummary, generateOpeningMessage };
+module.exports = { createPersonaBot, generateConversationSummary, generateRaidleaderSummary, generateOpeningMessage };

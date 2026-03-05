@@ -321,6 +321,7 @@
                     <option value="welcome">Welcome</option>
                     <option value="item_won">Item Won</option>
                     <option value="manual">Manual</option>
+                    <option value="pre_raid_briefing">Pre-Raid Briefing</option>
                 </select>
             </div>
             <div class="form-group">
@@ -354,6 +355,8 @@
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{total_raids_attended}}')">{{total_raids_attended}}</code><span style="color:var(--muted);">Total number of raids attended</span>
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{items_won_last_raid}}')">{{items_won_last_raid}}</code><span style="color:var(--muted);">Items won in last raid</span>
                         <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{guild_join_date}}')">{{guild_join_date}}</code><span style="color:var(--muted);">Date player first joined raids</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{raidleader_name}}')">{{raidleader_name}}</code><span style="color:var(--muted);">Raidleader name for this event (or TBD)</span>
+                        <code style="cursor:pointer; color:var(--accent);" onclick="insertVariable('{{next_upcoming_raid}}')">{{next_upcoming_raid}}</code><span style="color:var(--muted);">Next upcoming raid name and date</span>
                         <div style="grid-column: 1 / -1; border-top: 1px solid var(--border); margin: 4px 0;"></div>
                         <div style="grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-style: italic;">Backward-compatible aliases:</div>
                         <code style="cursor:pointer; color:var(--accent); opacity:0.7;" onclick="insertVariable('{{raid_name}}')">{{raid_name}}</code><span style="color:var(--muted);">= {{last_raid_name}}</span>
