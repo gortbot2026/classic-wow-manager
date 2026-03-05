@@ -805,8 +805,19 @@ function createPersonaBot(options = {}) {
 
       // Check for marker phrase in the response
       const lowerResponse = responseText.toLowerCase();
-      // Structured signal: Maya outputs [SEND_BRIEFING] tag when ready to forward
-      if (lowerResponse.includes('[send_briefing]')) {
+      // Detect when Maya asks the wrap-up question OR uses the structured tag
+      // Trigger when Maya asks "anything else" before forwarding — she does this reliably
+      const isWrapUpQuestion = (
+        lowerResponse.includes('[send_briefing]') ||
+        (lowerResponse.includes('anything else') && (
+          lowerResponse.includes('forward') ||
+          lowerResponse.includes('raidleader') ||
+          lowerResponse.includes('zaappi') ||
+          lowerResponse.includes('pass this') ||
+          lowerResponse.includes('send this')
+        ))
+      );
+      if (isWrapUpQuestion) {
         // Start 10-minute timeout (only if not already set)
         if (!briefingTimeouts.has(conversationId)) {
           console.log(`[persona-bot] Detected final Q&A marker in conversation ${conversationId}, starting 10-min timeout`);
