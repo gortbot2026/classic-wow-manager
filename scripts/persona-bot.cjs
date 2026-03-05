@@ -437,16 +437,22 @@ function createPersonaBot(options = {}) {
           ? notesRes.rows.map(n => `- ${n.note}`).join('\n')
           : 'No notes recorded.';
 
-        // Fetch recent conversation summaries
+        // Fetch recent conversations with message counts
         const convsRes = await pool.query(
-          `SELECT summary, status, created_at FROM bot_conversations
-           WHERE discord_id = $1 AND summary IS NOT NULL
-           ORDER BY created_at DESC LIMIT 5`,
+          `SELECT bc.id, bc.status, bc.created_at, bc.summary,
+                  (SELECT COUNT(*) FROM bot_messages bm WHERE bm.conversation_id = bc.id) as msg_count
+           FROM bot_conversations bc
+           WHERE bc.discord_id = $1
+           ORDER BY bc.created_at DESC LIMIT 5`,
           [discordId]
         );
         const convsBlock = convsRes.rows.length > 0
-          ? convsRes.rows.map(c => `- [${c.status}] ${c.summary}`).join('\n')
-          : 'No recent conversations.';
+          ? convsRes.rows.map(c => {
+              const date = new Date(c.created_at).toISOString().split('T')[0];
+              const summary = c.summary ? ` — ${c.summary}` : '';
+              return `- [${c.status}] ${date}, ${c.msg_count} messages${summary}`;
+            }).join('\n')
+          : 'No conversations recorded.';
 
         // Fetch conversation count and last chat date
         const convCountRes = await pool.query(
@@ -474,6 +480,37 @@ function createPersonaBot(options = {}) {
 
         processedIds.add(player.discord_id);
         sections.push(await buildEnrichedSection(player.discord_id, player.character_name));
+      }
+
+      // --- Pass 1.5: Roster override character name matching (players not in players table) ---
+      const rosterCharRes = await pool.query(
+        `SELECT DISTINCT discord_user_id, assigned_char_name FROM roster_overrides
+         WHERE discord_user_id IS NOT NULL AND assigned_char_name IS NOT NULL`
+      );
+
+      for (const row of rosterCharRes.rows) {
+        if (processedIds.has(row.discord_user_id)) continue;
+        const nameRegex = new RegExp(`\\b${row.assigned_char_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (!nameRegex.test(messageContent)) continue;
+        processedIds.add(row.discord_user_id);
+        sections.push(await buildEnrichedSection(row.discord_user_id, row.assigned_char_name));
+      }
+
+      // --- Pass 1.6: bot_conversations player_name matching ---
+      const convPlayerRes = await pool.query(
+        `SELECT DISTINCT discord_id, player_name FROM bot_conversations
+         WHERE player_name IS NOT NULL AND discord_id IS NOT NULL`
+      );
+
+      for (const row of convPlayerRes.rows) {
+        if (processedIds.has(row.discord_id)) continue;
+        // Extract first word (character name often first in "name/alt1/alt2" format)
+        const firstName = row.player_name.split(/[\/\s]/)[0];
+        if (!firstName || firstName.length < 2) continue;
+        const nameRegex = new RegExp(`\\b${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (!nameRegex.test(messageContent)) continue;
+        processedIds.add(row.discord_id);
+        sections.push(await buildEnrichedSection(row.discord_id, firstName));
       }
 
       // --- Pass 2: Discord username matching ---
