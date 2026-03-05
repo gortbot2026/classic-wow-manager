@@ -1086,6 +1086,9 @@ async function initializeMayaTables() {
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS event_id TEXT`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS summary TEXT`);
 
+    // Migration: add character_class column for Raid Helper class resolution
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS character_class TEXT`);
+
     // bot_messages — Individual messages in a conversation
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bot_messages (
@@ -2995,7 +2998,7 @@ app.post('/api/admin/maya/conversations', requireManagement, express.json(), asy
     const playerRes = await pool.query(
       `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`, [discordId]
     );
-    const playerName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : null;
+    let playerName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : null;
 
     // Auto-resolve event_id for pre_raid_briefing templates
     let resolvedEventId = null;
@@ -3025,11 +3028,64 @@ app.post('/api/admin/maya/conversations', requireManagement, express.json(), asy
       }
     }
 
+    // Raid Helper sign-up lookup for pre_raid_briefing conversations
+    let characterClass = null;
+    if (resolvedEventId) {
+      try {
+        // Primary: fetch sign-up data from Raid Helper (cached or API)
+        let eventData = await getCachedRaidHelperEvent(resolvedEventId);
+        if (!eventData) {
+          eventData = await getFullEventDataFromApi(resolvedEventId);
+          if (eventData && eventData.signUps) {
+            await setCachedRaidHelperEvent(resolvedEventId, eventData);
+          }
+        }
+
+        const signUps = eventData?.signUps || [];
+        const playerSignUp = signUps.find(s => s.userId === discordId);
+
+        if (playerSignUp) {
+          console.log(`[maya-api] Raid Helper sign-up found for ${discordId}: name="${playerSignUp.name}", class="${playerSignUp.className}"`);
+          // Override playerName with Raid Helper character name
+          if (playerSignUp.name) {
+            playerName = playerSignUp.name;
+          }
+          if (playerSignUp.className) {
+            characterClass = playerSignUp.className;
+          }
+        } else {
+          console.log(`[maya-api] No Raid Helper sign-up found for ${discordId} in event ${resolvedEventId}`);
+        }
+
+        // Fallback: if no class from Raid Helper, try roster_overrides
+        if (!characterClass) {
+          try {
+            const rosterRes = await pool.query(
+              `SELECT assigned_char_class FROM roster_overrides 
+               WHERE event_id = $1 AND discord_user_id = $2 LIMIT 1`,
+              [resolvedEventId, discordId]
+            );
+            if (rosterRes.rows.length > 0 && rosterRes.rows[0].assigned_char_class) {
+              characterClass = rosterRes.rows[0].assigned_char_class;
+              console.log(`[maya-api] Fallback: roster_overrides class for ${discordId}: "${characterClass}"`);
+            }
+          } catch (rosterErr) {
+            console.log(`[maya-api] roster_overrides lookup failed for ${discordId}:`, rosterErr.message);
+          }
+        }
+      } catch (signUpErr) {
+        console.error(`[maya-api] Raid Helper sign-up lookup failed for event ${resolvedEventId}:`, signUpErr.message);
+        // Conversation creation continues with fallback data
+      }
+    }
+
+    console.log(`[maya-api] Creating conversation: player="${playerName}", class="${characterClass || 'unknown'}"`);
+
     const convId = require('crypto').randomUUID();
     await pool.query(
-      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, preferred_name, event_id)
-       VALUES ($1, $2, $3, 'active', 'admin', $4, $5, $6)`,
-      [convId, discordId, playerName, templateId || null, preferredName || null, resolvedEventId]
+      `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, preferred_name, event_id, character_class)
+       VALUES ($1, $2, $3, 'active', 'admin', $4, $5, $6, $7)`,
+      [convId, discordId, playerName, templateId || null, preferredName || null, resolvedEventId, characterClass]
     );
 
     // Determine opening message — use LLM generation when a template is selected

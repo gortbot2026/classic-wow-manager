@@ -984,6 +984,31 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     }
     vars.set('next_upcoming_raid', nextRaid);
 
+    // Pre-raid briefing character data from bot_conversations
+    if (conversationId) {
+      try {
+        const convDataRes = await pool.query(
+          `SELECT player_name, character_class, event_id FROM bot_conversations WHERE id = $1`,
+          [conversationId]
+        );
+        if (convDataRes.rows.length > 0) {
+          const convRow = convDataRes.rows[0];
+          vars.set('pre_raid_character_name', convRow.player_name || characterName || 'unknown');
+          vars.set('pre_raid_character_class', convRow.character_class || 'unknown');
+        } else {
+          vars.set('pre_raid_character_name', characterName || 'unknown');
+          vars.set('pre_raid_character_class', 'unknown');
+        }
+      } catch (convErr) {
+        console.error('[persona-context] Error reading conversation character data:', convErr.message);
+        vars.set('pre_raid_character_name', characterName || 'unknown');
+        vars.set('pre_raid_character_class', 'unknown');
+      }
+    } else {
+      vars.set('pre_raid_character_name', 'unknown');
+      vars.set('pre_raid_character_class', 'unknown');
+    }
+
   } catch (err) {
     console.error('[persona-context] Error resolving template variables:', err.message || err);
     // Set safe defaults for any missing variables
@@ -994,7 +1019,8 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       last_raid_name: 'unknown', total_raids_attended: '0', items_won_last_raid: '0',
       guild_join_date: 'Not in 1Principles Guild', last_raid_date: 'unknown',
       raid_name: 'unknown', gold_earned: '0', items_won: '0', raids_attended: '0',
-      raidleader_name: 'TBD', next_upcoming_raid: 'No upcoming raids scheduled'
+      raidleader_name: 'TBD', next_upcoming_raid: 'No upcoming raids scheduled',
+      pre_raid_character_name: 'unknown', pre_raid_character_class: 'unknown'
     };
     for (const [key, val] of Object.entries(defaults)) {
       if (!vars.has(key)) vars.set(key, val);
