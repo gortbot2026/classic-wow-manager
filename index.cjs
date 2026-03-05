@@ -24459,6 +24459,21 @@ async function getChannelFilterSettings() {
 // LOOT MANAGEMENT API ENDPOINTS
 // ====================================
 
+// Debug: list all event_ids that have loot (management only)
+app.get('/api/loot-debug/events', async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ error: 'Unauthorized' });
+  let client;
+  try {
+    client = await pool.connect();
+    const r = await client.query('SELECT event_id, COUNT(*) as item_count FROM loot_items GROUP BY event_id ORDER BY item_count DESC LIMIT 10');
+    res.json(r.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (client) client.release();
+  }
+});
+
 // Get loot items for an event
 app.get('/api/loot/:eventId', async (req, res) => {
   if (!req.isAuthenticated()) {
