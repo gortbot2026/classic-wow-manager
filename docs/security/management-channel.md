@@ -1,8 +1,10 @@
 # Security: Management Channel (Maya)
 
-**File:** `scripts/persona-bot.cjs`
+**Files:** `scripts/persona-bot.cjs`, `scripts/persona-management-context.cjs`
 **Last reviewed:** 2026-03-05 by Security Gort
-**Card:** Maya: Management channel improvements — respond to all messages + full player lookup
+**Cards:**
+- Maya: Management channel improvements — respond to all messages + full player lookup
+- Maya: Raid awareness in management channel — look up sign-ups by day/name
 
 ---
 
@@ -58,6 +60,44 @@ All database queries in `lookupPlayersInMessage()` and `buildEnrichedSection()` 
 | `fast-xml-parser` | CRITICAL | RangeError DoS, entity encoding bypass | No (migration scripts only) | Low runtime risk; update in future sprint |
 
 These were present before this feature and are unrelated to the management channel changes.
+
+## Raid Intelligence Context Module (`persona-management-context.cjs`)
+
+Added in card: Maya: Raid awareness in management channel
+
+### Secrets Handling
+- `RAID_HELPER_API_KEY` accessed exclusively via `process.env.RAID_HELPER_API_KEY` (line 303).
+- If the env var is missing, `fetchSignups()` silently returns an empty string — no crash, no fallback to a hardcoded key.
+
+### Input Handling
+- `messageContent` (raw Discord message) is only passed to:
+  - `detectContextNeeds()` — lowercased, regex-matched via `matchesKeyword()` only
+  - `resolveEventFromMessage()` — used for string `.includes()` / regex `.test()` against event titles; never inserted into SQL
+- **No user input ever flows directly into a SQL query.**
+
+### SQL Injection Prevention
+All 11 SQL queries in the module use parameterized `$1` / `ANY($1)` placeholders:
+- `eventId` values are sourced from `events_cache` JSON (DB-controlled), then used as `$1`
+- `discordIds` are sourced from `lookupPlayersInMessage()` (pre-validated snowflakes), then used as `ANY($1)`
+
+### External API / SSRF
+- Raid Helper fetch URL: `https://raid-helper.dev/api/v2/events/${eventId}` — domain is hardcoded, only the path segment (eventId from DB) is dynamic. Not user-controllable.
+- Request includes `AbortSignal.timeout(8000)` — prevents resource exhaustion on API hang.
+- Non-OK HTTP responses return empty string (no exception propagates).
+
+### In-Memory Cache
+- Cache keys: `moduleName:eventId` or `moduleName:discordIds` — values are DB/API-sourced, not user-controlled.
+- No cache poisoning vector: user input cannot influence cache keys or inject malicious cached values.
+- TTL: 5 minutes (Map-based, process-scoped). Resets on dyno restart.
+
+### Error Isolation
+- Every fetcher is wrapped in `try/catch`, returns `''` on failure.
+- Errors logged as `console.error('[persona-mgmt-ctx] fetchX error:', err.message)` — message only, no stack trace or data dump.
+- A single module failure never blocks the entire response.
+
+### Authorization
+- No new endpoints exposed. All access is via the existing management Discord channel gate.
+- Data exposed (raids, rosters, gold, player notes) is already accessible to leadership via the web dashboard — no privilege escalation.
 
 ## Audit Logging
 - Maya logs management channel replies to `console.log` with username and response length — no sensitive data (no tokens, no player PII) in the log line.
