@@ -332,18 +332,13 @@ function createPersonaBot(options = {}) {
   }
 
   /**
-   * Handles messages in the management Discord channel when Maya is mentioned.
+   * Handles all messages in the management Discord channel.
+   * Since this is a private leadership-only channel, every message is directed at Maya.
    * Fetches channel history, builds context with player data, and responds via LLM.
    *
    * @param {import('discord.js').Message} message - The incoming Discord message
    */
   async function handleManagementChannelMessage(message) {
-    // Check if Maya is mentioned via @mention or by name (word boundary)
-    const isMentioned = message.mentions.has(client.user);
-    const isNamedMention = /\bmaya\b/i.test(message.content);
-
-    if (!isMentioned && !isNamedMention) return;
-
     // Check generation lock — prevent concurrent LLM calls for the management channel
     if (managementChannelLock) {
       console.log('[persona-bot] Management channel: generation locked, skipping');
@@ -374,7 +369,7 @@ function createPersonaBot(options = {}) {
       }));
 
       // Build management system prompt
-      let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked. If player data is provided below, use it to inform your answer.`;
+      let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked. You have full player lookup capability — when leadership asks about a player, their full profile data will be provided below if the player was identified by character name, Discord username, or Discord ID in the message. If player data is provided below, use it to inform your answer.`;
 
       // Scan the triggering message for player names and enrich context
       const playerDataSections = await lookupPlayersInMessage(message.content);
@@ -410,35 +405,33 @@ function createPersonaBot(options = {}) {
   }
 
   /**
-   * Scans a message for player names from the players table and builds
-   * enriched context including player data, notes, and recent conversations.
+   * Scans a message for player references and builds enriched context.
+   * Matches players by character name, Discord username, or Discord ID (snowflake).
+   * Includes player data, notes, conversation summaries, and conversation count.
    *
-   * @param {string} messageContent - The message text to scan for player names
+   * @param {string} messageContent - The message text to scan for player references
    * @returns {Promise<string|null>} Formatted player data string, or null if no players found
    */
   async function lookupPlayersInMessage(messageContent) {
     try {
-      // Get all player names for matching
-      const playersRes = await pool.query(
-        `SELECT discord_id, character_name FROM players WHERE character_name IS NOT NULL`
-      );
-
-      if (playersRes.rows.length === 0) return null;
-
+      /** @type {Set<string>} Track processed discord_ids to prevent duplicates across all passes */
+      const processedIds = new Set();
       const sections = [];
 
-      for (const player of playersRes.rows) {
-        // Case-insensitive word boundary match for player names
-        const nameRegex = new RegExp(`\\b${player.character_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-        if (!nameRegex.test(messageContent)) continue;
-
-        // Found a matching player — build their context
-        const playerContext = await buildPlayerContext(pool, player.discord_id);
+      /**
+       * Builds an enriched player section with context, notes, conversations, and stats.
+       *
+       * @param {string} discordId - The player's Discord ID
+       * @param {string} characterName - The player's character name (for section header)
+       * @returns {Promise<string>} Formatted player data section
+       */
+      async function buildEnrichedSection(discordId, characterName) {
+        const playerContext = await buildPlayerContext(pool, discordId);
 
         // Fetch Maya's notes about this player
         const notesRes = await pool.query(
           `SELECT note, created_at FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
-          [player.discord_id]
+          [discordId]
         );
         const notesBlock = notesRes.rows.length > 0
           ? notesRes.rows.map(n => `- ${n.note}`).join('\n')
@@ -449,15 +442,76 @@ function createPersonaBot(options = {}) {
           `SELECT summary, status, created_at FROM bot_conversations
            WHERE discord_id = $1 AND summary IS NOT NULL
            ORDER BY created_at DESC LIMIT 5`,
-          [player.discord_id]
+          [discordId]
         );
         const convsBlock = convsRes.rows.length > 0
           ? convsRes.rows.map(c => `- [${c.status}] ${c.summary}`).join('\n')
           : 'No recent conversations.';
 
-        sections.push(
-          `## ${player.character_name}\n${playerContext || 'No player data available.'}\n\n**Maya's Notes:**\n${notesBlock}\n\n**Recent Conversations:**\n${convsBlock}`
+        // Fetch conversation count and last chat date
+        const convCountRes = await pool.query(
+          `SELECT COUNT(*) as count, MAX(created_at) as last_chat FROM bot_conversations WHERE discord_id = $1`,
+          [discordId]
         );
+        const convCount = parseInt(convCountRes.rows[0].count, 10) || 0;
+        const lastChat = convCountRes.rows[0].last_chat
+          ? new Date(convCountRes.rows[0].last_chat).toISOString().split('T')[0]
+          : 'Never';
+        const convStatsLine = `Total conversations: ${convCount}, Last chat: ${lastChat}`;
+
+        return `## ${characterName}\n${playerContext || 'No player data available.'}\n\n**Conversation Stats:** ${convStatsLine}\n\n**Maya's Notes:**\n${notesBlock}\n\n**Recent Conversations:**\n${convsBlock}`;
+      }
+
+      // --- Pass 1: Character name matching ---
+      const playersRes = await pool.query(
+        `SELECT discord_id, character_name FROM players WHERE character_name IS NOT NULL`
+      );
+
+      for (const player of playersRes.rows) {
+        // Case-insensitive word boundary match for player names
+        const nameRegex = new RegExp(`\\b${player.character_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (!nameRegex.test(messageContent)) continue;
+
+        processedIds.add(player.discord_id);
+        sections.push(await buildEnrichedSection(player.discord_id, player.character_name));
+      }
+
+      // --- Pass 2: Discord username matching ---
+      const discordUsersRes = await pool.query(
+        `SELECT discord_id, username FROM discord_users WHERE username IS NOT NULL`
+      );
+
+      for (const discordUser of discordUsersRes.rows) {
+        if (processedIds.has(discordUser.discord_id)) continue;
+
+        const usernameRegex = new RegExp(`\\b${discordUser.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (!usernameRegex.test(messageContent)) continue;
+
+        // Look up the character name for the section header
+        const playerRow = playersRes.rows.find(p => p.discord_id === discordUser.discord_id);
+        const displayName = playerRow ? playerRow.character_name : discordUser.username;
+
+        processedIds.add(discordUser.discord_id);
+        sections.push(await buildEnrichedSection(discordUser.discord_id, displayName));
+      }
+
+      // --- Pass 3: Discord snowflake ID matching ---
+      const snowflakeMatches = messageContent.match(/\b(\d{17,20})\b/g);
+      if (snowflakeMatches) {
+        for (const snowflake of snowflakeMatches) {
+          if (processedIds.has(snowflake)) continue;
+
+          // Validate the snowflake exists in the players table
+          const snowflakeCheck = await pool.query(
+            `SELECT discord_id, character_name FROM players WHERE discord_id = $1`,
+            [snowflake]
+          );
+          if (snowflakeCheck.rows.length === 0) continue;
+
+          const matchedPlayer = snowflakeCheck.rows[0];
+          processedIds.add(matchedPlayer.discord_id);
+          sections.push(await buildEnrichedSection(matchedPlayer.discord_id, matchedPlayer.character_name || snowflake));
+        }
       }
 
       return sections.length > 0 ? sections.join('\n\n') : null;

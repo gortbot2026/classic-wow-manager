@@ -106,6 +106,42 @@ Examples verified:
 
 ---
 
+## Delete Conversation Endpoint (2026-03-05)
+
+### Feature Summary
+- `DELETE /api/admin/maya/conversations/:conversationId` — hard-deletes a conversation and all related records
+- FK-safe deletion order: `bot_messages` → nullify `bot_player_notes.source_conversation_id` → `pending_raidleader_summaries` → `bot_conversations`
+- Transaction-wrapped: full ROLLBACK on any error prevents partial deletions
+- Active conversation guard: returns 400 if `status = 'active'` (must be closed first)
+- Socket.io event `maya:conversation-deleted` emitted on `/maya-admin` namespace for cross-tab UI sync
+
+### Authentication & Authorization
+- Protected by `requireManagement` middleware — same gate as all other Maya endpoints
+- Unauthenticated → 401; authenticated non-management → 403
+
+### Input Validation
+- `conversationId` from URL params is used only as `$1` in parameterized queries — no string interpolation
+- UUID format is not explicitly validated server-side (LOW risk: parameterization prevents injection; non-existent IDs return 404 cleanly)
+- Frontend wraps `conversationId` in `encodeURIComponent()` before inserting into fetch URL — path traversal not possible
+
+### XSS Prevention
+- `conversationId` inline in HTML onclick handlers is wrapped with `escapeHtml()` before insertion
+- `escapeHtml()` uses the DOM `textContent` assignment trick — safe against all HTML/script injection
+- Socket.io event payload (`conversationId` + `discord_id`) contains no secrets or user-controlled HTML
+
+### SQL Injection
+- All 5 queries in the DELETE handler use parameterized `$1` placeholders — no raw interpolation
+
+### Error Handling
+- 500 response returns generic `"Error deleting conversation"` message — no stack trace or DB error detail exposed to client
+- ROLLBACK on error is wrapped in `.catch(() => {})` to prevent secondary throws from crashing the handler
+
+### Known Notes
+- `discord_user_id` bug fixed (2026-03-05): SELECT and Socket.io emit originally referenced wrong column name; corrected to `discord_id` matching the actual schema
+- Pre-existing npm vulnerabilities unchanged by this feature (23 total, 1 critical: `fast-xml-parser`)
+
+---
+
 ## Audit Logging
 
 Maya conversation events are logged to:
