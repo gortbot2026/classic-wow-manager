@@ -208,6 +208,20 @@ function createPersonaBot(options = {}) {
   const { pool, io } = options;
   const token = process.env.PERSONA_BOT_TOKEN;
 
+  /**
+   * Webhook URL for posting raid leader summaries to the management Discord channel.
+   * If not set, summary posting is silently skipped.
+   * @type {string|undefined}
+   */
+  const MAYA_MANAGEMENT_WEBHOOK_URL = process.env.MAYA_MANAGEMENT_WEBHOOK_URL;
+
+  /**
+   * Channel ID of the management Discord channel Maya should watch and respond in.
+   * If not set, channel watching is silently disabled.
+   * @type {string|undefined}
+   */
+  const MAYA_MANAGEMENT_CHANNEL_ID = process.env.MAYA_MANAGEMENT_CHANNEL_ID;
+
   if (!token) {
     console.log('[persona-bot] Persona bot disabled (missing PERSONA_BOT_TOKEN)');
     return {
@@ -223,6 +237,7 @@ function createPersonaBot(options = {}) {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildMessages,
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.MessageContent
     ],
@@ -243,6 +258,212 @@ function createPersonaBot(options = {}) {
       mayaNsp.emit(event, data);
     } catch (err) {
       console.warn('[persona-bot] Socket.IO emit failed:', err.message || err);
+    }
+  }
+
+  /**
+   * Generation lock for management channel responses.
+   * Prevents concurrent LLM calls when multiple messages arrive simultaneously.
+   * @type {boolean}
+   */
+  let managementChannelLock = false;
+
+  /**
+   * Posts a raid leader summary to the management Discord channel via webhook.
+   * Fire-and-forget — errors are logged but never fail the main flow.
+   *
+   * @param {string} summaryText - The full summary message text to post
+   * @param {Object} [opts] - Additional options
+   * @param {boolean} [opts.pending=false] - If true, marks the summary as pending (raidleader not yet assigned)
+   */
+  function postSummaryToWebhook(summaryText, opts = {}) {
+    if (!MAYA_MANAGEMENT_WEBHOOK_URL) return;
+
+    const { pending = false } = opts;
+
+    // Extract the intro line as the embed title
+    const lines = summaryText.split('\n');
+    const title = pending
+      ? `⏳ ${lines[0] || 'Pre-raid briefing summary'} [PENDING - No raidleader assigned]`
+      : lines[0] || 'Pre-raid briefing summary';
+
+    // Build the avatar URL if bot client is ready
+    const avatarUrl = client.user ? client.user.displayAvatarURL({ size: 128 }) : undefined;
+
+    const payload = {
+      username: 'Maya',
+      avatar_url: avatarUrl,
+      embeds: [{
+        author: {
+          name: 'Maya',
+          icon_url: avatarUrl
+        },
+        title: title.substring(0, 256),
+        description: summaryText.substring(0, 4096),
+        color: 0x9B59B6,
+        timestamp: new Date().toISOString()
+      }]
+    };
+
+    // Fire-and-forget with 10s timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    fetch(MAYA_MANAGEMENT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    })
+      .then(res => {
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+          console.warn(`[persona-bot] Webhook post failed with status ${res.status}`);
+        }
+      })
+      .catch(err => {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+          console.warn('[persona-bot] Webhook post timed out (10s)');
+        } else {
+          console.warn('[persona-bot] Webhook post error:', err.message || err);
+        }
+      });
+  }
+
+  /**
+   * Handles messages in the management Discord channel when Maya is mentioned.
+   * Fetches channel history, builds context with player data, and responds via LLM.
+   *
+   * @param {import('discord.js').Message} message - The incoming Discord message
+   */
+  async function handleManagementChannelMessage(message) {
+    // Check if Maya is mentioned via @mention or by name (word boundary)
+    const isMentioned = message.mentions.has(client.user);
+    const isNamedMention = /\bmaya\b/i.test(message.content);
+
+    if (!isMentioned && !isNamedMention) return;
+
+    // Check generation lock — prevent concurrent LLM calls for the management channel
+    if (managementChannelLock) {
+      console.log('[persona-bot] Management channel: generation locked, skipping');
+      return;
+    }
+
+    managementChannelLock = true;
+
+    // Start typing indicator with refresh interval
+    message.channel.sendTyping().catch(() => {});
+    const typingInterval = setInterval(() => {
+      message.channel.sendTyping().catch(() => {});
+    }, 8000);
+
+    try {
+      // Fetch last 20 messages for context
+      const recentMessages = await message.channel.messages.fetch({ limit: 20 });
+      const sortedMessages = [...recentMessages.values()].sort(
+        (a, b) => a.createdTimestamp - b.createdTimestamp
+      );
+
+      // Build conversation history for LLM
+      const formattedMessages = sortedMessages.map(msg => ({
+        role: msg.author.id === client.user.id ? 'assistant' : 'user',
+        content: msg.author.id === client.user.id
+          ? msg.content
+          : `${msg.member?.displayName || msg.author.displayName || msg.author.username}: ${msg.content}`
+      }));
+
+      // Build management system prompt
+      let systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked. If player data is provided below, use it to inform your answer.`;
+
+      // Scan the triggering message for player names and enrich context
+      const playerDataSections = await lookupPlayersInMessage(message.content);
+      if (playerDataSections) {
+        systemPrompt += `\n\n--- PLAYER DATA ---\n${playerDataSections}`;
+      }
+
+      // Get persona for model selection
+      const persona = await getPersona();
+      const model = persona?.model || 'claude-sonnet-4-20250514';
+
+      // Generate response
+      const rawResponse = await generateResponse(systemPrompt, formattedMessages, model);
+
+      if (rawResponse) {
+        let replyText = sanitizeResponse(rawResponse);
+        replyText = sanitizeForDiscord(replyText);
+
+        // Enforce Discord 2000-char limit
+        if (replyText.length > 2000) {
+          replyText = replyText.substring(0, 1997) + '...';
+        }
+
+        await message.channel.send(replyText);
+        console.log(`[persona-bot] Management channel: replied to ${message.author.displayName || message.author.username} (${replyText.length} chars)`);
+      }
+    } catch (err) {
+      console.error('[persona-bot] Management channel error:', err.message || err);
+    } finally {
+      clearInterval(typingInterval);
+      managementChannelLock = false;
+    }
+  }
+
+  /**
+   * Scans a message for player names from the players table and builds
+   * enriched context including player data, notes, and recent conversations.
+   *
+   * @param {string} messageContent - The message text to scan for player names
+   * @returns {Promise<string|null>} Formatted player data string, or null if no players found
+   */
+  async function lookupPlayersInMessage(messageContent) {
+    try {
+      // Get all player names for matching
+      const playersRes = await pool.query(
+        `SELECT discord_id, character_name FROM players WHERE character_name IS NOT NULL`
+      );
+
+      if (playersRes.rows.length === 0) return null;
+
+      const sections = [];
+
+      for (const player of playersRes.rows) {
+        // Case-insensitive word boundary match for player names
+        const nameRegex = new RegExp(`\\b${player.character_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (!nameRegex.test(messageContent)) continue;
+
+        // Found a matching player — build their context
+        const playerContext = await buildPlayerContext(pool, player.discord_id);
+
+        // Fetch Maya's notes about this player
+        const notesRes = await pool.query(
+          `SELECT note, created_at FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
+          [player.discord_id]
+        );
+        const notesBlock = notesRes.rows.length > 0
+          ? notesRes.rows.map(n => `- ${n.note}`).join('\n')
+          : 'No notes recorded.';
+
+        // Fetch recent conversation summaries
+        const convsRes = await pool.query(
+          `SELECT summary, status, created_at FROM bot_conversations
+           WHERE discord_id = $1 AND summary IS NOT NULL
+           ORDER BY created_at DESC LIMIT 5`,
+          [player.discord_id]
+        );
+        const convsBlock = convsRes.rows.length > 0
+          ? convsRes.rows.map(c => `- [${c.status}] ${c.summary}`).join('\n')
+          : 'No recent conversations.';
+
+        sections.push(
+          `## ${player.character_name}\n${playerContext || 'No player data available.'}\n\n**Maya's Notes:**\n${notesBlock}\n\n**Recent Conversations:**\n${convsBlock}`
+        );
+      }
+
+      return sections.length > 0 ? sections.join('\n\n') : null;
+    } catch (err) {
+      console.error('[persona-bot] Player lookup error:', err.message || err);
+      return null;
     }
   }
 
@@ -705,6 +926,8 @@ function createPersonaBot(options = {}) {
           [pendingId, eventId, conversationId, summaryDM, playerDiscordId]
         );
         console.log(`[persona-bot] Raidleader not set for event ${eventId}, queued summary ${pendingId}`);
+        // Post to management webhook even when pending (leadership sees it immediately)
+        postSummaryToWebhook(summaryDM, { pending: true });
         return true;
       }
 
@@ -730,6 +953,8 @@ function createPersonaBot(options = {}) {
       const sent = await sendDM(raidleaderDiscordId, summaryDM);
       if (sent) {
         console.log(`[persona-bot] Sent pre-raid summary to raidleader ${raidleaderName} (${raidleaderDiscordId})`);
+        // Post to management webhook (fire-and-forget)
+        postSummaryToWebhook(summaryDM);
       } else {
         console.warn(`[persona-bot] Failed to send pre-raid summary DM to raidleader ${raidleaderName}`);
       }
@@ -1025,7 +1250,22 @@ function createPersonaBot(options = {}) {
       console.log('[persona-bot] Started pending raidleader summary polling (5-min interval)');
     });
 
-    client.on('messageCreate', handleDM);
+    client.on('messageCreate', (message) => {
+      // Ignore all bot messages (prevents self-reply loops)
+      if (message.author.bot) return;
+
+      // Route DMs to existing handler
+      if (message.channel.type === ChannelType.DM) {
+        handleDM(message);
+        return;
+      }
+
+      // Route management channel messages to the management handler
+      if (MAYA_MANAGEMENT_CHANNEL_ID && message.channel.id === MAYA_MANAGEMENT_CHANNEL_ID) {
+        handleManagementChannelMessage(message);
+        return;
+      }
+    });
 
     // Clear polling interval and briefing timeouts on disconnect
     client.on('disconnect', () => {
