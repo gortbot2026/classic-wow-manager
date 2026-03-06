@@ -203,15 +203,15 @@ function applyEffectsToDefaultBackground(eventDiv, isGrayscale = false) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    const eventsList = document.getElementById('events-list');
-    const historicEventsList = document.getElementById('historic-events-list');
+    const raidsTbody = document.getElementById('raids-tbody');
     let lastRefreshTime = null;
     let lastHistoricRefreshTime = null;
     
-    // Historic events pagination variables
+    // Pagination variables for completed raids in unified table
     let allHistoricEvents = [];
-    let currentHistoricDisplayLimit = 5; // Temporarily set to 5 for testing
-    const historicEventsPerPage = 5; // Temporarily set to 5 for testing
+    let allUpcomingEvents = [];
+    let currentHistoricDisplayLimit = 5;
+    const historicEventsPerPage = 5;
 
     // Load global blur and darken settings
     await loadGlobalBlurSetting();
@@ -225,17 +225,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             const user = await response.json();
             
             if (user.loggedIn) {
-                fetchAndDisplayEvents();
-                fetchAndDisplayHistoricEvents();
+                fetchAndRenderRaidsTable();
                 fetchAndDisplayMyCharacters();
                 fetchAndDisplayItemsHallOfFame();
                 
                 // Only show refresh sections for users with Management role
                 showRefreshButtons(!!user.hasManagementRole);
             } else {
-                document.getElementById('events-list').innerHTML = '<p>Please sign in with Discord to view upcoming events.</p>';
-                if (historicEventsList) {
-                    document.getElementById('historic-events-list').innerHTML = '<p>Please sign in with Discord to view completed events.</p>';
+                if (raidsTbody) {
+                    raidsTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Please sign in with Discord to view raids.</td></tr>';
                 }
                 const myCharsContainer = document.getElementById('my-characters-list');
                 if (myCharsContainer) {
@@ -256,47 +254,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
     
-    // Function to show/hide entire refresh sections (Management-only)
+    // Function to show/hide refresh button (Management-only)
     function showRefreshButtons(show) {
-        const upcomingRefreshBtn = document.getElementById('refresh-events-btn');
-        const historicRefreshBtn = document.getElementById('refresh-historic-events-btn');
-        
-        const upcomingSection = upcomingRefreshBtn ? upcomingRefreshBtn.closest('.refresh-section') : null;
-        const historicSection = historicRefreshBtn ? historicRefreshBtn.closest('.refresh-section') : null;
-        
-        if (upcomingSection) {
-            upcomingSection.style.display = show ? 'block' : 'none';
-        } else if (upcomingRefreshBtn) {
-            // Fallback: toggle just the button
-            upcomingRefreshBtn.style.display = show ? 'inline-flex' : 'none';
-        }
-        
-        if (historicSection) {
-            historicSection.style.display = show ? 'block' : 'none';
-        } else if (historicRefreshBtn) {
-            // Fallback: toggle just the button
-            historicRefreshBtn.style.display = show ? 'inline-flex' : 'none';
+        const refreshBtn = document.getElementById('refresh-raids-btn');
+        if (refreshBtn) {
+            refreshBtn.style.display = show ? 'inline-flex' : 'none';
         }
     }
 
-    // Function to fetch and display event duration
+    /**
+     * Fetch and display event duration in the target element (td cell).
+     * For completed raids in the unified table, renders compact duration text.
+     */
     async function fetchEventDuration(eventId, delay = 0) {
         const durationElement = document.getElementById(`duration-${eventId}`);
         if (!durationElement) return;
 
-        // Add delay to prevent overwhelming the server
         if (delay > 0) {
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
             
             const response = await fetch(`/api/event-duration/${eventId}`, {
                 signal: controller.signal
             });
-            
             clearTimeout(timeoutId);
 
             if (!response.ok) {
@@ -306,50 +290,40 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await response.json();
 
             if (data.success && data.duration && typeof data.duration === 'number') {
-                // Format duration like the raidlogs page
                 const totalMinutes = data.duration;
                 const hours = Math.floor(totalMinutes / 60);
                 const minutes = totalMinutes % 60;
-                
-                let formattedDuration;
-                if (hours > 0) {
-                    formattedDuration = `${hours}h ${minutes}m`;
-                } else {
-                    formattedDuration = `${totalMinutes}m`;
-                }
-                
-                durationElement.innerHTML = `<p><i class="far fa-clock event-icon"></i> Time: ${formattedDuration}</p>`;
+                const formattedDuration = hours > 0 ? `${hours}h ${minutes}m` : `${totalMinutes}m`;
+                durationElement.textContent = formattedDuration;
             } else {
-                durationElement.innerHTML = `<p><i class="far fa-clock event-icon"></i> Duration N/A</p>`;
+                durationElement.textContent = 'N/A';
             }
         } catch (error) {
-            if (error.name === 'AbortError') {
-                console.warn(`Duration fetch timeout for event ${eventId}`);
-            } else {
+            if (error.name !== 'AbortError') {
                 console.warn(`Error fetching duration for event ${eventId}:`, error.message);
             }
-            durationElement.innerHTML = `<p><i class="far fa-clock event-icon"></i> Duration N/A</p>`;
+            durationElement.textContent = 'N/A';
         }
     }
 
-    // Function to fetch and display event gold pot
+    /**
+     * Fetch and display event gold pot in the target element (td cell).
+     */
     async function fetchEventGoldPot(eventId, delay = 0) {
         const goldPotElement = document.getElementById(`goldpot-${eventId}`);
         if (!goldPotElement) return;
 
-        // Add delay to prevent overwhelming the server
         if (delay > 0) {
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
             
             const response = await fetch(`/api/event-goldpot/${eventId}`, {
                 signal: controller.signal
             });
-            
             clearTimeout(timeoutId);
 
             if (!response.ok) {
@@ -359,36 +333,36 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await response.json();
 
             if (data.success && typeof data.goldPot === 'number') {
-                goldPotElement.innerHTML = `<p><i class="fas fa-coins event-icon"></i> Gold pot: <span style="color: #FFD700;">${data.goldPot}g</span></p>`;
+                goldPotElement.innerHTML = `<span class="raid-gold">${data.goldPot}g</span>`;
             } else {
-                goldPotElement.innerHTML = `<p><i class="fas fa-coins event-icon"></i> Gold pot: <span style="color: #FFD700;">0g</span></p>`;
+                goldPotElement.innerHTML = `<span class="raid-gold">0g</span>`;
             }
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.warn(`Error fetching gold pot for event ${eventId}:`, error.message);
             }
-            goldPotElement.innerHTML = `<p><i class="fas fa-coins event-icon"></i> Gold pot: <span style="color: #FFD700;">N/A</span></p>`;
+            goldPotElement.innerHTML = `<span class="raid-gold">N/A</span>`;
         }
     }
 
-    // Function to fetch and display event biggest item
+    /**
+     * Fetch and display event biggest item in the target element (td cell).
+     */
     async function fetchEventBiggestItem(eventId, delay = 0) {
         const biggestItemElement = document.getElementById(`biggestitem-${eventId}`);
         if (!biggestItemElement) return;
 
-        // Add delay to prevent overwhelming the server
         if (delay > 0) {
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
             
             const response = await fetch(`/api/event-biggestitem/${eventId}`, {
                 signal: controller.signal
             });
-            
             clearTimeout(timeoutId);
 
             if (!response.ok) {
@@ -398,18 +372,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await response.json();
 
             if (data.success && data.itemName) {
-                const iconHtml = data.iconLink ? 
-                    `<img src="${data.iconLink}" alt="${data.itemName}" class="item-icon-small" style="width: 16px; height: 16px; vertical-align: middle; margin-right: 8px; border-radius: 4px;">` : 
-                    `<i class="fas fa-gem event-icon"></i> `;
-                biggestItemElement.innerHTML = `<p>${iconHtml}<span style="color: #a335ee;">${data.itemName}</span></p>`;
+                const iconHtml = data.iconLink
+                    ? `<img src="${data.iconLink}" alt="${data.itemName}" class="raid-item-icon">`
+                    : '';
+                biggestItemElement.innerHTML = `${iconHtml}<span class="raid-item-name">${data.itemName}</span>`;
             } else {
-                biggestItemElement.innerHTML = `<p><i class="fas fa-gem event-icon"></i> None</p>`;
+                biggestItemElement.textContent = '-';
             }
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.warn(`Error fetching biggest item for event ${eventId}:`, error.message);
             }
-            biggestItemElement.innerHTML = `<p><i class="fas fa-gem event-icon"></i> N/A</p>`;
+            biggestItemElement.textContent = 'N/A';
         }
     }
 
@@ -440,6 +414,414 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (_) {
             publishedStatusCache.set(String(eventId), false);
             return false;
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // Shared utility functions
+    // ──────────────────────────────────────────────
+
+    /**
+     * Clean a Discord channel name: remove emojis/special chars, replace dashes
+     * with spaces, and capitalize each word.
+     * @param {string} rawName - Raw channel name from the API
+     * @param {string} [channelId] - Fallback channel ID if name is unusable
+     * @returns {string} Cleaned, human-readable channel name
+     */
+    function cleanChannelName(rawName, channelId) {
+        if (rawName && rawName.trim() && rawName !== channelId && !rawName.match(/^\d+$/)) {
+            return rawName
+                .replace(/[^\w\s-]/g, '')
+                .replace(/-/g, ' ')
+                .trim()
+                .split(' ')
+                .filter(Boolean)
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join(' ');
+        }
+        return channelId ? `Channel ${channelId.slice(-4)}` : 'Unknown Channel';
+    }
+
+    /**
+     * Format a Unix epoch timestamp as a day-of-week string (e.g. "Thursday").
+     * @param {number} epochSeconds - Unix timestamp in seconds
+     * @returns {string} Day of week
+     */
+    function formatRaidDay(epochSeconds) {
+        if (!epochSeconds) return '';
+        const d = new Date(epochSeconds * 1000);
+        return d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Copenhagen' });
+    }
+
+    /**
+     * Format a Unix epoch timestamp as HH:MM in Copenhagen timezone.
+     * @param {number} epochSeconds - Unix timestamp in seconds
+     * @returns {string} Formatted time string
+     */
+    function formatRaidTime(epochSeconds) {
+        if (!epochSeconds) return '';
+        const d = new Date(epochSeconds * 1000);
+        return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/Copenhagen' });
+    }
+
+    /**
+     * Format a Unix epoch timestamp as DD/MM/YYYY in Copenhagen timezone.
+     * @param {number} epochSeconds - Unix timestamp in seconds
+     * @returns {string} Formatted date string
+     */
+    function formatRaidDate(epochSeconds) {
+        if (!epochSeconds) return '';
+        const d = new Date(epochSeconds * 1000);
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Copenhagen' });
+    }
+
+    /**
+     * Check if a Unix epoch timestamp falls on today (Copenhagen timezone).
+     * @param {number} epochSeconds - Unix timestamp in seconds
+     * @returns {boolean}
+     */
+    function isToday(epochSeconds) {
+        if (!epochSeconds) return false;
+        const eventDate = new Date(epochSeconds * 1000);
+        const nowStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Copenhagen' });
+        const eventStr = eventDate.toLocaleDateString('en-CA', { timeZone: 'Europe/Copenhagen' });
+        return nowStr === eventStr;
+    }
+
+    /**
+     * Fetch a channel background thumbnail and apply it to an <img> element.
+     * Falls back to the AQ40 default.
+     * @param {string} channelId - Discord channel ID
+     * @param {HTMLImageElement} imgElement - Target <img> element
+     */
+    async function fetchChannelThumbnail(channelId, imgElement) {
+        if (!channelId || !imgElement) return;
+        const fallback = '/images/AQ40-background.png';
+        try {
+            const response = await fetch(`/api/channel-background/${channelId}`);
+            const data = await response.json();
+            imgElement.src = (data.success && data.backgroundUrl) ? data.backgroundUrl : fallback;
+        } catch {
+            imgElement.src = fallback;
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // Unified Raids Table
+    // ──────────────────────────────────────────────
+
+    /**
+     * Build a single <tr> element for the raids table.
+     * @param {Object} event - Event data from the API
+     * @param {boolean} isCompleted - Whether this is a completed raid
+     * @returns {HTMLTableRowElement}
+     */
+    function buildRaidRow(event, isCompleted) {
+        const eventId = event.id || event.eventId || 'unknown';
+        const tr = document.createElement('tr');
+
+        // Row CSS classes
+        const classes = [isCompleted ? 'raid-row--completed' : 'raid-row--upcoming'];
+        if (!isCompleted && isToday(event.startTime)) {
+            classes.push('raid-row--today');
+        }
+        tr.className = classes.join(' ');
+
+        // Make the entire row clickable
+        const link = isCompleted ? `/event/${eventId}/roster` : `/event/${eventId}/roster`;
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', (e) => {
+            // Don't navigate if user clicked an actual link inside
+            if (e.target.closest('a')) return;
+            window.location.href = link;
+        });
+        tr.setAttribute('data-event-id', eventId);
+
+        // 1. Image thumbnail
+        const tdImg = document.createElement('td');
+        const img = document.createElement('img');
+        img.className = 'raid-thumbnail';
+        img.alt = cleanChannelName(event.channelName, event.channelId);
+        img.src = '/images/AQ40-background.png'; // placeholder until async load
+        tdImg.appendChild(img);
+        tr.appendChild(tdImg);
+
+        // Async-load the real thumbnail
+        if (event.channelId) {
+            fetchChannelThumbnail(event.channelId, img);
+        }
+
+        // 2. Name
+        const tdName = document.createElement('td');
+        const nameLink = document.createElement('a');
+        nameLink.className = 'raid-name-link';
+        nameLink.href = link;
+        if (isCompleted) {
+            const clean = cleanChannelName(event.channelName, event.channelId);
+            const dateStr = formatRaidDate(event.startTime);
+            nameLink.textContent = `${clean} - ${dateStr}`;
+        } else {
+            nameLink.textContent = event.title || 'Untitled Event';
+        }
+        tdName.appendChild(nameLink);
+        tr.appendChild(tdName);
+
+        // 3. Day
+        const tdDay = document.createElement('td');
+        tdDay.textContent = formatRaidDay(event.startTime);
+        tr.appendChild(tdDay);
+
+        // 4. Time (upcoming: start time; completed: duration loaded async)
+        const tdTime = document.createElement('td');
+        if (isCompleted) {
+            tdTime.id = `duration-${eventId}`;
+            tdTime.className = 'raid-cell-loading';
+            tdTime.textContent = '...';
+        } else {
+            tdTime.textContent = formatRaidTime(event.startTime);
+        }
+        tr.appendChild(tdTime);
+
+        // 5. Signed
+        const tdSigned = document.createElement('td');
+        tdSigned.textContent = event.signUpCount || '0';
+        tr.appendChild(tdSigned);
+
+        // 6. Channel
+        const tdChannel = document.createElement('td');
+        tdChannel.textContent = '#' + cleanChannelName(event.channelName, event.channelId).toLowerCase().replace(/\s+/g, '-');
+        tr.appendChild(tdChannel);
+
+        // 7. Gold Pot
+        const tdGold = document.createElement('td');
+        if (isCompleted) {
+            tdGold.id = `goldpot-${eventId}`;
+            tdGold.className = 'raid-cell-loading';
+            tdGold.textContent = '...';
+        } else {
+            tdGold.innerHTML = '<span class="raid-gold">0g</span>';
+        }
+        tr.appendChild(tdGold);
+
+        // 8. Top Item
+        const tdItem = document.createElement('td');
+        if (isCompleted) {
+            tdItem.id = `biggestitem-${eventId}`;
+            tdItem.className = 'raid-cell-loading';
+            tdItem.textContent = '...';
+        } else {
+            tdItem.textContent = '-';
+        }
+        tr.appendChild(tdItem);
+
+        // For completed raids, update the link to raidlogs if published
+        if (isCompleted && eventId !== 'unknown') {
+            fetchPublishedStatus(eventId, 0).then(isPublished => {
+                if (isPublished) {
+                    const newLink = `/event/${eventId}/raidlogs`;
+                    nameLink.href = newLink;
+                    // Update the row click handler too
+                    tr.onclick = null;
+                    tr.addEventListener('click', (e) => {
+                        if (e.target.closest('a')) return;
+                        window.location.href = newLink;
+                    });
+                }
+            });
+        }
+
+        return tr;
+    }
+
+    /**
+     * Render the unified raids table with upcoming + completed events.
+     * Upcoming events are shown first (soonest first), then completed (newest first).
+     * Only the first `currentHistoricDisplayLimit` completed events are shown initially.
+     * @param {Array} upcomingEvents - Sorted upcoming events (soonest first)
+     * @param {Array} completedEvents - Sorted completed events (newest first)
+     * @param {boolean} [appendMode=false] - If true, only append new completed rows
+     */
+    function renderRaidsTable(upcomingEvents, completedEvents, appendMode) {
+        if (!raidsTbody) return;
+
+        if (!appendMode) {
+            raidsTbody.innerHTML = '';
+
+            // Render all upcoming rows
+            upcomingEvents.forEach(event => {
+                raidsTbody.appendChild(buildRaidRow(event, false));
+            });
+        }
+
+        // Determine which completed events to render
+        const startIdx = appendMode ? (currentHistoricDisplayLimit - historicEventsPerPage) : 0;
+        const endIdx = currentHistoricDisplayLimit;
+        const completedSlice = completedEvents.slice(startIdx, endIdx);
+
+        completedSlice.forEach((event, index) => {
+            const tr = buildRaidRow(event, true);
+            raidsTbody.appendChild(tr);
+
+            // Stagger async fetches for duration, gold pot, and biggest item
+            const eventId = event.id || event.eventId || 'unknown';
+            const delay = (startIdx + index) * 300;
+            fetchEventDuration(eventId, delay);
+            fetchEventGoldPot(eventId, delay + 100);
+            fetchEventBiggestItem(eventId, delay + 200);
+        });
+
+        // Update count display and show-more button
+        const totalShown = upcomingEvents.length + Math.min(endIdx, completedEvents.length);
+        const totalRaids = upcomingEvents.length + completedEvents.length;
+        updateRaidsCount(totalShown, totalRaids);
+    }
+
+    /**
+     * Update the count display and Show More button visibility.
+     */
+    function updateRaidsCount(shown, total) {
+        const countEl = document.getElementById('raids-count');
+        const showMoreBtn = document.getElementById('show-more-raids-btn');
+
+        if (countEl) {
+            countEl.textContent = shown < total
+                ? `Showing ${shown} of ${total} raids`
+                : `Showing all ${total} raids`;
+        }
+
+        if (showMoreBtn) {
+            showMoreBtn.style.display = shown < total ? 'inline-flex' : 'none';
+        }
+    }
+
+    /**
+     * Fetch both upcoming and completed events, then render the unified table.
+     * Also handles the Next Upcoming Raid hero panel.
+     */
+    async function fetchAndRenderRaidsTable() {
+        if (raidsTbody) {
+            raidsTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#9ca3af;">Loading raids...</td></tr>';
+        }
+
+        try {
+            const [upcomingRes, historicRes] = await Promise.all([
+                fetch('/api/events'),
+                fetch('/api/events/historic')
+            ]);
+            const upcomingData = await upcomingRes.json();
+            const historicData = await historicRes.json();
+
+            const upcomingRaw = Array.isArray(upcomingData.scheduledEvents) ? upcomingData.scheduledEvents : [];
+            const historicRaw = Array.isArray(historicData.scheduledEvents) ? historicData.scheduledEvents : [];
+
+            // Filter & sort upcoming: future events, soonest first
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const upcoming = upcomingRaw
+                .filter(e => typeof e.startTime === 'number' && new Date(e.startTime * 1000) >= today)
+                .sort((a, b) => a.startTime - b.startTime);
+
+            // Filter & sort completed: past events within 1 year, newest first
+            const now = new Date();
+            const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+            const completed = historicRaw
+                .filter(e => {
+                    if (typeof e.startTime !== 'number') return false;
+                    const d = new Date(e.startTime * 1000);
+                    return d < now && d >= oneYearAgo;
+                })
+                .sort((a, b) => b.startTime - a.startTime);
+
+            // Store for pagination
+            allUpcomingEvents = upcoming;
+            allHistoricEvents = completed;
+            currentHistoricDisplayLimit = historicEventsPerPage;
+
+            // Render the hero panel for the next upcoming raid
+            displayNextRaidHero(upcoming);
+
+            // Render the table (upcoming minus the hero raid are still shown in table)
+            renderRaidsTable(upcoming, completed, false);
+
+        } catch (error) {
+            console.error('Error fetching raids:', error);
+            if (raidsTbody) {
+                raidsTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#f87171;">Failed to load raids. Please try again.</td></tr>';
+            }
+        }
+    }
+
+    /**
+     * Display the first upcoming event in the Next Upcoming Raid hero panel.
+     * Reuses the existing createEventCard logic.
+     */
+    function displayNextRaidHero(upcomingEvents) {
+        const nextRaidPanel = document.getElementById('next-raid-panel');
+        const nextRaidContainer = document.getElementById('next-raid-container');
+        if (!nextRaidPanel || !nextRaidContainer) return;
+
+        if (!upcomingEvents || upcomingEvents.length === 0) {
+            nextRaidPanel.style.display = 'none';
+            return;
+        }
+
+        // Remove any existing card or spark-border wrapper
+        const existingSparkBorder = nextRaidContainer.querySelector('.spark-border');
+        if (existingSparkBorder) existingSparkBorder.remove();
+        const existingCard = nextRaidContainer.querySelector('.event-panel');
+        if (existingCard) existingCard.remove();
+
+        const nextEvent = upcomingEvents[0];
+        const nextRaidCard = createEventCard(nextEvent, 0);
+
+        // Calculate raid status based on time
+        const now = Date.now();
+        const raidStartTime = nextEvent.startTime * 1000;
+        const oneHourBefore = raidStartTime - (60 * 60 * 1000);
+        const fourHoursAfter = raidStartTime + (4 * 60 * 60 * 1000);
+        const panelTitle = nextRaidPanel.querySelector('.panel-title');
+        let isRaidActive = false;
+
+        if (now >= oneHourBefore && now < raidStartTime) {
+            if (panelTitle) panelTitle.textContent = 'Raid Starting Soon';
+            isRaidActive = true;
+        } else if (now >= raidStartTime && now < fourHoursAfter) {
+            if (panelTitle) panelTitle.textContent = 'Raid In Progress';
+            isRaidActive = true;
+        } else {
+            if (panelTitle) panelTitle.textContent = 'Next Upcoming Raid';
+        }
+
+        if (isRaidActive) {
+            const sparkWrapper = document.createElement('div');
+            sparkWrapper.className = 'spark-border';
+            sparkWrapper.appendChild(nextRaidCard);
+            nextRaidContainer.insertBefore(sparkWrapper, nextRaidContainer.firstChild);
+        } else {
+            nextRaidContainer.insertBefore(nextRaidCard, nextRaidContainer.firstChild);
+        }
+        nextRaidPanel.style.display = 'block';
+
+        // Update button links
+        const eventId = nextEvent.id || nextEvent.eventId || 'unknown';
+        if (eventId !== 'unknown') {
+            const btnMap = {
+                'next-raid-btn-roster': `/event/${eventId}/roster`,
+                'next-raid-btn-assignments': `/event/${eventId}/assignments`,
+                'next-raid-btn-my-assignments': `/event/${eventId}/assignments/myassignments`,
+                'next-raid-btn-raidlogs': `/event/${eventId}/raidlogs`,
+                'next-raid-btn-goldpot': `/event/${eventId}/gold`,
+                'next-raid-btn-loot': `/event/${eventId}/loot`
+            };
+            for (const [id, href] of Object.entries(btnMap)) {
+                const btn = document.getElementById(id);
+                if (btn) btn.href = href;
+            }
+
+            const signupBtn = document.getElementById('next-raid-btn-signup');
+            if (signupBtn && nextEvent.channelId) {
+                signupBtn.href = `https://discord.com/channels/777268886939893821/${nextEvent.channelId}`;
+            }
         }
     }
 
@@ -816,44 +1198,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 🎯 Discord API functions removed - we now get channel names directly from Raid-Helper API!
 
-    // Function to fetch and display events (now called directly)
-    async function fetchAndDisplayEvents() {
-        if (!eventsList) return; // Don't run if the container doesn't exist
-        
-        // Set loading state
-        setLoadingState(true);
-        eventsList.innerHTML = '<p>Fetching events...</p>';
-
-        try {
-            const response = await fetch('/api/events');
-            const data = await response.json();
-
-            // Events data received (debug log removed)
-
-            // Use the new helper function to display events
-            if (data && data.scheduledEvents) {
-                console.log('📅 Found scheduled events:', data.scheduledEvents.length);
-                displayEvents(data.scheduledEvents);
-                
-                // Update last refresh time (only if this was from a cache miss)
-                if (!lastRefreshTime || (Date.now() - lastRefreshTime) > 5000) {
-                    lastRefreshTime = Date.now();
-                    updateLastRefreshDisplay();
-                }
-            } else {
-                eventsList.innerHTML = '<p>No upcoming events found for this server.</p>';
-            }
-        } catch (error) {
-            eventsList.innerHTML = '<p>An error occurred while fetching events. Check console for details.</p>';
-            console.error('script.js: Client-side error during fetch operation:', error); // DEBUG LOG S11
-        } finally {
-            setLoadingState(false);
-        }
-    }
-
-    // Helper function to set loading state
-    function setLoadingState(isLoading) {
-        const refreshBtn = document.getElementById('refresh-events-btn');
+    /**
+     * Set loading state on the unified refresh button.
+     */
+    function setRaidsLoadingState(isLoading) {
+        const refreshBtn = document.getElementById('refresh-raids-btn');
         if (refreshBtn) {
             refreshBtn.disabled = isLoading;
             if (isLoading) {
@@ -864,120 +1213,73 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Helper function to set loading state for historic events
-    function setHistoricLoadingState(isLoading) {
-        const refreshBtn = document.getElementById('refresh-historic-events-btn');
-        if (refreshBtn) {
-            refreshBtn.disabled = isLoading;
-            if (isLoading) {
-                refreshBtn.classList.add('loading');
-            } else {
-                refreshBtn.classList.remove('loading');
-            }
-        }
-    }
-    
-    // Helper function to update last refresh display
-    function updateLastRefreshDisplay() {
-        const lastRefreshElement = document.getElementById('last-refresh');
-        if (lastRefreshElement && lastRefreshTime) {
-            const now = Date.now();
-            const diffMs = now - lastRefreshTime;
-            const diffMinutes = Math.floor(diffMs / (1000 * 60));
-            
-            if (diffMinutes < 1) {
-                lastRefreshElement.textContent = 'Last refresh: Just now';
-            } else if (diffMinutes === 1) {
-                lastRefreshElement.textContent = 'Last refresh: 1 min ago';
-            } else {
-                lastRefreshElement.textContent = `Last refresh: ${diffMinutes} min ago`;
-            }
-        }
-    }
+    /**
+     * Refresh both upcoming and completed raid data, then re-render the table.
+     */
+    async function refreshRaids() {
+        const refreshStatus = document.getElementById('refresh-raids-status');
 
-    // Helper function to update last historic refresh display
-    function updateLastHistoricRefreshDisplay() {
-        const lastRefreshElement = document.getElementById('last-historic-refresh');
-        if (lastRefreshElement && lastHistoricRefreshTime) {
-            const now = Date.now();
-            const diffMs = now - lastHistoricRefreshTime;
-            const diffMinutes = Math.floor(diffMs / (1000 * 60));
-            
-            if (diffMinutes < 1) {
-                lastRefreshElement.textContent = 'Last refresh: Just now';
-            } else if (diffMinutes === 1) {
-                lastRefreshElement.textContent = 'Last refresh: 1 min ago';
-            } else {
-                lastRefreshElement.textContent = `Last refresh: ${diffMinutes} min ago`;
-            }
-        }
-    }
-
-    // Refresh events functionality
-    async function refreshEvents() {
-        const refreshBtn = document.getElementById('refresh-events-btn');
-        const refreshStatus = document.getElementById('refresh-status');
-        
-        if (!refreshBtn || !refreshStatus) return;
-        
         try {
-            // Update UI to show loading state
-            setLoadingState(true);
-            refreshStatus.textContent = 'Refreshing events...';
-            refreshStatus.className = 'refresh-status';
-            
-            // Call the refresh endpoint
-            const response = await fetch('/api/events/refresh', {
-                method: 'POST'
-            });
-            
-            if (response.status === 401) {
+            setRaidsLoadingState(true);
+            if (refreshStatus) {
+                refreshStatus.textContent = 'Refreshing events...';
+                refreshStatus.className = 'refresh-status';
+            }
+
+            // Refresh both caches in parallel
+            const [upRes, histRes] = await Promise.all([
+                fetch('/api/events/refresh', { method: 'POST' }),
+                fetch('/api/events/historic/refresh', { method: 'POST' })
+            ]);
+
+            if (upRes.status === 401 || histRes.status === 401) {
                 throw new Error('Please sign in with Discord to refresh events');
             }
-            
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+            if (!upRes.ok || !histRes.ok) {
+                throw new Error('One or more refresh requests failed');
             }
-            
-            const data = await response.json();
-            
-            // Success - update the events display with fresh data
-            refreshStatus.textContent = 'Events refreshed successfully!';
-            refreshStatus.className = 'refresh-status success';
-            
-            // Update last refresh time
-            lastRefreshTime = Date.now();
-            updateLastRefreshDisplay();
-            
-            // Update the events list with the fresh data
-            if (data.scheduledEvents) {
-                displayEvents(data.scheduledEvents);
-            } else {
-                // Fallback: re-fetch events normally
-                fetchAndDisplayEvents();
+
+            if (refreshStatus) {
+                refreshStatus.textContent = 'Events refreshed successfully!';
+                refreshStatus.className = 'refresh-status success';
             }
-            
-            // Clear success message after 3 seconds
+
+            // Clear caches so fetchAndRenderRaidsTable fetches fresh
+            cachedUpcoming = null;
+            cachedHistoric = null;
+
+            // Re-render the entire table
+            await fetchAndRenderRaidsTable();
+
             setTimeout(() => {
-                refreshStatus.textContent = '';
-                refreshStatus.className = 'refresh-status';
+                if (refreshStatus) {
+                    refreshStatus.textContent = '';
+                    refreshStatus.className = 'refresh-status';
+                }
             }, 3000);
-            
         } catch (error) {
-            console.error('Error refreshing events:', error);
-            refreshStatus.textContent = 'Failed to refresh events. Please try again.';
-            refreshStatus.className = 'refresh-status error';
-            
-            // Clear error message after 5 seconds
+            console.error('Error refreshing raids:', error);
+            if (refreshStatus) {
+                refreshStatus.textContent = error.message || 'Failed to refresh. Please try again.';
+                refreshStatus.className = 'refresh-status error';
+            }
             setTimeout(() => {
-                refreshStatus.textContent = '';
-                refreshStatus.className = 'refresh-status';
+                if (refreshStatus) {
+                    refreshStatus.textContent = '';
+                    refreshStatus.className = 'refresh-status';
+                }
             }, 5000);
         } finally {
-            // Reset button state
-            setLoadingState(false);
+            setRaidsLoadingState(false);
         }
+    }
+
+    /**
+     * Show more completed raids by appending additional rows.
+     */
+    function showMoreRaids() {
+        currentHistoricDisplayLimit += historicEventsPerPage;
+        renderRaidsTable(allUpcomingEvents, allHistoricEvents, true);
     }
     
     // Helper function to create an event card element
@@ -1043,456 +1345,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         return eventDiv;
     }
 
-    // Helper function to display events (extracted from fetchAndDisplayEvents)
-    function displayEvents(scheduledEvents) {
-        if (!eventsList) return;
-        
-        const nextRaidPanel = document.getElementById('next-raid-panel');
-        const nextRaidContainer = document.getElementById('next-raid-container');
-        
-        if (scheduledEvents && Array.isArray(scheduledEvents) && scheduledEvents.length > 0) {
-            console.log('📅 Displaying events:', scheduledEvents.length);
-            eventsList.innerHTML = ''; // Clear previous content
-            
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            
-            const upcomingEvents = scheduledEvents.filter(event => {
-                try {
-                    if (typeof event.startTime !== 'number') {
-                        return false;
-                    }
-                    const eventStartDate = new Date(event.startTime * 1000);
-                    return eventStartDate >= today;
-                } catch (error) {
-                    return false;
-                }
-            });
-            
-            if (upcomingEvents.length === 0) {
-                eventsList.innerHTML = '<p>No upcoming events found for this server.</p>';
-                // Hide the next raid panel if no events
-                if (nextRaidPanel) nextRaidPanel.style.display = 'none';
-                return;
-            }
-            
-            upcomingEvents.sort((a, b) => a.startTime - b.startTime);
-            
-            // Display the first event in the "Next Upcoming Raid" panel
-            if (nextRaidPanel && nextRaidContainer) {
-                // Remove any existing event-panel card or spark-border wrapper (but keep the actions div)
-                const existingSparkBorder = nextRaidContainer.querySelector('.spark-border');
-                if (existingSparkBorder) existingSparkBorder.remove();
-                const existingCard = nextRaidContainer.querySelector('.event-panel');
-                if (existingCard) existingCard.remove();
-                
-                try {
-                    const nextEvent = upcomingEvents[0];
-                    const nextRaidCard = createEventCard(nextEvent, 0);
-                    
-                    // Calculate raid status based on time
-                    const now = Date.now();
-                    const raidStartTime = nextEvent.startTime * 1000; // Convert to milliseconds
-                    const oneHourBefore = raidStartTime - (60 * 60 * 1000);
-                    const fourHoursAfter = raidStartTime + (4 * 60 * 60 * 1000);
-                    
-                    // Update panel title based on raid status
-                    const panelTitle = nextRaidPanel.querySelector('.panel-title');
-                    let isRaidActive = false;
-                    
-                    if (now >= oneHourBefore && now < raidStartTime) {
-                        // 1 hour before raid starts
-                        if (panelTitle) panelTitle.textContent = 'Raid Starting Soon';
-                        isRaidActive = true;
-                    } else if (now >= raidStartTime && now < fourHoursAfter) {
-                        // Raid is in progress (up to 4 hours after start)
-                        if (panelTitle) panelTitle.textContent = 'Raid In Progress';
-                        isRaidActive = true;
-                    } else {
-                        // Default state
-                        if (panelTitle) panelTitle.textContent = 'Next Upcoming Raid';
-                    }
-                    
-                    // Wrap card in spark-border if raid is active
-                    if (isRaidActive) {
-                        const sparkWrapper = document.createElement('div');
-                        sparkWrapper.className = 'spark-border';
-                        sparkWrapper.appendChild(nextRaidCard);
-                        nextRaidContainer.insertBefore(sparkWrapper, nextRaidContainer.firstChild);
-                    } else {
-                        // Insert card at the beginning (before the actions div)
-                        nextRaidContainer.insertBefore(nextRaidCard, nextRaidContainer.firstChild);
-                    }
-                    nextRaidPanel.style.display = 'block';
-                    
-                    // Update button links with the event ID
-                    const eventId = nextEvent.id || nextEvent.eventId || 'unknown';
-                    if (eventId !== 'unknown') {
-                        const rosterBtn = document.getElementById('next-raid-btn-roster');
-                        const assignmentsBtn = document.getElementById('next-raid-btn-assignments');
-                        const myAssignmentsBtn = document.getElementById('next-raid-btn-my-assignments');
-                        const raidlogsBtn = document.getElementById('next-raid-btn-raidlogs');
-                        const goldpotBtn = document.getElementById('next-raid-btn-goldpot');
-                        const lootBtn = document.getElementById('next-raid-btn-loot');
-                        const signupBtn = document.getElementById('next-raid-btn-signup');
-                        
-                        if (rosterBtn) rosterBtn.href = `/event/${eventId}/roster`;
-                        if (assignmentsBtn) assignmentsBtn.href = `/event/${eventId}/assignments`;
-                        if (myAssignmentsBtn) myAssignmentsBtn.href = `/event/${eventId}/assignments/myassignments`;
-                        if (raidlogsBtn) raidlogsBtn.href = `/event/${eventId}/raidlogs`;
-                        if (goldpotBtn) goldpotBtn.href = `/event/${eventId}/gold`;
-                        if (lootBtn) lootBtn.href = `/event/${eventId}/loot`;
-                        
-                        // Set Discord channel link for signup button
-                        const channelId = nextEvent.channelId;
-                        if (signupBtn && channelId) {
-                            const discordGuildId = '777268886939893821';
-                            signupBtn.href = `https://discord.com/channels/${discordGuildId}/${channelId}`;
-                        }
-                    }
-                    
-                    console.log('📅 Displayed next upcoming raid in dedicated panel');
-                } catch (renderError) {
-                    console.error('Error rendering next raid card:', renderError);
-                    nextRaidPanel.style.display = 'none';
-                }
-            }
-            
-            // Display remaining events in the "Upcoming Raids" panel (skip the first one)
-            const remainingEvents = upcomingEvents.slice(1);
-            
-            if (remainingEvents.length === 0) {
-                eventsList.innerHTML = '<p>No additional upcoming events.</p>';
-            } else {
-                remainingEvents.forEach((event, index) => {
-                    try {
-                        const eventDiv = createEventCard(event, index + 1);
-                        eventsList.appendChild(eventDiv);
-                    } catch (renderError) {
-                        console.error('Error rendering event:', renderError);
-                    }
-                });
-            }
-        } else {
-            eventsList.innerHTML = '<p>No upcoming events found for this server.</p>';
-            // Hide the next raid panel if no events
-            if (nextRaidPanel) nextRaidPanel.style.display = 'none';
-        }
+    // Add event listener for Show More button
+    const showMoreRaidsBtn = document.getElementById('show-more-raids-btn');
+    if (showMoreRaidsBtn) {
+        showMoreRaidsBtn.addEventListener('click', showMoreRaids);
     }
 
-    // Function to fetch and display historic events
-    async function fetchAndDisplayHistoricEvents() {
-        if (!historicEventsList) return; // Don't run if the container doesn't exist
-        
-        // Set loading state
-        setHistoricLoadingState(true);
-        historicEventsList.innerHTML = '<p>Fetching completed events...</p>';
-
-        try {
-            const response = await fetch('/api/events/historic');
-            const data = await response.json();
-
-            // Use the helper function to display historic events
-            if (data && data.scheduledEvents) {
-                console.log('📅 Found completed events:', data.scheduledEvents.length);
-                displayHistoricEvents(data.scheduledEvents);
-                
-                // Update last refresh time (only if this was from a cache miss)
-                if (!lastHistoricRefreshTime || (Date.now() - lastHistoricRefreshTime) > 5000) {
-                    lastHistoricRefreshTime = Date.now();
-                    updateLastHistoricRefreshDisplay();
-                }
-            } else {
-                historicEventsList.innerHTML = '<p>No historic events found for this server.</p>';
-            }
-        } catch (error) {
-            historicEventsList.innerHTML = '<p>An error occurred while fetching completed events. Check console for details.</p>';
-            console.error('script.js: Client-side error during completed events fetch operation:', error);
-        } finally {
-            setHistoricLoadingState(false);
-        }
+    // Add event listener for Refresh Events button
+    const refreshRaidsBtn = document.getElementById('refresh-raids-btn');
+    if (refreshRaidsBtn) {
+        refreshRaidsBtn.addEventListener('click', refreshRaids);
     }
-
-            // Helper function to display completed events (similar to displayEvents but for past events)
-    function displayHistoricEvents(scheduledEvents) {
-        if (!historicEventsList) return;
-        
-        if (scheduledEvents && Array.isArray(scheduledEvents) && scheduledEvents.length > 0) {
-            console.log('📅 Displaying completed events:', scheduledEvents.length);
-            
-            const now = new Date();
-            const oneYearAgo = new Date(now.getTime() - (365 * 24 * 60 * 60 * 1000));
-            
-            const historicEvents = scheduledEvents.filter(event => {
-                try {
-                    if (typeof event.startTime !== 'number') {
-                        return false;
-                    }
-                    const eventStartDate = new Date(event.startTime * 1000);
-                    return eventStartDate < now && eventStartDate >= oneYearAgo;
-                } catch (error) {
-                    return false;
-                }
-            });
-            
-            if (historicEvents.length === 0) {
-                historicEventsList.innerHTML = '<p>No completed events found for the last year.</p>';
-                updateHistoricShowMoreButton(0, 0);
-                return;
-            }
-            
-            // Sort newest first for historic events and store all events
-            historicEvents.sort((a, b) => b.startTime - a.startTime);
-            allHistoricEvents = historicEvents;
-            
-            // Display only the limited number of events
-            renderHistoricEventsPage();
-        } else {
-            historicEventsList.innerHTML = '<p>No completed events found for the last year.</p>';
-            updateHistoricShowMoreButton(0, 0);
-        }
-    }
-    
-    // Function to render the current page of historic events
-    function renderHistoricEventsPage(appendMode = false) {
-        if (!historicEventsList) return;
-        
-        let eventsToShow, startIndex;
-        
-        if (appendMode) {
-            // In append mode, only render the new events
-            const previousLimit = currentHistoricDisplayLimit - historicEventsPerPage;
-            startIndex = previousLimit;
-            eventsToShow = allHistoricEvents.slice(previousLimit, currentHistoricDisplayLimit);
-            console.log(`📅 Appending ${eventsToShow.length} new completed events (${startIndex + 1}-${currentHistoricDisplayLimit} of ${allHistoricEvents.length})`);
-        } else {
-            // In replace mode, clear and render all events
-            historicEventsList.innerHTML = ''; // Clear previous content
-            startIndex = 0;
-            eventsToShow = allHistoricEvents.slice(0, currentHistoricDisplayLimit);
-            console.log(`📅 Rendering ${eventsToShow.length} of ${allHistoricEvents.length} completed events`);
-        }
-        
-        if (eventsToShow.length === 0) {
-            if (!appendMode) {
-                historicEventsList.innerHTML = '<p>No completed events found for the last year.</p>';
-            }
-            updateHistoricShowMoreButton(currentHistoricDisplayLimit, allHistoricEvents.length);
-            return;
-        }
-        
-        eventsToShow.forEach((event, index) => {
-                try {
-                    const eventDiv = document.createElement('a');
-                    eventDiv.classList.add('event-panel', 'historic');
-                    eventDiv.setAttribute('data-event-index', startIndex + index);
-                    
-                    const eventId = event.id || 'unknown';
-                    const eventTitle = event.title || 'Untitled Event';
-                    
-                    // Apply channel-specific background if available
-                    if (event.channelId) {
-                        applyChannelBackground(eventDiv, event.channelId, true); // true = grayscale (historic)
-                    }
-
-                    if (eventId !== 'unknown') {
-                        eventDiv.href = `/event/${eventId}/roster`;
-                    }
-
-                    const eventStartDate = new Date(event.startTime * 1000);
-                    const cetTimeZone = 'Europe/Copenhagen';
-
-                    // For completed events, get just the date in DD/MM/YYYY format
-                    const optionsDate = { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: cetTimeZone };
-                    const formattedDate = eventStartDate.toLocaleDateString('en-GB', optionsDate);
-                    
-                    // Get and format channel name
-                    let channelName = 'Unknown Channel';
-                    if (event.channelName && 
-                        event.channelName.trim() && 
-                        event.channelName !== event.channelId &&
-                        !event.channelName.match(/^\d+$/)) {
-                        channelName = event.channelName;
-                    } else if (event.channelId) {
-                        channelName = `channel-${event.channelId.slice(-4)}`;
-                    }
-                    
-                    // Clean and format channel name: remove emojis, replace dashes with spaces, capitalize words
-                    const cleanChannelName = channelName
-                        .replace(/[^\w\s-]/g, '') // Remove emojis and special chars except dashes and spaces
-                        .replace(/-/g, ' ') // Replace dashes with spaces
-                        .trim()
-                        .split(' ')
-                        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-                        .join(' ');
-                    
-                    // Create the combined headline: "Channel Name - DD/MM/YYYY"
-                    const combinedHeadline = `${cleanChannelName} - ${formattedDate}`;
-
-                    eventDiv.innerHTML = `
-                        <h3>${combinedHeadline}</h3>
-                        <div class="raid-duration" id="duration-${eventId}">
-                            <p><i class="far fa-clock event-icon"></i> Loading...</p>
-                        </div>
-                        <div class="gold-pot" id="goldpot-${eventId}">
-                            <p><i class="fas fa-coins event-icon"></i> Gold pot: Loading...</p>
-                        </div>
-                        <div class="biggest-item" id="biggestitem-${eventId}">
-                            <p><i class="fas fa-gem event-icon"></i> Loading...</p>
-                        </div>
-                    `;
-                    historicEventsList.appendChild(eventDiv);
-                    
-                    // Fetch scheduled duration, gold pot, and biggest item for this event with staggered delay
-                    const delay = (startIndex + index) * 300; // 300ms delay between each request  
-                    fetchEventDuration(eventId, delay);
-                    fetchEventGoldPot(eventId, delay + 100); // Small additional delay
-                    fetchEventBiggestItem(eventId, delay + 200); // Small additional delay
-
-                    // Update link target to raidlogs if published
-                    fetchPublishedStatus(eventId, delay + 50).then(isPublished => {
-                        if (isPublished) {
-                            eventDiv.href = `/event/${eventId}/raidlogs`;
-                        }
-                    });
-                } catch (renderError) {
-                    console.error('Error rendering completed event:', renderError);
-                }
-            });
-        
-        // Update the show more button visibility and count display
-        updateHistoricShowMoreButton(currentHistoricDisplayLimit, allHistoricEvents.length);
-    }
-
-    // Refresh historic events functionality
-    async function refreshHistoricEvents() {
-        const refreshBtn = document.getElementById('refresh-historic-events-btn');
-        const refreshStatus = document.getElementById('refresh-historic-status');
-        
-        if (!refreshBtn || !refreshStatus) return;
-        
-        try {
-            // Reset pagination limit when refreshing
-            currentHistoricDisplayLimit = historicEventsPerPage;
-            
-            // Update UI to show loading state
-            setHistoricLoadingState(true);
-            refreshStatus.textContent = 'Refreshing completed events...';
-            refreshStatus.className = 'refresh-status';
-            
-            // Call the refresh endpoint
-            const response = await fetch('/api/events/historic/refresh', {
-                method: 'POST'
-            });
-            
-            if (response.status === 401) {
-                throw new Error('Please sign in with Discord to refresh completed events');
-            }
-            
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
-            }
-            
-            const data = await response.json();
-            
-            // Success - update the events display with fresh data
-            refreshStatus.textContent = 'Completed events refreshed successfully!';
-            refreshStatus.className = 'refresh-status success';
-            
-            // Update last refresh time
-            lastHistoricRefreshTime = Date.now();
-            updateLastHistoricRefreshDisplay();
-            
-            // Update the events list with the fresh data
-            if (data.scheduledEvents) {
-                displayHistoricEvents(data.scheduledEvents);
-            } else {
-                // Fallback: fetch fresh data if the response doesn't include it
-                await fetchAndDisplayHistoricEvents();
-            }
-            
-            // Clear success message after a few seconds
-            setTimeout(() => {
-                if (refreshStatus) {
-                    refreshStatus.textContent = '';
-                    refreshStatus.className = 'refresh-status';
-                }
-            }, 3000);
-            
-        } catch (error) {
-            // Error handling
-            refreshStatus.textContent = error.message || 'Failed to refresh completed events';
-            refreshStatus.className = 'refresh-status error';
-            console.error('Error refreshing completed events:', error);
-            
-            // Clear error message after a few seconds
-            setTimeout(() => {
-                if (refreshStatus) {
-                    refreshStatus.textContent = '';
-                    refreshStatus.className = 'refresh-status';
-                }
-            }, 5000);
-        } finally {
-            setHistoricLoadingState(false);
-        }
-    }
-
-    // Function to update the show more button visibility and events count display
-    function updateHistoricShowMoreButton(displayed, total) {
-        const showMoreBtn = document.getElementById('show-more-historic-btn');
-        const countDisplay = document.getElementById('historic-events-count');
-        
-        if (showMoreBtn && countDisplay) {
-            if (displayed < total) {
-                showMoreBtn.style.display = 'inline-flex';
-                countDisplay.style.display = 'block';
-                countDisplay.textContent = `Showing ${displayed} of ${total} completed raids (1 year)`;
-            } else {
-                showMoreBtn.style.display = 'none';
-                if (total > historicEventsPerPage) {
-                    countDisplay.style.display = 'block';
-                    countDisplay.textContent = `Showing all ${total} completed raids (1 year)`;
-                } else {
-                    countDisplay.style.display = 'none';
-                }
-            }
-        }
-    }
-    
-    // Function to show more historic events
-    function showMoreHistoricEvents() {
-        currentHistoricDisplayLimit += historicEventsPerPage;
-        renderHistoricEventsPage(true); // true = append mode
-    }
-    
-    // Add event listener for show more button
-    const showMoreHistoricBtn = document.getElementById('show-more-historic-btn');
-    if (showMoreHistoricBtn) {
-        showMoreHistoricBtn.addEventListener('click', showMoreHistoricEvents);
-    }
-
-    // Add event listener for refresh button (no nested DOMContentLoaded needed)
-    const refreshBtn = document.getElementById('refresh-events-btn');
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', refreshEvents);
-    }
-
-    // Add event listener for historic refresh button
-    const historicRefreshBtn = document.getElementById('refresh-historic-events-btn');
-    if (historicRefreshBtn) {
-        historicRefreshBtn.addEventListener('click', refreshHistoricEvents);
-    }
-
-    // Update last refresh timestamp every minute
-    setInterval(() => {
-        if (lastRefreshTime) {
-            updateLastRefreshDisplay();
-        }
-        if (lastHistoricRefreshTime) {
-            updateLastHistoricRefreshDisplay();
-        }
-    }, 60000); // Update every minute
 
     // Function to apply effects to all existing event panels on page load
     function applyEffectsToAllPanels() {

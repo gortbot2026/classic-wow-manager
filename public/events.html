@@ -111,40 +111,41 @@
                 </div>
             </div>
 
-            <!-- Column 1: Upcoming Raids -->
-            <div class="panel">
-                <h1 class="panel-title">Upcoming Raids</h1>
-                <div id="events-list" class="events-container">
-                    <!-- Events will be dynamically inserted here -->
+            <!-- Unified Raids Table (spans 2 columns) -->
+            <div class="panel panel--span-2" id="raids-panel">
+                <h1 class="panel-title">Raids</h1>
+                <div id="raids-table-wrapper" class="raids-table-wrapper">
+                    <table class="raids-table" id="raids-table">
+                        <thead>
+                            <tr>
+                                <th class="raids-col-img"></th>
+                                <th class="raids-col-name">Name</th>
+                                <th class="raids-col-day">Day</th>
+                                <th class="raids-col-time">Time</th>
+                                <th class="raids-col-signed">Signed</th>
+                                <th class="raids-col-channel">Channel</th>
+                                <th class="raids-col-gold">Gold Pot</th>
+                                <th class="raids-col-item">Top Item</th>
+                            </tr>
+                        </thead>
+                        <tbody id="raids-tbody">
+                            <!-- Rows dynamically inserted by script.js -->
+                        </tbody>
+                    </table>
                 </div>
-                <div class="refresh-section">
-                    <button id="refresh-events-btn" class="refresh-button">
-                        <i class="fas fa-sync-alt"></i>
-                        Refresh Events
-                    </button>
-                    <div id="refresh-status" class="refresh-status"></div>
-                    <div id="last-refresh" class="last-refresh">Last refresh: Never</div>
-                </div>
-            </div>
-
-            <!-- Column 2: Completed Raids -->
-            <div class="panel">
-                <h1 class="panel-title">Completed Raids</h1>
-                <div id="historic-events-list" class="events-container">
-                    <!-- Completed events will be dynamically inserted here -->
-                </div>
-                <div class="refresh-section">
-                    <button id="refresh-historic-events-btn" class="refresh-button">
-                        <i class="fas fa-sync-alt"></i>
-                        Refresh Events
-                    </button>
-                    <button id="show-more-historic-btn" class="refresh-button" style="display: none;">
-                        <i class="fas fa-plus"></i>
-                        Show more
-                    </button>
-                    <div id="refresh-historic-status" class="refresh-status"></div>
-                    <div id="last-historic-refresh" class="last-refresh">Last refresh: Never</div>
-                    <div id="historic-events-count" class="events-count" style="display: none;"></div>
+                <div class="raids-footer">
+                    <div id="raids-count" class="raids-count"></div>
+                    <div class="raids-buttons">
+                        <button id="show-more-raids-btn" class="refresh-button" style="display: none;">
+                            <i class="fas fa-plus"></i>
+                            Show More
+                        </button>
+                        <button id="refresh-raids-btn" class="refresh-button">
+                            <i class="fas fa-sync-alt"></i>
+                            Refresh Events
+                        </button>
+                    </div>
+                    <div id="refresh-raids-status" class="refresh-status"></div>
                 </div>
             </div>
 

@@ -1437,6 +1437,159 @@ body.faq .content { background: transparent; box-shadow: none; }
 .itemlog-raid-title { font-weight: 600; color: #e8e8e8; opacity: 0.9; padding: 4px 2px; }
 .itemlog-raid-items { display: grid; grid-template-columns: 1fr; gap: 12px; }
 
+/* ──────────────────────────────────────────────
+   Unified Raids Table
+   ────────────────────────────────────────────── */
+
+.raids-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.raids-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.raids-table thead th {
+    background: rgba(255, 255, 255, 0.04);
+    color: #9ca3af;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid #1f2937;
+    white-space: nowrap;
+}
+
+.raids-table tbody td {
+    padding: 8px 10px;
+    vertical-align: middle;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: #e5e7eb;
+    white-space: nowrap;
+}
+
+.raids-table tbody tr {
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.raids-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+/* Thumbnail image in the first column */
+.raid-thumbnail {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    object-fit: cover;
+    display: block;
+}
+
+/* Row variants */
+.raid-row--upcoming td {
+    color: #e5e7eb;
+}
+
+.raid-row--completed td {
+    opacity: 0.80;
+}
+
+.raid-row--completed .raid-thumbnail {
+    filter: grayscale(100%);
+}
+
+.raid-row--today {
+    border-left: 3px solid #60a5fa;
+}
+
+/* Name column link */
+.raids-table .raid-name-link {
+    color: #e5e7eb;
+    text-decoration: none;
+}
+
+.raids-table .raid-name-link:hover {
+    color: #93c5fd;
+    text-decoration: underline;
+}
+
+/* Gold & item colors */
+.raid-gold {
+    color: #FFD700;
+}
+
+.raid-item-name {
+    color: #a335ee;
+}
+
+.raid-item-icon {
+    width: 16px;
+    height: 16px;
+    vertical-align: middle;
+    margin-right: 4px;
+    border-radius: 3px;
+}
+
+/* Footer area with buttons and count */
+.raids-footer {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #1f2937;
+    text-align: center;
+}
+
+.raids-count {
+    font-size: 12px;
+    color: #9ca3af;
+    margin-bottom: 10px;
+}
+
+.raids-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* Loading spinner for table cells */
+.raid-cell-loading {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+/* Responsive: hide less-critical columns on mobile */
+@media (max-width: 768px) {
+    .raids-col-channel,
+    .raids-table td:nth-child(6) {
+        display: none;
+    }
+    .raids-col-gold,
+    .raids-table td:nth-child(7) {
+        display: none;
+    }
+    .raids-col-item,
+    .raids-table td:nth-child(8) {
+        display: none;
+    }
+    .raids-table {
+        font-size: 13px;
+    }
+    .raids-table thead th,
+    .raids-table tbody td {
+        padding: 6px 8px;
+    }
+    .raid-thumbnail {
+        width: 32px;
+        height: 32px;
+    }
+}
+
 @media (max-width: 1400px) {
     .main-content-grid {
         grid-template-columns: 1fr 1fr; /* 2 columns on medium screens */
