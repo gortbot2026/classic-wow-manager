@@ -438,6 +438,12 @@ function createPersonaBot(options = {}) {
    * @param {import('discord.js').Message} message - The incoming Discord message
    */
   async function handleManagementChannelMessage(message) {
+    // Ignore @everyone and @here pings — these are announcements, not questions for Maya
+    if (message.mentions.everyone) {
+      console.log('[persona-bot] Management channel: ignoring @everyone/@here message');
+      return;
+    }
+
     // Check generation lock — prevent concurrent LLM calls for the management channel
     if (managementChannelLock) {
       console.log('[persona-bot] Management channel: generation locked, skipping');
