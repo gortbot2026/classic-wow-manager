@@ -5878,21 +5878,8 @@ class RaidLogsManager {
         const section = container.closest('.rankings-section');
         section.classList.add('sunder');
 
-        // Exclude tanks based on primary roles if available
+        // All players included — only Skull+Cross tanks are excluded upstream via assignments
         let eligiblePlayers = players;
-        if (this.primaryRoles) {
-            console.log(`⚔️ [SUNDER] Filtering ${players.length} players by primary role`);
-            eligiblePlayers = players.filter(player => {
-                const nm = String(player.character_name || '').toLowerCase();
-                const role = String(this.primaryRoles[nm] || '').toLowerCase();
-                const isTank = role === 'tank';
-                if (isTank) {
-                    console.log(`🚫 [SUNDER] Excluding ${player.character_name} (primary role: ${role})`);
-                }
-                return !isTank;
-            });
-            console.log(`✅ [SUNDER] Players after filtering: ${eligiblePlayers.length}`);
-        }
 
         // Compute average sunders among eligible and include zero-point rows
         if (!eligiblePlayers.length) {
@@ -5913,13 +5900,17 @@ class RaidLogsManager {
         const computePts = (count) => {
             if (!(avgCount > 0)) return 0;
             const pct = (Number(count)||0) / avgCount * 100;
-            if (pct < 25) return -20;
-            if (pct < 50) return -15;
-            if (pct < 75) return -10;
-            if (pct < 90) return -5;
-            if (pct <= 109) return 0;
-            if (pct <= 124) return 5;
-            return 10;
+            const raw = (() => {
+                if (pct < 25) return -20;
+                if (pct < 50) return -15;
+                if (pct < 75) return -10;
+                if (pct < 90) return -5;
+                if (pct <= 109) return 0;
+                if (pct <= 124) return 5;
+                return 10;
+            })();
+            // Minimum threshold: 50+ sunders can never be deducted
+            return (Number(count) >= 50 && raw < 0) ? 0 : raw;
         };
 
         container.innerHTML = eligiblePlayers.map((player, index) => {
