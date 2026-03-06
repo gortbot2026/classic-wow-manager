@@ -916,7 +916,7 @@ async function fetchHistoricalAttendance(pool, messageContent) {
       .sort((a, b) => b[1].dates.length - a[1].dates.length)
       .map(([name, d]) => `- ${name} (${d.cls}): ${d.dates.length} raid${d.dates.length !== 1 ? 's' : ''}, last: ${d.dates[0]}`);
 
-    const result = `**Historical Attendance — ${classFilter.charAt(0).toUpperCase() + classFilter.slice(1)}s (last ${months} months, ${Object.keys(byPlayer).length} unique players, ${res.rows.length} appearances):**\n${lines.join('\n')}`;
+    const result = `**Historical Attendance - ${classFilter.charAt(0).toUpperCase() + classFilter.slice(1)}s (last ${months} months, ${Object.keys(byPlayer).length} unique players, ${res.rows.length} appearances):**\n${lines.join('\n')}`;
     cacheSet(cacheKey, result);
     return result;
   } catch (err) {
@@ -1356,7 +1356,7 @@ async function fetchCrossRaidStats(pool, stat, months, limit) {
     if (res.rows.length === 0) return `No ${label} data found in the last ${months} month(s).`;
 
     const lines = res.rows.map((r, i) =>
-      `${i + 1}. ${r.character_name} (${r.character_class || '?'}) — ${Number(r.amount).toLocaleString()} ${label} on ${r.raid_date}`
+      `${i + 1}. ${r.character_name} (${r.character_class || '?'}) - ${Number(r.amount).toLocaleString()} ${label} on ${r.raid_date}`
     );
     const result = `**Top ${label} in a single raid (last ${months} month${months !== 1 ? 's' : ''}):**\n${lines.join('\n')}`;
     cacheSet(cacheKey, result);

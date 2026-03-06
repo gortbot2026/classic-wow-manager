@@ -700,6 +700,20 @@ migratePlayerConfirmedLogsTable();
 
     // Initialize Maya persona bot tables
     await initializeMayaTables();
+
+    // Initialize WCL ingest tables (including wcl_event_summaries) at startup
+    // Required before auto-backfill runs and for admin backfill endpoint
+    try {
+      const wclClient = await pool.connect();
+      try {
+        await ensureWclIngestTables(wclClient);
+        console.log('[startup] WCL ingest tables initialized');
+      } finally {
+        wclClient.release();
+      }
+    } catch (err) {
+      console.error('[startup] Failed to initialize WCL ingest tables:', err.message);
+    }
   })
   .catch(err => {
     console.error('Error connecting to PostgreSQL database:', err.stack);
