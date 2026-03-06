@@ -1521,11 +1521,11 @@ body.faq .content { background: transparent; box-shadow: none; }
 
 /* Gold & item colors */
 .raid-gold {
-    color: #FFD700;
+    color: #FFD700 !important;
 }
 
 .raid-item-name {
-    color: #a335ee;
+    color: #a335ee !important;
 }
 
 .raid-item-icon {
