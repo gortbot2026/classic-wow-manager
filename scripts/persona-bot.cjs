@@ -1796,7 +1796,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
           // 7 second delay before DM — feels more human, like Maya read the post first
           await new Promise(resolve => setTimeout(resolve, 7000));
 
-          await storeMessage(conversationId, 'maya', opening, generated ? modelUsed : null);
+          await storeMessage(conversationId, 'maya', opening, modelUsed);
           await sendDM(discordId, opening);
 
           // Emit real-time update for admin UI
