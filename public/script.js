@@ -596,9 +596,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         tr.appendChild(tdSigned);
 
         // 6. Channel
-        const tdChannel = document.createElement('td');
-        tdChannel.textContent = '#' + cleanChannelName(event.channelName, event.channelId).toLowerCase().replace(/\s+/g, '-');
-        tr.appendChild(tdChannel);
+
 
         // 7. Gold Pot
         const tdGold = document.createElement('td');
