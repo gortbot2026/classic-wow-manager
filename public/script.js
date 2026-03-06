@@ -457,7 +457,16 @@ document.addEventListener('DOMContentLoaded', async () => {
      */
     function formatRaidDay(epochSeconds) {
         if (!epochSeconds) return '';
-        const d = new Date(epochSeconds * 1000);
+        const now = Date.now();
+        const startMs = epochSeconds * 1000;
+        const diffMs = startMs - now;
+        // Less than 1 hour until start (or already started but within last hour)
+        if (diffMs >= 0 && diffMs < 60 * 60 * 1000) return 'Now';
+        // Same calendar day in Copenhagen timezone
+        const d = new Date(startMs);
+        const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Copenhagen' });
+        const raidStr = d.toLocaleDateString('en-CA', { timeZone: 'Europe/Copenhagen' });
+        if (raidStr === todayStr) return 'Today';
         return d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Copenhagen' });
     }
 
