@@ -11120,12 +11120,13 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
          WHERE pv.voter_discord_id = $1
          ORDER BY pv.voted_at DESC`, [discordId]
       ),
-      // Raid history: confirmed logs + roster overrides + event cache + log data
+      // Raid history: drive off roster_overrides (in_raid=true) — truth of who was actually in raid
+      // player_confirmed_logs was the old driver but excluded players who never confirmed assignments
       client.query(
         `SELECT
-           pcl.raid_id AS event_id,
-           pcl.character_name AS character_used,
-           pcl.character_class,
+           ro.event_id,
+           ro.assigned_char_name AS character_used,
+           ro.assigned_char_class AS character_class,
            pcl.confirmed_at,
            ro.original_signup_name,
            ro.party_id,
@@ -11137,12 +11138,14 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
            ld.log_id,
            ld.role_detected,
            rhec.event_data
-         FROM player_confirmed_logs pcl
-         LEFT JOIN roster_overrides ro ON ro.event_id = pcl.raid_id AND ro.discord_user_id = pcl.discord_id
-         LEFT JOIN log_data ld ON ld.event_id = pcl.raid_id AND ld.discord_id = pcl.discord_id
-         LEFT JOIN raid_helper_events_cache rhec ON rhec.event_id = pcl.raid_id
-         WHERE pcl.discord_id = $1
-         ORDER BY pcl.confirmed_at DESC`, [discordId]
+         FROM roster_overrides ro
+         LEFT JOIN player_confirmed_logs pcl ON pcl.raid_id = ro.event_id AND pcl.discord_id = ro.discord_user_id
+         LEFT JOIN log_data ld ON ld.event_id = ro.event_id AND ld.discord_id = ro.discord_user_id
+         LEFT JOIN raid_helper_events_cache rhec ON rhec.event_id = ro.event_id
+         WHERE ro.discord_user_id = $1
+           AND ro.in_raid = true
+           AND ro.is_placeholder = false
+         ORDER BY ro.event_id DESC`, [discordId]
       ),
       // World buffs (for player's characters) — include amount_summary/score_summary for column headers
       client.query(
