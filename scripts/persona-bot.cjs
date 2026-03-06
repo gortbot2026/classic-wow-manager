@@ -223,6 +223,13 @@ function createPersonaBot(options = {}) {
    */
   const MAYA_MANAGEMENT_CHANNEL_ID = process.env.MAYA_MANAGEMENT_CHANNEL_ID;
 
+  /**
+   * Channel ID of the gear-check Discord channel Maya should watch for applications.
+   * If not set, gear-check watching is silently disabled.
+   * @type {string|undefined}
+   */
+  const MAYA_GEAR_CHECK_CHANNEL_ID = process.env.MAYA_GEAR_CHECK_CHANNEL_ID;
+
   if (!token) {
     console.log('[persona-bot] Persona bot disabled (missing PERSONA_BOT_TOKEN)');
     return {
@@ -1556,6 +1563,294 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
   }
 
   /**
+   * Lock to prevent concurrent gear-check processing.
+   * @type {boolean}
+   */
+  let gearCheckLock = false;
+
+  /**
+   * Handles a message posted in the gear-check channel.
+   * Classifies the message (new application vs. question/chat), responds in-channel
+   * with a personalised greeting, auto-creates a discord_users row, optionally
+   * analyses attached images via Anthropic vision, and initiates a DM screening
+   * conversation for new applicants.
+   *
+   * @param {import('discord.js').Message} message - The Discord message from the gear-check channel
+   */
+  async function handleGearCheckPost(message) {
+    if (gearCheckLock) {
+      console.warn('[persona-bot] Gear-check processing locked, skipping message from', message.author.username);
+      return;
+    }
+    gearCheckLock = true;
+
+    try {
+      const discordId = message.author.id;
+      const username = message.author.username;
+      const displayName = message.author.displayName || username;
+      const postContent = message.content || '';
+
+      // ── Step 1: LLM Classification ──
+      let classification = 'NEW_APPLICATION'; // default if classification fails
+      try {
+        const classificationPrompt =
+          'You are a message classifier for a World of Warcraft guild gear-check channel. ' +
+          'Classify the following message as either NEW_APPLICATION or QUESTION_OR_CHAT.\n\n' +
+          'NEW_APPLICATION: The user is posting about their character, gear, experience, class, spec, or expressing interest in joining raids/the guild. ' +
+          'Any message that looks like a player introducing themselves or their character counts as NEW_APPLICATION.\n\n' +
+          'QUESTION_OR_CHAT: The user is asking a question, making casual conversation, replying to someone, or posting something unrelated to applying.\n\n' +
+          'Respond with ONLY one word: NEW_APPLICATION or QUESTION_OR_CHAT';
+
+        const classificationMessages = [
+          { role: 'user', content: `Message from ${username}:\n${postContent}` }
+        ];
+
+        const classificationResult = await generateResponse(classificationPrompt, classificationMessages, 'claude-haiku-4-5');
+        if (classificationResult && classificationResult.trim().includes('QUESTION_OR_CHAT')) {
+          classification = 'QUESTION_OR_CHAT';
+        }
+      } catch (classErr) {
+        console.error('[persona-bot] Gear-check classification failed, defaulting to NEW_APPLICATION:', classErr.message || classErr);
+      }
+
+      // ── Step 2a: QUESTION_OR_CHAT path ──
+      if (classification === 'QUESTION_OR_CHAT') {
+        try {
+          const redirectPrompt =
+            'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
+            'A user posted a question or casual message in the gear-check channel. ' +
+            'Generate a brief, warm reply (1-2 sentences) that @mentions them and politely suggests they DM you instead for questions. ' +
+            'Keep it friendly and casual. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
+
+          const redirectMessages = [
+            { role: 'user', content: `Discord user: ${displayName} (${username})\nTheir message: ${postContent}\n\nGenerate a polite redirect reply. Use <@${discordId}> to mention them.` }
+          ];
+
+          let redirectReply = await generateResponse(redirectPrompt, redirectMessages, 'claude-haiku-4-5');
+          redirectReply = sanitizeResponse(redirectReply);
+          redirectReply = sanitizeForDiscord(redirectReply);
+          await message.channel.send(redirectReply);
+        } catch (redirectErr) {
+          console.error('[persona-bot] Gear-check redirect generation failed:', redirectErr.message || redirectErr);
+          await message.channel.send(`Hey <@${discordId}>, for questions feel free to DM me directly! This channel is mainly for gear-check applications.`);
+        }
+        return;
+      }
+
+      // ── Step 2b: Returning applicant check ──
+      try {
+        const existingConv = await pool.query(
+          `SELECT id FROM bot_conversations WHERE discord_id = $1 AND trigger_type = 'gear_check' LIMIT 1`,
+          [discordId]
+        );
+
+        if (existingConv.rows.length > 0) {
+          try {
+            const welcomeBackPrompt =
+              'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
+              'This player has already applied via the gear-check channel before. They just posted again. ' +
+              'Generate a brief, warm "welcome back" acknowledgement (1-2 sentences) that @mentions them and references their new post. ' +
+              'Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
+
+            const welcomeBackMessages = [
+              { role: 'user', content: `Discord user: ${displayName} (${username})\nTheir new post: ${postContent}\n\nGenerate a welcome-back reply. Use <@${discordId}> to mention them.` }
+            ];
+
+            let welcomeBackReply = await generateResponse(welcomeBackPrompt, welcomeBackMessages, 'claude-haiku-4-5');
+            welcomeBackReply = sanitizeResponse(welcomeBackReply);
+            welcomeBackReply = sanitizeForDiscord(welcomeBackReply);
+            await message.channel.send(welcomeBackReply);
+          } catch (wbErr) {
+            console.error('[persona-bot] Gear-check welcome-back generation failed:', wbErr.message || wbErr);
+            await message.channel.send(`Hey <@${discordId}>, welcome back! I see you have posted here before. If anything has changed, feel free to DM me!`);
+          }
+          return;
+        }
+      } catch (dbErr) {
+        console.error('[persona-bot] Gear-check returning applicant check failed:', dbErr.message || dbErr);
+        // Continue as new application
+      }
+
+      // ── Step 3: Auto-create discord_users row ──
+      try {
+        await pool.query(
+          `INSERT INTO discord_users (discord_id, username, created_at, updated_at)
+           VALUES ($1, $2, NOW(), NOW())
+           ON CONFLICT (discord_id) DO UPDATE SET username = EXCLUDED.username, updated_at = NOW()`,
+          [discordId, username]
+        );
+      } catch (upsertErr) {
+        console.error('[persona-bot] Gear-check discord_users upsert failed:', upsertErr.message || upsertErr);
+        // Non-fatal — continue
+      }
+
+      // ── Step 4: Image analysis (optional, first image only) ──
+      let imageVisionBlock = null;
+      try {
+        const imageAttachment = message.attachments.find(att => att.contentType && att.contentType.startsWith('image/'));
+        if (imageAttachment) {
+          const imageRes = await fetch(imageAttachment.url);
+          if (imageRes.ok) {
+            const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
+            const base64Data = imageBuffer.toString('base64');
+            const mediaType = imageAttachment.contentType || 'image/png';
+
+            imageVisionBlock = {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mediaType,
+                data: base64Data
+              }
+            };
+          } else {
+            console.warn('[persona-bot] Gear-check image fetch failed with status:', imageRes.status);
+          }
+        }
+      } catch (imgErr) {
+        console.warn('[persona-bot] Gear-check image analysis failed (non-fatal):', imgErr.message || imgErr);
+      }
+
+      // ── Step 5: Generate personalised channel response ──
+      let channelResponse = null;
+      try {
+        const persona = await getPersona();
+        const responseModel = (persona && persona.model) || 'claude-sonnet-4-20250514';
+
+        const channelSystemPrompt =
+          'You are Maya, a warm and witty guild assistant for 1Principles, a Classic WoW GDKP guild. ' +
+          'A new player just posted in the gear-check channel. Generate a personalised welcome greeting (2-4 sentences). ' +
+          'Reference specifics from their post (class, spec, experience, gear, etc.). ' +
+          'Mention that you will send them a DM shortly with a few follow-up questions. ' +
+          'Use <@' + discordId + '> to @mention them at the start. ' +
+          'Be warm, friendly, and enthusiastic but genuine. Keep it concise. ' +
+          'Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
+
+        // Build content blocks for the user message
+        const contentBlocks = [];
+        if (imageVisionBlock) {
+          contentBlocks.push(imageVisionBlock);
+        }
+        contentBlocks.push({
+          type: 'text',
+          text: `Discord user: ${displayName} (${username})\nTheir gear-check post:\n${postContent}` +
+            (imageVisionBlock ? '\n\nAn image is attached. Comment on what you see in the image (gear, character, UI, etc.) in your greeting.' : '')
+        });
+
+        const channelMessages = [{ role: 'user', content: contentBlocks }];
+        const rawResponse = await generateResponse(channelSystemPrompt, channelMessages, responseModel);
+        channelResponse = sanitizeForDiscord(sanitizeResponse(rawResponse));
+      } catch (genErr) {
+        console.error('[persona-bot] Gear-check channel response generation failed:', genErr.message || genErr);
+      }
+
+      // Fallback if generation failed
+      if (!channelResponse || channelResponse.trim().length === 0) {
+        channelResponse = `Hey <@${discordId}>, welcome to the gear-check channel! I will send you a DM shortly with a few quick questions.`;
+      }
+
+      // ── Step 6: Typing indicator + send ──
+      try {
+        await message.channel.sendTyping();
+      } catch (_) { /* non-fatal */ }
+      await new Promise(resolve => setTimeout(resolve, 4000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await message.channel.send(channelResponse);
+
+      // ── Step 7: Start DM conversation ──
+      let conversationId = null;
+      try {
+        // Find gear_check template
+        const tplRes = await pool.query(
+          `SELECT id, name, opening_message, agent_instructions, model_override
+           FROM bot_templates WHERE trigger_type = 'gear_check' LIMIT 1`
+        );
+
+        if (tplRes.rows.length === 0) {
+          console.warn('[persona-bot] No gear_check template found, skipping DM');
+        } else {
+          const template = tplRes.rows[0];
+          conversationId = crypto.randomUUID();
+
+          await pool.query(
+            `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, trigger_type)
+             VALUES ($1, $2, $3, 'active', 'template', $4, 'gear_check')`,
+            [conversationId, discordId, username, template.id]
+          );
+
+          // Generate opening DM via existing helper
+          const { generated, fallback, modelUsed } = await generateOpeningMessage(
+            pool, template, discordId, null, conversationId
+          );
+          let opening = generated || fallback;
+
+          // Append 1principles.net mention if not already present
+          if (!opening.includes('1principles.net')) {
+            opening += '\n\nYou can also check out our guild page at https://1principles.net';
+          }
+
+          opening = sanitizeForDiscord(sanitizeResponse(opening));
+
+          await storeMessage(conversationId, 'maya', opening, generated ? modelUsed : null);
+          await sendDM(discordId, opening);
+
+          // Emit real-time update for admin UI
+          emitToAdmin('maya:conversationUpdate', {
+            conversationId,
+            discordId,
+            playerName: username,
+            status: 'active',
+            triggerType: 'gear_check'
+          });
+        }
+      } catch (dmErr) {
+        console.error('[persona-bot] Gear-check DM send failed:', dmErr.message || dmErr);
+        // Channel response already sent, so this is non-fatal
+      }
+
+      // ── Step 8: Store initial context note ──
+      try {
+        if (conversationId) {
+          let noteSummary = postContent;
+          // Generate structured summary via Haiku
+          try {
+            const summaryPrompt =
+              'Extract a brief structured summary from this WoW gear-check post. ' +
+              'Include class, spec, experience level, and budget/gold if mentioned. ' +
+              'Keep it to 1-2 lines. If information is not mentioned, omit it. ' +
+              'Do not use em-dashes or en-dashes.';
+
+            const summaryMessages = [
+              { role: 'user', content: postContent }
+            ];
+
+            const summaryResult = await generateResponse(summaryPrompt, summaryMessages, 'claude-haiku-4-5');
+            if (summaryResult && summaryResult.trim().length > 0) {
+              noteSummary = summaryResult.trim();
+            }
+          } catch (sumErr) {
+            console.warn('[persona-bot] Gear-check summary generation failed, using raw post:', sumErr.message || sumErr);
+          }
+
+          const today = new Date().toISOString().split('T')[0];
+          await pool.query(
+            `INSERT INTO bot_player_notes (discord_id, note, source_conversation_id)
+             VALUES ($1, $2, $3)`,
+            [discordId, `Gear-check post on ${today}: ${noteSummary}`, conversationId]
+          );
+        }
+      } catch (noteErr) {
+        console.error('[persona-bot] Gear-check note storage failed:', noteErr.message || noteErr);
+      }
+
+    } catch (err) {
+      console.error('[persona-bot] handleGearCheckPost fatal error:', err.message || err);
+    } finally {
+      gearCheckLock = false;
+    }
+  }
+
+  /**
    * Fires an auto-trigger template for a list of attendees.
    * Creates conversations and sends opening messages. Idempotent —
    * skips players who already have active conversations or previously
@@ -1664,6 +1959,14 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       // Route management channel messages to the management handler (no @mention required)
       if (MAYA_MANAGEMENT_CHANNEL_ID && message.channel.id === MAYA_MANAGEMENT_CHANNEL_ID) {
         handleManagementChannelMessage(message);
+        return;
+      }
+
+      // Route gear-check channel messages to the gear-check handler
+      if (MAYA_GEAR_CHECK_CHANNEL_ID && message.channel.id === MAYA_GEAR_CHECK_CHANNEL_ID) {
+        handleGearCheckPost(message).catch(err =>
+          console.error('[persona-bot] Gear-check handler error:', err.message || err)
+        );
         return;
       }
 

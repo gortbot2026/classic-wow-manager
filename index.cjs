@@ -1112,6 +1112,10 @@ async function initializeMayaTables() {
     // Migration: add character_class column for Raid Helper class resolution
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS character_class TEXT`);
 
+    // Migration: add trigger_type column for gear-check and future trigger distinction
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS trigger_type TEXT`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_conversations_trigger_type ON bot_conversations(trigger_type)`);
+
     // bot_messages — Individual messages in a conversation
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bot_messages (
@@ -3469,7 +3473,7 @@ app.post('/api/admin/maya/templates', requireManagement, express.json(), async (
     if (!name || !trigger_type || !opening_message || !agent_instructions) {
       return res.status(400).json({ success: false, message: 'name, trigger_type, opening_message, and agent_instructions are required' });
     }
-    if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing'].includes(trigger_type)) {
+    if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing', 'gear_check'].includes(trigger_type)) {
       return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
     }
     const id = require('crypto').randomUUID();
@@ -3496,7 +3500,7 @@ app.patch('/api/admin/maya/templates/:templateId', requireManagement, express.js
 
     if (name !== undefined) { updates.push(`name = $${paramIdx++}`); params.push(name); }
     if (trigger_type !== undefined) {
-      if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing'].includes(trigger_type)) {
+      if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing', 'gear_check'].includes(trigger_type)) {
         return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
       }
       updates.push(`trigger_type = $${paramIdx++}`); params.push(trigger_type);
