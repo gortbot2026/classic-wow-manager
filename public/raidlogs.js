@@ -2304,36 +2304,32 @@ class RaidLogsManager {
                 });
             }
             
-            // Add points from sunder armor (exclude tanks when primaryRoles available), computed vs average
+            // Add points from sunder armor — all confirmed players included; only Skull+Cross excluded via assignments
             if (Array.isArray(this.sunderData)) {
                 const eligible = this.sunderData.filter(row => {
                     const nm = String(row.character_name || '').toLowerCase();
-                    if (this.primaryRoles) {
-                        const role = String(this.primaryRoles[nm] || '').toLowerCase();
-                        if (role === 'tank') return false;
-                    }
-                    return true;
+                    return true; // Do not filter by role — tanks should be in the pool
                 });
                 const sum = eligible.reduce((acc, r) => acc + (Number(r.sunder_count) || 0), 0);
                 const avg = eligible.length ? (sum / eligible.length) : 0;
                 const computePts = (count) => {
                     if (!(avg > 0)) return 0;
                     const pct = (Number(count) || 0) / avg * 100;
-                    if (pct < 25) return -20;
-                    if (pct < 50) return -15;
-                    if (pct < 75) return -10;
-                    if (pct < 90) return -5;
-                    if (pct <= 109) return 0;
-                    if (pct <= 124) return 5;
-                    return 10;
+                    // Minimum threshold: 50+ sunders can never be deducted
+                    const raw = (() => {
+                        if (pct < 25) return -20;
+                        if (pct < 50) return -15;
+                        if (pct < 75) return -10;
+                        if (pct < 90) return -5;
+                        if (pct <= 109) return 0;
+                        if (pct <= 124) return 5;
+                        return 10;
+                    })();
+                    return (Number(count) >= 50 && raw < 0) ? 0 : raw;
                 };
                 this.sunderData.forEach(row => {
                     const nm = String(row.character_name || '').toLowerCase();
                     if (!confirmedNameSet.has(nm)) return;
-                    if (this.primaryRoles) {
-                        const role = String(this.primaryRoles[nm] || '').toLowerCase();
-                        if (role === 'tank') return;
-                    }
                     const pts = computePts(row.sunder_count);
                     if (pts > 0) positivePoints += pts; else if (pts < 0) negativePoints += Math.abs(pts);
                 });

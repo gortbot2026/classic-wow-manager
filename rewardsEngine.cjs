@@ -513,19 +513,23 @@ module.exports = function registerRewardsEngine(app, pool) {
           if (avg > 0) {
             const computePts = (count) => {
               const pct = (Number(count)||0) / avg * 100;
-              if (pct < 25) return -20;
-              if (pct < 50) return -15;
-              if (pct < 75) return -10;
-              if (pct < 90) return -5;
-              if (pct <= 109) return 0;
-              if (pct <= 124) return 5;
-              return 10;
+              const raw = (() => {
+                if (pct < 25) return -20;
+                if (pct < 50) return -15;
+                if (pct < 75) return -10;
+                if (pct < 90) return -5;
+                if (pct <= 109) return 0;
+                if (pct <= 124) return 5;
+                return 10;
+              })();
+              // Minimum threshold: 50+ sunders can never be deducted
+              return (Number(count) >= 50 && raw < 0) ? 0 : raw;
             };
             rows.forEach(r => {
               const nm = r.character_name || r.player_name || '';
               const key = nameKey(nm);
               if (!confirmed.has(key)) return;
-              if (mainTanks.has(key)) return; // Only exclude Skull and Cross tanks
+              if (mainTanks.has(key)) return; // Only exclude Skull and Cross tanks (from assignments panel)
               const pts = computePts(r.sunder_count);
               // Award points even if pts is 0 (removed the "if (pts)" check)
               addRow('sunder', nm, pts);
