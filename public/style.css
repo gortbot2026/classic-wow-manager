@@ -1135,6 +1135,19 @@ body.home {
     color: #e8e8e8;
 }
 
+/* Global 16px text size for homepage — excludes panel titles, raids-count,
+   hall-of-fame-info, char-details, top-bar, and raid-bar */
+body.home :where(p, li, span, small, label, td, th, a, div, h3, h4, h5, h6):not(
+    .panel-title, .panel-title *,
+    .raids-count, .raids-count *,
+    .hall-of-fame-info, .hall-of-fame-info *,
+    .char-details, .char-details *,
+    .top-bar, .top-bar *,
+    .raid-bar, .raid-bar *
+) {
+    font-size: 16px;
+}
+
 /* Panels on frontpage */
 body.home .panel {
     background: linear-gradient(180deg, #0b1220, #1a2a45);
