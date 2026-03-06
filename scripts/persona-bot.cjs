@@ -1974,7 +1974,8 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       }
 
       // Route gear-check channel messages to the gear-check handler
-      if (MAYA_GEAR_CHECK_CHANNEL_ID && message.channel.id === MAYA_GEAR_CHECK_CHANNEL_ID) {
+      // Guard: ignore @everyone / @here in gear-check channel
+      if (MAYA_GEAR_CHECK_CHANNEL_ID && message.channel.id === MAYA_GEAR_CHECK_CHANNEL_ID && !message.mentions.everyone) {
         handleGearCheckPost(message).catch(err =>
           console.error('[persona-bot] Gear-check handler error:', err.message || err)
         );
@@ -1982,7 +1983,8 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       }
 
       // Route @Maya mentions in any other channel to the mention handler
-      if (client.user && message.mentions.has(client.user)) {
+      // Guard: ignore @everyone / @here — only respond to explicit @Maya mentions
+      if (client.user && message.mentions.has(client.user) && !message.mentions.everyone) {
         handleMentionMessage(message);
         return;
       }
