@@ -1720,11 +1720,16 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         const channelSystemPrompt =
           'You are Maya, a warm and witty guild assistant for 1Principles, a Classic WoW GDKP guild. ' +
           'A new player just posted in the gear-check channel. Generate a personalised welcome greeting (2-4 sentences). ' +
-          'Reference specifics from their post (class, spec, experience, gear, etc.). ' +
-          'Mention that you will send them a DM shortly with a few follow-up questions. ' +
-          'Use <@' + discordId + '> to @mention them at the start. ' +
-          'Be warm, friendly, and enthusiastic but genuine. Keep it concise. ' +
-          'Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
+          'Rules:\n' +
+          '- Start with <@' + discordId + '> to mention them\n' +
+          '- Reference something specific from their post (class, spec, name, experience, budget etc.)\n' +
+          '- If an image is attached: describe something visual and specific you notice (e.g. transmog colours, UI setup, gear pieces visible, character race/look). Be creative and observant, like a real person reacting to a screenshot.\n' +
+          '- Add genuine personality and warmth — make it feel like a real human wrote it\n' +
+          '- End by mentioning you will slide into their DMs with a few quick questions\n' +
+          '- NEVER start sentences with "Real quick" or "Quick question"\n' +
+          '- Do NOT use em-dashes or en-dashes\n' +
+          '- Do NOT use backticks or code formatting\n' +
+          '- Keep it 2-4 sentences total, punchy and fun';
 
         // Build content blocks for the user message
         const contentBlocks = [];
@@ -1749,12 +1754,13 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         channelResponse = `Hey <@${discordId}>, welcome to the gear-check channel! I will send you a DM shortly with a few quick questions.`;
       }
 
-      // ── Step 6: Typing indicator + send ──
-      try {
-        await message.channel.sendTyping();
-      } catch (_) { /* non-fatal */ }
-      await new Promise(resolve => setTimeout(resolve, 4000));
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // ── Step 6: Typing indicator + send (feels human — ~12s total) ──
+      try { await message.channel.sendTyping(); } catch (_) { /* non-fatal */ }
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      try { await message.channel.sendTyping(); } catch (_) { /* non-fatal */ }
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      // 1.5s break — typing pauses briefly before sending
+      await new Promise(resolve => setTimeout(resolve, 1500));
       await message.channel.send(channelResponse);
 
       // ── Step 7: Start DM conversation ──
@@ -1784,12 +1790,10 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
           );
           let opening = generated || fallback;
 
-          // Append 1principles.net mention if not already present
-          if (!opening.includes('1principles.net')) {
-            opening += '\n\nYou can also check out our guild page at https://1principles.net';
-          }
-
           opening = sanitizeForDiscord(sanitizeResponse(opening));
+
+          // 7 second delay before DM — feels more human, like Maya read the post first
+          await new Promise(resolve => setTimeout(resolve, 7000));
 
           await storeMessage(conversationId, 'maya', opening, generated ? modelUsed : null);
           await sendDM(discordId, opening);
