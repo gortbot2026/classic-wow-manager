@@ -36,14 +36,14 @@ async function buildPlayerContext(pool, discordId) {
         `SELECT character_name, class FROM players WHERE discord_id = $1`,
         [discordId]
       ),
-      // Recent raids attended (last 10)
+      // Recent raids attended (last 10) — use roster_overrides as source of truth
       client.query(
-        `SELECT pcl.raid_id, pcl.character_name, pcl.character_class,
+        `SELECT ro.event_id AS raid_id, ro.assigned_char_name AS character_name, ro.assigned_char_class AS character_class,
                 rse.event_id, rse.locked_at
-         FROM player_confirmed_logs pcl
-         LEFT JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
-         WHERE pcl.discord_id = $1
-         ORDER BY pcl.confirmed_at DESC
+         FROM roster_overrides ro
+         LEFT JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+         WHERE ro.discord_user_id = $1 AND ro.in_raid = true AND ro.is_placeholder = false
+         ORDER BY ro.event_id DESC
          LIMIT 10`,
         [discordId]
       ),
@@ -357,9 +357,9 @@ async function resolvePlayerName(pool, discordId, conversationId) {
     // Step 3: Character name from most recent raid
     if (!resolvedName) {
       const charRes = await pool.query(
-        `SELECT pcl.character_name FROM player_confirmed_logs pcl
-         WHERE pcl.discord_id = $1
-         ORDER BY pcl.confirmed_at DESC LIMIT 1`,
+        `SELECT assigned_char_name AS character_name FROM roster_overrides
+         WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false
+         ORDER BY event_id DESC LIMIT 1`,
         [discordId]
       );
       if (charRes.rows.length > 0 && charRes.rows[0].character_name) {
@@ -651,14 +651,14 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       conversationId
         ? pool.query(`SELECT player_name FROM bot_conversations WHERE id = $1`, [conversationId])
         : Promise.resolve({ rows: [] }),
-      // Total raids attended (distinct raid_id)
+      // Total raids attended — use roster_overrides (truth of who was in raid, not just who confirmed)
       pool.query(
-        `SELECT COUNT(DISTINCT raid_id) AS count FROM player_confirmed_logs WHERE discord_id = $1`,
+        `SELECT COUNT(DISTINCT event_id) AS count FROM roster_overrides WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false`,
         [discordId]
       ),
-      // Guild join date (earliest confirmed_at)
+      // Guild join date — earliest raid appearance in roster_overrides
       pool.query(
-        `SELECT MIN(confirmed_at) AS earliest FROM player_confirmed_logs WHERE discord_id = $1`,
+        `SELECT MIN(TO_TIMESTAMP(((event_id::bigint >> 22) + 1420070400000) / 1000.0)) AS earliest FROM roster_overrides WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false`,
         [discordId]
       ),
       // All character names for this player (for loot matching)
@@ -719,11 +719,11 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     let lastRaidEventId = eventId || null;
     if (!lastRaidEventId) {
       const lastRaidRes = await pool.query(
-        `SELECT pcl.raid_id AS event_id
-         FROM player_confirmed_logs pcl
-         JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id AND rse.published = TRUE
-         WHERE pcl.discord_id = $1
-         ORDER BY pcl.confirmed_at DESC LIMIT 1`,
+        `SELECT ro.event_id
+         FROM roster_overrides ro
+         JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id AND rse.published = TRUE
+         WHERE ro.discord_user_id = $1 AND ro.in_raid = true AND ro.is_placeholder = false
+         ORDER BY ro.event_id DESC LIMIT 1`,
         [discordId]
       );
       if (lastRaidRes.rows.length > 0) {
@@ -856,16 +856,16 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     vars.set('manual_deductions_last_raid', String(Number(manualRes.rows[0]?.deductions) || 0));
 
     // --- Gold calculations (total + last raid) ---
-    // Get all published events this player attended
-    const attendedRaidsRes = charNamesArray.length > 0
+    // Get all published events this player attended — use roster_overrides (in_raid=true) as source of truth
+    const attendedRaidsRes = discordId
       ? await pool.query(
-          `SELECT DISTINCT pcl.raid_id AS event_id, rse.shared_gold_pot
-           FROM player_confirmed_logs pcl
-           JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
+          `SELECT DISTINCT ro.event_id, rse.shared_gold_pot
+           FROM roster_overrides ro
+           JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
              AND rse.published = TRUE
              AND rse.shared_gold_pot IS NOT NULL AND rse.shared_gold_pot > 0
-           WHERE LOWER(pcl.character_name) = ANY($1)`,
-          [charNamesArray]
+           WHERE ro.discord_user_id = $1 AND ro.in_raid = true AND ro.is_placeholder = false`,
+          [discordId]
         )
       : { rows: [] };
 
