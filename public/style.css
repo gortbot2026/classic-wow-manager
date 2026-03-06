@@ -1455,8 +1455,7 @@ body.faq .content { background: transparent; box-shadow: none; }
    ────────────────────────────────────────────── */
 
 .raids-table-wrapper {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    overflow: hidden;
 }
 
 .raids-table {
