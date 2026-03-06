@@ -557,18 +557,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         nameLink.className = 'raid-name-link';
         nameLink.href = link;
         if (isCompleted) {
-            const clean = cleanChannelName(event.channelName, event.channelId);
-            const dateStr = formatRaidDate(event.startTime);
-            nameLink.textContent = `${clean} - ${dateStr}`;
+            // Just the raid name — date moves to Day column
+            nameLink.textContent = cleanChannelName(event.channelName, event.channelId);
         } else {
-            nameLink.textContent = event.title || 'Untitled Event';
+            // Strip " | Day | Time" suffix from title (e.g. "Nax Thursday | Thursday | 20:30" → "Nax Thursday")
+            const rawTitle = event.title || 'Untitled Event';
+            nameLink.textContent = rawTitle.includes(' | ') ? rawTitle.split(' | ')[0].trim() : rawTitle;
         }
         tdName.appendChild(nameLink);
         tr.appendChild(tdName);
 
-        // 3. Day
+        // 3. Day — for completed raids, show the date (dd/mm/yyyy); for upcoming, show day name
         const tdDay = document.createElement('td');
-        tdDay.textContent = formatRaidDay(event.startTime);
+        tdDay.textContent = isCompleted ? formatRaidDate(event.startTime) : formatRaidDay(event.startTime);
         tr.appendChild(tdDay);
 
         // 4. Time (upcoming: start time; completed: duration loaded async)
