@@ -188,7 +188,7 @@ async function simulateTypingWithPauses(channel, totalTypingMs) {
  * Remove this override when ready to go live.
  * @type {string|null}
  */
-const MAYA_TEST_MODE_DISCORD_ID = '492023474437619732';
+const MAYA_TEST_MODE_DISCORD_ID = null; // TEST MODE disabled — DMs go to real players
 
 /**
  * In-memory lock map to prevent concurrent LLM calls per conversation.
