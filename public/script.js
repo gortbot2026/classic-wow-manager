@@ -294,14 +294,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const hours = Math.floor(totalMinutes / 60);
                 const minutes = totalMinutes % 60;
                 const formattedDuration = hours > 0 ? `${hours}h ${minutes}m` : `${totalMinutes}m`;
+                durationElement.classList.remove('raid-cell-loading');
                 durationElement.textContent = formattedDuration;
             } else {
+                durationElement.classList.remove('raid-cell-loading');
                 durationElement.textContent = 'N/A';
             }
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.warn(`Error fetching duration for event ${eventId}:`, error.message);
             }
+            durationElement.classList.remove('raid-cell-loading');
             durationElement.textContent = 'N/A';
         }
     }
@@ -332,6 +335,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const data = await response.json();
 
+            goldPotElement.classList.remove('raid-cell-loading');
             if (data.success && typeof data.goldPot === 'number') {
                 goldPotElement.innerHTML = `<span class="raid-gold">${data.goldPot}g</span>`;
             } else {
@@ -341,6 +345,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (error.name !== 'AbortError') {
                 console.warn(`Error fetching gold pot for event ${eventId}:`, error.message);
             }
+            goldPotElement.classList.remove('raid-cell-loading');
             goldPotElement.innerHTML = `<span class="raid-gold">N/A</span>`;
         }
     }
@@ -371,6 +376,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const data = await response.json();
 
+            biggestItemElement.classList.remove('raid-cell-loading');
             if (data.success && data.itemName) {
                 const iconHtml = data.iconLink
                     ? `<img src="${data.iconLink}" alt="${data.itemName}" class="raid-item-icon">`
@@ -383,6 +389,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (error.name !== 'AbortError') {
                 console.warn(`Error fetching biggest item for event ${eventId}:`, error.message);
             }
+            biggestItemElement.classList.remove('raid-cell-loading');
             biggestItemElement.textContent = 'N/A';
         }
     }
