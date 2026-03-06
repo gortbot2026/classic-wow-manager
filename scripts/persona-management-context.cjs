@@ -1083,6 +1083,28 @@ const MANAGEMENT_TOOLS = [
       },
       required: ['event_id']
     }
+  },
+  {
+    name: 'get_item_history',
+    description: 'Get cross-event price history for a loot item. Shows times sold, price range (high/low/avg), and recent buyers with dates. Use for questions about item pricing, how many times something has sold, or price trends.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        item_name: { type: 'string', description: 'Full or partial item name (case-insensitive). E.g. "Gressil" or "Bindings of the Windseeker"' }
+      },
+      required: ['item_name']
+    }
+  },
+  {
+    name: 'get_player_loot_history',
+    description: 'Get all items a player has bought across all raids, sorted by gold spent. Shows each item with price and event date, plus total gold spent. Use for questions about what someone has bought or how much they have spent.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        player_name: { type: 'string', description: 'Full or partial player/character name (case-insensitive)' }
+      },
+      required: ['player_name']
+    }
   }
 ];
 
@@ -1333,6 +1355,147 @@ async function fetchDeaths(pool, eventId, playerName) {
  * Cross-raid stats: find top performers by damage or healing across recent raids.
  * Uses damage_amount/healing_amount columns (not dps_value/hps_value which may be 0).
  */
+/**
+ * Fetches cross-event price history for a loot item.
+ * Supports partial, case-insensitive matching via ILIKE.
+ * Groups stats by exact item name when multiple items match.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} itemName - Full or partial item name to search
+ * @returns {Promise<string>} Formatted item history or friendly no-results message
+ */
+async function fetchItemHistory(pool, itemName) {
+  if (!itemName || !itemName.trim()) return 'Please provide an item name to search.';
+  const trimmed = itemName.trim();
+  const cacheKey = `itemHistory:${trimmed.toLowerCase()}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    // Aggregate stats per distinct item name, excluding 0g/NULL from price stats
+    const aggRes = await pool.query(`
+      SELECT item_name,
+        COUNT(*) AS times_sold,
+        MAX(gold_amount) AS highest,
+        MIN(gold_amount) AS lowest,
+        AVG(gold_amount)::int AS average
+      FROM loot_items
+      WHERE item_name ILIKE '%' || $1 || '%'
+        AND gold_amount > 0
+      GROUP BY item_name
+      ORDER BY times_sold DESC
+    `, [trimmed]);
+
+    if (aggRes.rows.length === 0) {
+      const noResult = `No sales found for '${trimmed}'.`;
+      cacheSet(cacheKey, noResult);
+      return noResult;
+    }
+
+    // Recent sales detail (all matching items, newest first, limit 20)
+    const detailRes = await pool.query(`
+      SELECT item_name, player_name, gold_amount,
+        to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0)::date AS event_date
+      FROM loot_items
+      WHERE item_name ILIKE '%' || $1 || '%'
+      ORDER BY to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0) DESC
+      LIMIT 20
+    `, [trimmed]);
+
+    // Build response - stats per item, then recent sales list
+    const sections = [];
+    for (const row of aggRes.rows) {
+      sections.push(
+        `${row.item_name}: sold ${row.times_sold} time${row.times_sold !== '1' && row.times_sold !== 1 ? 's' : ''}. ` +
+        `High: ${Number(row.highest).toLocaleString()}g, ` +
+        `Low: ${Number(row.lowest).toLocaleString()}g, ` +
+        `Avg: ${Number(row.average).toLocaleString()}g`
+      );
+    }
+
+    if (detailRes.rows.length > 0) {
+      sections.push('');
+      sections.push('Recent sales:');
+      for (const row of detailRes.rows) {
+        const gold = row.gold_amount > 0
+          ? `${Number(row.gold_amount).toLocaleString()}g`
+          : '0g (free)';
+        sections.push(`${row.player_name} - ${row.item_name} ${gold} (${row.event_date})`);
+      }
+    }
+
+    const result = sections.join('\n');
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchItemHistory error:', err.message);
+    return `Error fetching item history: ${err.message}`;
+  }
+}
+
+/**
+ * Fetches cross-event loot purchase history for a player.
+ * Supports partial, case-insensitive matching via ILIKE.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} playerName - Full or partial player/character name
+ * @returns {Promise<string>} Formatted player loot history or friendly no-results message
+ */
+async function fetchPlayerLootHistory(pool, playerName) {
+  if (!playerName || !playerName.trim()) return 'Please provide a player name to search.';
+  const trimmed = playerName.trim();
+  const cacheKey = `playerLootHistory:${trimmed.toLowerCase()}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await pool.query(`
+      SELECT item_name, player_name, gold_amount,
+        to_timestamp(((event_id::bigint >> 22) + 1420070400000) / 1000.0)::date AS event_date
+      FROM loot_items
+      WHERE player_name ILIKE '%' || $1 || '%'
+      ORDER BY gold_amount DESC
+      LIMIT 30
+    `, [trimmed]);
+
+    if (res.rows.length === 0) {
+      const noResult = `No loot history found for '${trimmed}'.`;
+      cacheSet(cacheKey, noResult);
+      return noResult;
+    }
+
+    // Group by actual player_name in case ILIKE matches variants
+    const playerGroups = {};
+    for (const row of res.rows) {
+      if (!playerGroups[row.player_name]) {
+        playerGroups[row.player_name] = [];
+      }
+      playerGroups[row.player_name].push(row);
+    }
+
+    const sections = [];
+    for (const [name, items] of Object.entries(playerGroups)) {
+      // Total gold excludes 0g items (free drops)
+      const totalGold = items.reduce((sum, r) => sum + (r.gold_amount > 0 ? Number(r.gold_amount) : 0), 0);
+      sections.push(`${name} has bought ${items.length} item${items.length !== 1 ? 's' : ''} totalling ${totalGold.toLocaleString()}g:`);
+      for (const row of items) {
+        const gold = row.gold_amount > 0
+          ? `${Number(row.gold_amount).toLocaleString()}g`
+          : '0g (free)';
+        sections.push(`${row.item_name} ${gold} (${row.event_date})`);
+      }
+      sections.push('');
+    }
+
+    const result = sections.join('\n').trim();
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchPlayerLootHistory error:', err.message);
+    return `Error fetching player loot history: ${err.message}`;
+  }
+}
+
 async function fetchCrossRaidStats(pool, stat, months, limit) {
   const col = stat === 'healing' ? 'healing_amount' : 'damage_amount';
   const label = stat === 'healing' ? 'Healing' : 'Damage';
@@ -1802,6 +1965,12 @@ async function executeManagementTool(name, input, pool) {
 
       case 'get_deaths':
         return (await fetchDeaths(pool, input.event_id, input.player_name)) || 'No death data found for this event.';
+
+      case 'get_item_history':
+        return (await fetchItemHistory(pool, input.item_name)) || 'No item history data available.';
+
+      case 'get_player_loot_history':
+        return (await fetchPlayerLootHistory(pool, input.player_name)) || 'No player loot history data available.';
 
       default:
         return `Unknown tool: ${name}`;
