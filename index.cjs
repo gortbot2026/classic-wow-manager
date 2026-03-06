@@ -11046,11 +11046,11 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       client.query(
         `SELECT character_name, class FROM players WHERE discord_id = $1`, [discordId]
       ),
-      // Total raids in system (for attendance rate)
-      client.query(`SELECT COUNT(DISTINCT raid_id) AS total FROM player_confirmed_logs`),
-      // Player's raids
+      // Total raids in system (for attendance rate) — count distinct events with actual raiders
+      client.query(`SELECT COUNT(DISTINCT event_id) AS total FROM roster_overrides WHERE in_raid = true AND is_placeholder = false`),
+      // Player's raids — count events where player was actually in the raid
       client.query(
-        `SELECT COUNT(DISTINCT raid_id) AS total FROM player_confirmed_logs WHERE discord_id = $1`, [discordId]
+        `SELECT COUNT(DISTINCT event_id) AS total FROM roster_overrides WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false`, [discordId]
       ),
       // Total reward points (match by discord_user_id OR character_name, deduplicated)
       client.query(
