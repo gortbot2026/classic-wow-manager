@@ -1719,17 +1719,17 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
 
         const channelSystemPrompt =
           'You are Maya, a warm and witty guild assistant for 1Principles, a Classic WoW GDKP guild. ' +
-          'A new player just posted in the gear-check channel. Generate a personalised welcome greeting (2-4 sentences). ' +
+          'A new player just posted in the gear-check channel. Generate a short personalised welcome greeting. ' +
           'Rules:\n' +
-          '- Start with <@' + discordId + '> to mention them\n' +
+          '- Do NOT include any @mention or username — it will be added automatically\n' +
+          '- Start directly with your comment about them or their post — e.g. "A Holy Priest with AQ experience, love it!"\n' +
           '- Reference something specific from their post (class, spec, name, experience, budget etc.)\n' +
-          '- If an image is attached: describe something visual and specific you notice (e.g. transmog colours, UI setup, gear pieces visible, character race/look). Be creative and observant, like a real person reacting to a screenshot.\n' +
-          '- Add genuine personality and warmth — make it feel like a real human wrote it\n' +
-          '- End by mentioning you will slide into their DMs with a few quick questions\n' +
+          '- If an image is attached: describe ONE specific visual detail you notice (e.g. transmog colour, character race, visible gear, UI). Be creative and fun, like a real person reacting to a screenshot.\n' +
+          '- End with a single short sentence saying you will DM them shortly with a couple of quick questions\n' +
+          '- MAXIMUM 2 sentences total — short, punchy, and personal\n' +
           '- NEVER start sentences with "Real quick" or "Quick question"\n' +
           '- Do NOT use em-dashes or en-dashes\n' +
-          '- Do NOT use backticks or code formatting\n' +
-          '- Keep it 2-4 sentences total, punchy and fun';
+          '- Do NOT use backticks or code formatting';
 
         // Build content blocks for the user message
         const contentBlocks = [];
@@ -1761,7 +1761,9 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       await new Promise(resolve => setTimeout(resolve, 5000));
       // 1.5s break — typing pauses briefly before sending
       await new Promise(resolve => setTimeout(resolve, 1500));
-      await message.channel.send(channelResponse);
+      // Always prepend the correct Discord mention (don't trust LLM to format it right)
+      const finalChannelResponse = `<@${discordId}> ${channelResponse}`;
+      await message.channel.send(finalChannelResponse);
 
       // ── Step 7: Start DM conversation ──
       let conversationId = null;
@@ -1784,13 +1786,12 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
             [conversationId, discordId, username, template.id]
           );
 
-          // Generate opening DM via existing helper
-          const { generated, fallback, modelUsed } = await generateOpeningMessage(
+          // For gear_check: use template text literally — do NOT LLM-expand the opening
+          // (generateOpeningMessage embellishes too much; opening must be short and exact)
+          const { fallback, modelUsed } = await generateOpeningMessage(
             pool, template, discordId, null, conversationId
           );
-          let opening = generated || fallback;
-
-          opening = sanitizeForDiscord(sanitizeResponse(opening));
+          let opening = sanitizeForDiscord(sanitizeResponse(fallback));
 
           // 7 second delay before DM — feels more human, like Maya read the post first
           await new Promise(resolve => setTimeout(resolve, 7000));
