@@ -82,6 +82,15 @@ try {
   console.error('[init] Failed to load persona context module:', err?.message || err);
 }
 
+// WCL event summary generator
+let generateEventSummary = null;
+try {
+  const summaryModule = require('./scripts/wcl-summary-generator.cjs');
+  generateEventSummary = summaryModule.generateEventSummary;
+} catch (err) {
+  console.error('[init] Failed to load wcl-summary-generator:', err?.message || err);
+}
+
 // Global reference to persona bot instance (set after initialization)
 let personaBotInstance = null;
 
@@ -5702,6 +5711,15 @@ async function ensureWclIngestTables(client) {
       fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS wcl_event_summaries (
+      event_id TEXT PRIMARY KEY,
+      report_code TEXT,
+      summary JSONB NOT NULL,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_wcl_event_summaries_report ON wcl_event_summaries(report_code);`);
 }
 
 // --- R2 (S3-compatible) client ---
@@ -6394,10 +6412,45 @@ app.post('/api/wcl/events/ingest', express.json({ limit: '1mb' }), async (req, r
     }
 
     res.json({ ok: true, reportCode, pagesStored, startCursor, lastCursor });
+
+    // Fire-and-forget: generate event summary if data was written
+    if (pagesStored > 0 && generateEventSummary && r2Client) {
+      setImmediate(() => {
+        generateEventSummary(eventId, reportCode, pool, r2Client).catch(err => {
+          console.error(`[wcl-summary] Background summary generation failed for event=${eventId}: ${err.message}`);
+        });
+      });
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err && err.message ? err.message : err) });
   } finally {
     if (client) client.release();
+  }
+});
+
+// Admin endpoint: regenerate event summary for a specific event
+app.post('/api/admin/generate-event-summary/:eventId', requireManagement, async (req, res) => {
+  try {
+    const eventId = String(req.params.eventId || '').trim();
+    if (!eventId) return res.status(400).json({ ok: false, error: 'Missing eventId' });
+    if (!generateEventSummary) return res.status(500).json({ ok: false, error: 'Summary generator not available' });
+    if (!r2Client) return res.status(500).json({ ok: false, error: 'R2 client not configured' });
+
+    // Look up report_code from wcl_event_pages
+    const pageRes = await pool.query(
+      `SELECT DISTINCT report_code FROM wcl_event_pages WHERE event_id = $1 LIMIT 1`,
+      [eventId]
+    );
+    if (pageRes.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: 'No event pages found for this event ID' });
+    }
+    const reportCode = pageRes.rows[0].report_code;
+
+    await generateEventSummary(eventId, reportCode, pool, r2Client);
+    res.json({ ok: true, eventId, generated: true });
+  } catch (err) {
+    console.error(`[admin] generate-event-summary error: ${err.message}`);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 
@@ -9408,6 +9461,15 @@ app.get('/api/wcl/stream-import', async (req, res) => {
       message: 'Import complete! Analyzing bloodrages...'
     });
     
+    // Fire-and-forget: generate event summary if data was written
+    if (pagesStored > 0 && generateEventSummary && r2Client) {
+      setImmediate(() => {
+        generateEventSummary(sessionId, reportCode, pool, r2Client).catch(err => {
+          console.error(`[wcl-summary] Background summary generation failed for session=${sessionId}: ${err.message}`);
+        });
+      });
+    }
+
     // Phase 2: SINGLE-PASS ANALYSIS
     // Load events ONCE and run ALL analyzers in a single loop (10x memory reduction)
     console.log('[LIVE] ====== STARTING PHASE 2: SINGLE-PASS ANALYSIS ======');
@@ -28142,6 +28204,40 @@ const server = app.listen(PORT, () => {
           console.error('❌ [STARTUP] Error during Discord guild member sync:', error);
       }
   }, 15000); // Wait 15 seconds after startup
+
+  // Auto-backfill: generate event summaries for events that have pages but no summary
+  if (generateEventSummary && r2Client) {
+    setTimeout(async () => {
+      try {
+        const missing = await pool.query(`
+          SELECT DISTINCT ep.event_id, ep.report_code
+          FROM wcl_event_pages ep
+          LEFT JOIN wcl_event_summaries es ON ep.event_id = es.event_id
+          WHERE es.event_id IS NULL AND ep.r2_key IS NOT NULL
+        `);
+        if (missing.rows.length === 0) {
+          console.log('[wcl-summary] Auto-backfill: no events missing summaries');
+          return;
+        }
+        console.log(`[wcl-summary] Auto-backfill: ${missing.rows.length} events need summaries`);
+        for (let i = 0; i < missing.rows.length; i++) {
+          const row = missing.rows[i];
+          try {
+            await generateEventSummary(row.event_id, row.report_code, pool, r2Client);
+          } catch (err) {
+            console.error(`[wcl-summary] Auto-backfill failed for event=${row.event_id}: ${err.message}`);
+          }
+          // 2 second delay between events to avoid R2 rate limits
+          if (i < missing.rows.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+        console.log(`[wcl-summary] Auto-backfill complete: processed ${missing.rows.length} events`);
+      } catch (err) {
+        console.error('[wcl-summary] Auto-backfill error:', err.message);
+      }
+    }, 20000); // Wait 20 seconds after startup (after other init tasks)
+  }
 });
 
 // Set server timeout to 5 minutes (300 seconds) for long-running operations

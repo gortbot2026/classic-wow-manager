@@ -596,6 +596,20 @@ async function fetchGoldLoot(pool, eventId) {
       parts.push(`Items won:\n${lootLines.join('\n')}`);
     }
 
+    // Fetch external links from rewards_snapshot_events
+    try {
+      const linksRes = await pool.query(
+        `SELECT wow_logs_url, rpb_archive_url FROM rewards_snapshot_events WHERE event_id = $1`,
+        [eventId]
+      );
+      if (linksRes.rows.length > 0) {
+        const linkLines = [];
+        if (linksRes.rows[0].wow_logs_url) linkLines.push(`WoW Logs: ${linksRes.rows[0].wow_logs_url}`);
+        if (linksRes.rows[0].rpb_archive_url) linkLines.push(`RPB Archive: ${linksRes.rows[0].rpb_archive_url}`);
+        if (linkLines.length > 0) parts.push(`Links:\n${linkLines.join('\n')}`);
+      }
+    } catch (_) {}
+
     const result = parts.length > 0
       ? `=== GOLD/LOOT (Event ${eventId}) ===\n${parts.join('\n')}`
       : '';
@@ -1035,8 +1049,269 @@ const MANAGEMENT_TOOLS = [
       },
       required: ['stat']
     }
+  },
+  {
+    name: 'get_event_overview',
+    description: 'Get a comprehensive overview of a specific raid event including roster size, gold pot, boss kills, duration, links, loot summary, and briefing count.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_fight_breakdown',
+    description: 'Get a boss-by-boss fight breakdown for a raid event. Shows kill times, wipe counts, and top 3 DPS/HPS per boss from WCL combat log analysis.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' }
+      },
+      required: ['event_id']
+    }
+  },
+  {
+    name: 'get_deaths',
+    description: 'Get death details for a raid event. Optionally filter by player name. Shows who died, to what ability, during which boss, and when.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Discord event ID (snowflake) from the event list' },
+        player_name: { type: 'string', description: 'Filter deaths to a specific player name (case-insensitive partial match)' }
+      },
+      required: ['event_id']
+    }
   }
 ];
+
+// ---------------------------------------------------------------------------
+// Tool-Use: Event Overview, Fight Breakdown, Deaths
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetches a comprehensive overview of a raid event.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} eventId - Event ID
+ * @returns {Promise<string>} Formatted overview string
+ */
+async function fetchEventOverview(pool, eventId) {
+  if (!eventId) return '';
+  const cacheKey = `eventOverview:${eventId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    // Derive date from snowflake
+    const tsMs = (BigInt(eventId) >> 22n) + 1420070400000n;
+    const eventDate = new Date(Number(tsMs));
+    const dateStr = eventDate.toISOString().split('T')[0];
+    const dayName = eventDate.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+
+    // Fetch title from events_cache
+    let title = 'Unknown Raid';
+    try {
+      const cacheResult = await pool.query(
+        `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
+      );
+      if (cacheResult.rows.length > 0) {
+        const rawEvents = cacheResult.rows[0].events_data;
+        const allEvents = typeof rawEvents === 'string' ? JSON.parse(rawEvents) : rawEvents;
+        if (Array.isArray(allEvents)) {
+          const match = allEvents.find(e => String(e.id) === String(eventId));
+          if (match) title = match.channelName || match.title || title;
+        }
+      }
+    } catch (_) {}
+
+    // Parallel queries
+    const [rosterRes, goldRes, wclRes, lootRes, briefingRes] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS count FROM roster_overrides WHERE event_id = $1`, [eventId]),
+      pool.query(
+        `SELECT published, total_gold_pot, shared_gold_pot, wow_logs_url, rpb_archive_url
+         FROM rewards_snapshot_events WHERE event_id = $1`, [eventId]
+      ),
+      pool.query(`SELECT summary FROM wcl_event_summaries WHERE event_id = $1`, [eventId]),
+      pool.query(
+        `SELECT COUNT(*)::int AS count, COALESCE(SUM(gold_amount), 0)::bigint AS total_gold
+         FROM loot_items WHERE event_id = $1`, [eventId]
+      ),
+      pool.query(`SELECT COUNT(*)::int AS count FROM bot_conversations WHERE event_id = $1`, [eventId])
+    ]);
+
+    const parts = [`=== EVENT OVERVIEW: ${title} ===`];
+    parts.push(`Date: ${dayName} ${dateStr}`);
+    parts.push(`Event ID: ${eventId}`);
+    parts.push(`Roster: ${rosterRes.rows[0]?.count || 0} players`);
+
+    // Gold info
+    if (goldRes.rows.length > 0) {
+      const g = goldRes.rows[0];
+      parts.push(`Gold pot: ${g.total_gold_pot || 0}g total, ${g.shared_gold_pot || 0}g shared`);
+      parts.push(`Published: ${g.published ? 'Yes' : 'No'}`);
+      if (g.wow_logs_url) parts.push(`WoW Logs: ${g.wow_logs_url}`);
+      if (g.rpb_archive_url) parts.push(`RPB Archive: ${g.rpb_archive_url}`);
+    } else {
+      parts.push('Gold: No snapshot available');
+    }
+
+    // WCL summary
+    if (wclRes.rows.length > 0) {
+      const summary = typeof wclRes.rows[0].summary === 'string'
+        ? JSON.parse(wclRes.rows[0].summary) : wclRes.rows[0].summary;
+      const durationMin = Math.floor((summary.total_duration_sec || 0) / 60);
+      const durationSec = (summary.total_duration_sec || 0) % 60;
+      parts.push(`Bosses killed: ${summary.bosses_killed || 0}`);
+      parts.push(`Total wipes: ${summary.total_wipes || 0}`);
+      parts.push(`Total deaths: ${summary.total_deaths || 0}`);
+      parts.push(`Raid duration: ${durationMin}m ${durationSec}s`);
+    }
+
+    // Loot
+    parts.push(`Loot items: ${lootRes.rows[0]?.count || 0} (${lootRes.rows[0]?.total_gold || 0}g total)`);
+
+    // Briefings
+    parts.push(`Briefings: ${briefingRes.rows[0]?.count || 0}`);
+
+    const result = parts.join('\n');
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchEventOverview error:', err.message);
+    return `Error fetching event overview: ${err.message}`;
+  }
+}
+
+/**
+ * Fetches a boss-by-boss fight breakdown for a raid event.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} eventId - Event ID
+ * @returns {Promise<string>} Formatted fight breakdown string
+ */
+async function fetchFightBreakdown(pool, eventId) {
+  if (!eventId) return '';
+  const cacheKey = `fightBreakdown:${eventId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await pool.query(
+      `SELECT summary FROM wcl_event_summaries WHERE event_id = $1`, [eventId]
+    );
+    if (res.rows.length === 0) {
+      return 'Fight breakdown data is not yet available for this event. Summary generation may still be in progress.';
+    }
+
+    const summary = typeof res.rows[0].summary === 'string'
+      ? JSON.parse(res.rows[0].summary) : res.rows[0].summary;
+    const bosses = summary.bosses || [];
+
+    if (bosses.length === 0) {
+      return 'No boss encounters found in the combat log data for this event.';
+    }
+
+    const parts = ['=== FIGHT BREAKDOWN ==='];
+
+    for (const boss of bosses) {
+      const killTime = boss.kill_duration_sec != null
+        ? `${Math.floor(boss.kill_duration_sec / 60)}m ${boss.kill_duration_sec % 60}s`
+        : 'No kill';
+      parts.push(`\n${boss.name} | Kill time: ${killTime} | Wipes: ${boss.wipes || 0} | Pulls: ${boss.pull_count || 0}`);
+
+      // Top DPS
+      if (boss.top_dps && boss.top_dps.length > 0) {
+        const dpsLines = boss.top_dps.map((d, i) =>
+          `${i + 1}. ${d.name}(${d.class}) ${Number(d.amount).toLocaleString()}`
+        );
+        parts.push(`  Top DPS: ${dpsLines.join(', ')}`);
+      }
+
+      // Top HPS
+      if (boss.top_hps && boss.top_hps.length > 0) {
+        const hpsLines = boss.top_hps.map((h, i) =>
+          `${i + 1}. ${h.name}(${h.class}) ${Number(h.amount).toLocaleString()}`
+        );
+        parts.push(`  Top HPS: ${hpsLines.join(', ')}`);
+      }
+    }
+
+    // Totals
+    const durationMin = Math.floor((summary.total_duration_sec || 0) / 60);
+    const durationSec = (summary.total_duration_sec || 0) % 60;
+    parts.push(`\n--- Totals ---`);
+    parts.push(`Clear time: ${durationMin}m ${durationSec}s`);
+    parts.push(`Bosses killed: ${summary.bosses_killed || 0}`);
+    parts.push(`Total wipes: ${summary.total_wipes || 0}`);
+    parts.push(`Total deaths: ${summary.total_deaths || 0}`);
+
+    const result = parts.join('\n');
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchFightBreakdown error:', err.message);
+    return `Error fetching fight breakdown: ${err.message}`;
+  }
+}
+
+/**
+ * Fetches death details for a raid event, optionally filtered by player name.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} eventId - Event ID
+ * @param {string} [playerName] - Optional player name filter (case-insensitive partial match)
+ * @returns {Promise<string>} Formatted deaths string
+ */
+async function fetchDeaths(pool, eventId, playerName) {
+  if (!eventId) return '';
+  // Include playerName in cache key for filtered results
+  const cacheKey = playerName
+    ? `deaths:${eventId}:${playerName.toLowerCase()}`
+    : `deaths:${eventId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await pool.query(
+      `SELECT summary FROM wcl_event_summaries WHERE event_id = $1`, [eventId]
+    );
+    if (res.rows.length === 0) {
+      return 'Death data is not yet available for this event. Summary generation may still be in progress.';
+    }
+
+    const summary = typeof res.rows[0].summary === 'string'
+      ? JSON.parse(res.rows[0].summary) : res.rows[0].summary;
+    let deaths = summary.deaths || [];
+
+    // Apply player name filter if provided
+    if (playerName) {
+      const filter = playerName.toLowerCase();
+      deaths = deaths.filter(d => d.player && d.player.toLowerCase().includes(filter));
+    }
+
+    if (deaths.length === 0) {
+      const filterMsg = playerName ? ` matching "${playerName}"` : '';
+      return `No deaths found${filterMsg} for this event.`;
+    }
+
+    const parts = [`=== DEATHS${playerName ? ` (filtered: ${playerName})` : ''} ===`];
+    for (const d of deaths) {
+      const min = Math.floor((d.time_sec || 0) / 60);
+      const sec = (d.time_sec || 0) % 60;
+      parts.push(`${d.player} died to ${d.cause} during ${d.boss} at T+${min}m ${sec}s`);
+    }
+    parts.push(`\nTotal: ${deaths.length} death${deaths.length !== 1 ? 's' : ''}`);
+
+    const result = parts.join('\n');
+    cacheSet(cacheKey, result);
+    return result;
+  } catch (err) {
+    console.error('[persona-mgmt-ctx] fetchDeaths error:', err.message);
+    return `Error fetching deaths: ${err.message}`;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tool-Use: Event List (injected into system prompt)
@@ -1098,15 +1373,35 @@ async function getEventList(pool) {
   if (cached) return cached;
 
   try {
-    // Fetch distinct event IDs from roster_overrides with derived dates
-    // Only include real raids (>=10 players) to exclude test/partial events
+    // Enriched query: roster count + gold/wcl/loot/briefing data via LEFT JOINs
     const res = await pool.query(`
-      SELECT ro.event_id,
+      SELECT
+        ro.event_id,
         to_timestamp(((ro.event_id::bigint >> 22) + 1420070400000) / 1000.0) AS event_date,
-        COUNT(*) as player_count
-      FROM roster_overrides ro
-      GROUP BY ro.event_id
-      HAVING COUNT(*) >= 10
+        ro.player_count,
+        rse.published AS gold_published,
+        rse.total_gold_pot,
+        es.summary->>'bosses_killed' AS wcl_bosses_killed,
+        ep_exists.has_pages AS has_wcl_pages,
+        COALESCE(li.loot_count, 0) AS loot_count,
+        COALESCE(bc.briefing_count, 0) AS briefing_count
+      FROM (
+        SELECT event_id, COUNT(*) AS player_count
+        FROM roster_overrides
+        GROUP BY event_id
+        HAVING COUNT(*) >= 10
+      ) ro
+      LEFT JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+      LEFT JOIN wcl_event_summaries es ON es.event_id = ro.event_id
+      LEFT JOIN LATERAL (
+        SELECT TRUE AS has_pages FROM wcl_event_pages WHERE event_id = ro.event_id LIMIT 1
+      ) ep_exists ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS loot_count FROM loot_items WHERE event_id = ro.event_id
+      ) li ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS briefing_count FROM bot_conversations WHERE event_id = ro.event_id
+      ) bc ON TRUE
       ORDER BY ro.event_id DESC
       LIMIT 30
     `);
@@ -1167,7 +1462,29 @@ async function getEventList(pool) {
       const date = new Date(row.event_date);
       const dateStr = date.toISOString().split('T')[0];
       const dayName = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
-      return `- event_id: ${eventId} | ${title} | ${dayName} ${dateStr} | ${row.player_count} players`;
+      const parts = [`- event_id: ${eventId}`, title, `${dayName} ${dateStr}`, `${row.player_count} players`];
+
+      // Gold info
+      if (row.gold_published === true) {
+        parts.push(`gold:${row.total_gold_pot || 0}g published`);
+      } else if (row.gold_published === false) {
+        parts.push('gold:unpublished');
+      }
+
+      // WCL info
+      if (row.wcl_bosses_killed != null) {
+        parts.push(`wcl:${row.wcl_bosses_killed} bosses`);
+      } else if (row.has_wcl_pages) {
+        parts.push('wcl:processing');
+      }
+
+      // Loot info
+      parts.push(`loot:${row.loot_count > 0 ? row.loot_count : 'no'} items`);
+
+      // Briefing count
+      parts.push(`briefings:${row.briefing_count}`);
+
+      return parts.join(' | ');
     });
 
     const upcomingSection = upcomingLines.length > 0
@@ -1476,6 +1793,15 @@ async function executeManagementTool(name, input, pool) {
 
       case 'get_cross_raid_stats':
         return await fetchCrossRaidStats(pool, input.stat, input.months || 1, input.limit || 5);
+
+      case 'get_event_overview':
+        return (await fetchEventOverview(pool, input.event_id)) || 'No overview data found for this event.';
+
+      case 'get_fight_breakdown':
+        return (await fetchFightBreakdown(pool, input.event_id)) || 'No fight breakdown data found for this event.';
+
+      case 'get_deaths':
+        return (await fetchDeaths(pool, input.event_id, input.player_name)) || 'No death data found for this event.';
 
       default:
         return `Unknown tool: ${name}`;
