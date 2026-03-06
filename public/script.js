@@ -460,13 +460,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         const now = Date.now();
         const startMs = epochSeconds * 1000;
         const diffMs = startMs - now;
-        // Less than 1 hour until start (or already started but within last hour)
-        if (diffMs >= 0 && diffMs < 60 * 60 * 1000) return 'Now';
-        // Same calendar day in Copenhagen timezone
+        // Same calendar day in Copenhagen timezone?
         const d = new Date(startMs);
         const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Copenhagen' });
         const raidStr = d.toLocaleDateString('en-CA', { timeZone: 'Europe/Copenhagen' });
-        if (raidStr === todayStr) return 'Today';
+        const isToday = raidStr === todayStr;
+        // "Now": today AND (already started OR starts within 1 hour)
+        if (isToday && diffMs < 60 * 60 * 1000) return 'Now';
+        // "Today": same day but more than 1 hour away
+        if (isToday) return 'Today';
         return d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Copenhagen' });
     }
 
