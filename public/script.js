@@ -336,8 +336,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await response.json();
 
             goldPotElement.classList.remove('raid-cell-loading');
+            const formatGold = (n) => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
             if (data.success && typeof data.goldPot === 'number') {
-                goldPotElement.innerHTML = `<span class="raid-gold">${data.goldPot}g</span>`;
+                goldPotElement.innerHTML = `<span class="raid-gold">${formatGold(data.goldPot)}g</span>`;
             } else {
                 goldPotElement.innerHTML = `<span class="raid-gold">0g</span>`;
             }
