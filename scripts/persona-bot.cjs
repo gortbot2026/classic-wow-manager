@@ -15,7 +15,7 @@ const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js
 const crypto = require('crypto');
 const { generateResponse, generateResponseWithTools } = require('./persona-llm.cjs');
 const { buildPlayerContext, buildVoiceContext, resolvePlayerName, resolveTemplateVariables, applyTemplateVariables } = require('./persona-context.cjs');
-const { getEventList, executeManagementTool, MANAGEMENT_TOOLS } = require('./persona-management-context.cjs');
+const { getEventList, executeManagementTool, MANAGEMENT_TOOLS, PUBLIC_TOOLS, PUBLIC_TIER_INSTRUCTION } = require('./persona-management-context.cjs');
 
 /**
  * Sanitizes LLM response text by removing em-dashes (U+2014) and en-dashes (U+2013).
@@ -262,6 +262,97 @@ function createPersonaBot(options = {}) {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Officer channel set: management channel + optional extra officer channels
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Set of Discord channel IDs considered "officer" tier.
+   * Always includes MAYA_MANAGEMENT_CHANNEL_ID. Additional channels are loaded
+   * from the MAYA_OFFICER_CHANNEL_IDS env var (comma-separated).
+   * @type {Set<string>}
+   */
+  const officerChannelIds = new Set();
+  if (MAYA_MANAGEMENT_CHANNEL_ID) {
+    officerChannelIds.add(MAYA_MANAGEMENT_CHANNEL_ID);
+  }
+  const rawOfficerIds = process.env.MAYA_OFFICER_CHANNEL_IDS || '';
+  rawOfficerIds.split(',')
+    .map(id => id.trim())
+    .filter(id => id.length > 0)
+    .forEach(id => officerChannelIds.add(id));
+
+  if (officerChannelIds.size > 0) {
+    console.log(`[persona-bot] Officer channel IDs: ${[...officerChannelIds].join(', ')}`);
+  }
+
+  /**
+   * Returns the tier for a given channel ID.
+   * Officer channels get full access; all others are public.
+   *
+   * @param {string} channelId - Discord channel ID
+   * @returns {'officer'|'public'} Channel tier
+   */
+  function getChannelTier(channelId) {
+    return officerChannelIds.has(channelId) ? 'officer' : 'public';
+  }
+
+  // ---------------------------------------------------------------------------
+  // @mention rate limiter (public channels only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Per-user rate limiter for public channel @mentions.
+   * Key: `${channelId}:${userId}`, Value: timestamp of last response.
+   * @type {Map<string, number>}
+   */
+  const mentionRateLimiter = new Map();
+
+  /** Rate limit cooldown in milliseconds (10 seconds) */
+  const MENTION_RATE_LIMIT_MS = 10_000;
+
+  /** Stale entry threshold for cleanup (60 seconds) */
+  const MENTION_RATE_STALE_MS = 60_000;
+
+  /**
+   * Checks and enforces rate limiting for a user in a public channel.
+   * Cleans up stale entries on each call.
+   *
+   * @param {string} channelId - Discord channel ID
+   * @param {string} userId - Discord user ID
+   * @returns {boolean} true if rate-limited (should skip), false if allowed
+   */
+  function isRateLimited(channelId, userId) {
+    const now = Date.now();
+
+    // Clean up stale entries (older than 60s)
+    for (const [key, timestamp] of mentionRateLimiter) {
+      if (now - timestamp > MENTION_RATE_STALE_MS) {
+        mentionRateLimiter.delete(key);
+      }
+    }
+
+    const key = `${channelId}:${userId}`;
+    const lastResponse = mentionRateLimiter.get(key);
+    if (lastResponse && now - lastResponse < MENTION_RATE_LIMIT_MS) {
+      return true;
+    }
+
+    mentionRateLimiter.set(key, now);
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Per-channel generation lock (for @mention handler)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Set of channel IDs currently generating an LLM response for @mentions.
+   * Prevents concurrent LLM calls from the same channel.
+   * @type {Set<string>}
+   */
+  const mentionChannelLocks = new Set();
+
   /**
    * Generation lock for management channel responses.
    * Prevents concurrent LLM calls when multiple messages arrive simultaneously.
@@ -456,6 +547,167 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     } finally {
       clearInterval(typingInterval);
       managementChannelLock = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // @mention handler: responds to @Maya mentions in any non-management channel
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handles @Maya mentions in non-management Discord channels.
+   * Uses a two-tier permission system: officer channels get full tool access,
+   * public channels get all tools except get_player_notes, and get_player_data
+   * suppresses private fields (notes, conversations).
+   *
+   * Rate limiting is enforced for public-tier channels (10s per user per channel).
+   * Per-channel generation locks prevent concurrent LLM calls from the same channel.
+   *
+   * @param {import('discord.js').Message} message - The incoming Discord message
+   */
+  async function handleMentionMessage(message) {
+    const channelId = message.channel.id;
+    const tier = getChannelTier(channelId);
+
+    // Per-channel generation lock — prevent concurrent LLM calls for same channel
+    if (mentionChannelLocks.has(channelId)) {
+      console.log(`[persona-bot] Mention: channel ${channelId} locked, skipping`);
+      return;
+    }
+
+    // Rate limiting for public-tier channels (officer channels are exempt)
+    if (tier === 'public' && isRateLimited(channelId, message.author.id)) {
+      message.react('\u231B').catch(() => {}); // hourglass emoji
+      console.log(`[persona-bot] Mention: rate limited ${message.author.username} in ${channelId}`);
+      return;
+    }
+
+    mentionChannelLocks.add(channelId);
+
+    // Start typing indicator with refresh interval
+    message.channel.sendTyping().catch(() => {});
+    const typingInterval = setInterval(() => {
+      message.channel.sendTyping().catch(() => {});
+    }, 8000);
+
+    try {
+      // Strip bot @mention from message content (handles both <@ID> and <@!ID> formats)
+      const botId = client.user.id;
+      const mentionRegex = new RegExp(`<@!?${botId}>`, 'g');
+      const strippedContent = message.content.replace(mentionRegex, '').trim();
+
+      // Handle empty content after mention strip
+      if (!strippedContent) {
+        await message.channel.send('Hey! How can I help? Just @ me with your question about raids, loot, gold, attendance, or anything guild-related.');
+        return;
+      }
+
+      // Fetch last 10 messages for context
+      const recentMessages = await message.channel.messages.fetch({ limit: 10 });
+      const sortedMessages = [...recentMessages.values()].sort(
+        (a, b) => a.createdTimestamp - b.createdTimestamp
+      );
+
+      // Build conversation history for LLM (strip bot mentions from all messages)
+      const formattedMessages = sortedMessages.map(msg => ({
+        role: msg.author.id === client.user.id ? 'assistant' : 'user',
+        content: msg.author.id === client.user.id
+          ? msg.content
+          : `${msg.member?.displayName || msg.author.displayName || msg.author.username}: ${msg.content.replace(mentionRegex, '').trim()}`
+      }));
+
+      // Fetch event list for system prompt injection
+      const eventList = await getEventList(pool);
+
+      // Build system prompt — add public-tier restriction if applicable
+      const now = new Date();
+      const currentDateTime = now.toLocaleString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short'
+      });
+      const basePrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in a Discord channel. Be concise, direct, and helpful. Only respond to what is asked.
+
+Current date/time: ${currentDateTime}
+
+--- RECENT RAID EVENTS ---
+${eventList}
+
+--- INSTRUCTIONS ---
+Use the available tools to look up any data you need. The event list above shows recent raids. Identify the relevant event_id(s) from the list before calling tools. You can call multiple tools in a single turn. If the user asks about a player, use get_player_data. If no tools are needed (e.g. general chat), respond directly.
+
+FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise.`;
+
+      const systemPrompt = tier === 'public'
+        ? basePrompt + PUBLIC_TIER_INSTRUCTION
+        : basePrompt;
+
+      // Select tools based on tier
+      const tools = tier === 'public' ? PUBLIC_TOOLS : MANAGEMENT_TOOLS;
+
+      // Get persona for model selection
+      const persona = await getPersona();
+      const model = persona?.model || 'claude-sonnet-4-20250514';
+
+      // Tool-use loop: call LLM, execute tools, repeat until text response or max iterations
+      let messages = [...formattedMessages];
+      let finalText = '';
+      const maxIterations = 5;
+
+      for (let iteration = 0; iteration < maxIterations; iteration++) {
+        const response = await generateResponseWithTools(systemPrompt, messages, model, tools, 2048);
+
+        // Check if response contains tool_use blocks
+        const toolUseBlocks = (response.content || []).filter(block => block.type === 'tool_use');
+        const textBlocks = (response.content || []).filter(block => block.type === 'text');
+
+        if (response.stop_reason === 'end_turn' || toolUseBlocks.length === 0) {
+          finalText = textBlocks.map(b => b.text).join('\n').trim();
+          break;
+        }
+
+        // Append the assistant message (with tool_use blocks) to conversation
+        messages.push({ role: 'assistant', content: response.content });
+
+        // Execute each tool and build tool_result content blocks
+        const toolResults = [];
+        for (const toolBlock of toolUseBlocks) {
+          console.log(`[persona-bot] Mention tool call (${tier}): ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
+          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, { tier });
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolBlock.id,
+            content: result
+          });
+        }
+
+        // Append tool results as a user message
+        messages.push({ role: 'user', content: toolResults });
+
+        // If this is the last iteration, force a final text response
+        if (iteration === maxIterations - 1) {
+          const finalResponse = await generateResponseWithTools(systemPrompt, messages, model, tools, 2048);
+          const lastTextBlocks = (finalResponse.content || []).filter(block => block.type === 'text');
+          finalText = lastTextBlocks.map(b => b.text).join('\n').trim();
+        }
+      }
+
+      if (finalText) {
+        let replyText = sanitizeResponse(finalText);
+        replyText = sanitizeForDiscord(replyText);
+
+        // Enforce Discord 2000-char limit
+        if (replyText.length > 2000) {
+          replyText = replyText.substring(0, 1997) + '...';
+        }
+
+        await message.channel.send(replyText);
+        console.log(`[persona-bot] Mention (${tier}): replied to ${message.author.displayName || message.author.username} in ${channelId} (${replyText.length} chars)`);
+      }
+    } catch (err) {
+      console.error(`[persona-bot] Mention handler error (channel ${channelId}):`, err.message || err);
+    } finally {
+      clearInterval(typingInterval);
+      mentionChannelLocks.delete(channelId);
     }
   }
 
@@ -1409,9 +1661,15 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         return;
       }
 
-      // Route management channel messages to the management handler
+      // Route management channel messages to the management handler (no @mention required)
       if (MAYA_MANAGEMENT_CHANNEL_ID && message.channel.id === MAYA_MANAGEMENT_CHANNEL_ID) {
         handleManagementChannelMessage(message);
+        return;
+      }
+
+      // Route @Maya mentions in any other channel to the mention handler
+      if (client.user && message.mentions.has(client.user)) {
+        handleMentionMessage(message);
         return;
       }
     });

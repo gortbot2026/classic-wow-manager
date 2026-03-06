@@ -1108,6 +1108,28 @@ const MANAGEMENT_TOOLS = [
   }
 ];
 
+/**
+ * Public-tier tool definitions — a filtered copy of MANAGEMENT_TOOLS that
+ * excludes tools which reveal private player notes or conversation history.
+ *
+ * NOTE: Any future tool that reads from bot_conversations or bot_messages
+ * directly should also be excluded from this list.
+ *
+ * @type {Array<{name: string, description: string, input_schema: object}>}
+ */
+const PUBLIC_TOOLS = MANAGEMENT_TOOLS.filter(
+  tool => tool.name !== 'get_player_notes'
+);
+
+/**
+ * Additional system prompt instruction appended when Maya is responding
+ * in a public (non-officer) Discord channel. Instructs the LLM to withhold
+ * private player notes, screening info, and conversation history.
+ *
+ * @type {string}
+ */
+const PUBLIC_TIER_INSTRUCTION = `\n\nYou are in a public Discord channel. Do not reveal private player notes, screening information, or private conversation history. If asked for this type of information, politely explain that it is only available in the management channel. All other guild data (gold, loot, rosters, logs, attendance, item prices, fight breakdowns, deaths, world buffs) is fine to share.`;
+
 // ---------------------------------------------------------------------------
 // Tool-Use: Event Overview, Fight Breakdown, Deaths
 // ---------------------------------------------------------------------------
@@ -1756,64 +1778,91 @@ const { buildPlayerContext } = require('./persona-context.cjs');
  * @param {string} identifier - Character name, Discord username, or Discord snowflake ID
  * @returns {Promise<string>} Formatted player data string or error message
  */
-async function fetchPlayerData(pool, identifier) {
+/**
+ * Fetches comprehensive player data. When tier is 'public', private fields
+ * (bot_player_notes text, bot_conversations details) are suppressed to prevent
+ * leaking sensitive management data in public Discord channels.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {string} identifier - Character name, Discord username, or Discord ID
+ * @param {object} [options] - Optional parameters
+ * @param {string} [options.tier='officer'] - Channel tier: 'officer' (full data) or 'public' (private fields suppressed)
+ * @returns {Promise<string>} Formatted player data string
+ */
+async function fetchPlayerData(pool, identifier, options = {}) {
+  const tier = options.tier || 'officer';
   const resolved = await resolvePlayerIdentifier(pool, identifier);
   if (!resolved) {
     return `No player found matching "${identifier}". Try using their exact character name, Discord username, or Discord ID.`;
   }
 
   const { discordId, characterName } = resolved;
-  const cacheKey = `playerData:${discordId}`;
+  const cacheKey = `playerData:${discordId}:${tier}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
   try {
     const playerContext = await buildPlayerContext(pool, discordId);
 
-    // Fetch Maya's notes about this player
-    const notesRes = await pool.query(
-      `SELECT note, created_at FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
-      [discordId]
-    );
-    const notesBlock = notesRes.rows.length > 0
-      ? notesRes.rows.map(n => {
-          const date = new Date(n.created_at).toISOString().split('T')[0];
-          return `- [${date}] ${n.note}`;
-        }).join('\n')
-      : 'No notes recorded.';
+    // Private data sections — only fetched for officer tier
+    let notesBlock = '';
+    let convsBlock = '';
+    let convStatsLine = '';
 
-    // Fetch recent conversations with message counts
-    const convsRes = await pool.query(
-      `SELECT bc.id, bc.status, bc.created_at, bc.summary,
-              (SELECT COUNT(*) FROM bot_messages bm WHERE bm.conversation_id = bc.id) as msg_count
-       FROM bot_conversations bc
-       WHERE bc.discord_id = $1
-       ORDER BY bc.created_at DESC LIMIT 5`,
-      [discordId]
-    );
-    const convsBlock = convsRes.rows.length > 0
-      ? convsRes.rows.map(c => {
-          const date = new Date(c.created_at).toISOString().split('T')[0];
-          const summary = c.summary ? ` - ${c.summary}` : '';
-          return `- [${c.status}] ${date}, ${c.msg_count} messages${summary}`;
-        }).join('\n')
-      : 'No conversations recorded.';
+    if (tier === 'officer') {
+      // Fetch Maya's notes about this player
+      const notesRes = await pool.query(
+        `SELECT note, created_at FROM bot_player_notes WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [discordId]
+      );
+      notesBlock = notesRes.rows.length > 0
+        ? notesRes.rows.map(n => {
+            const date = new Date(n.created_at).toISOString().split('T')[0];
+            return `- [${date}] ${n.note}`;
+          }).join('\n')
+        : 'No notes recorded.';
 
-    // Fetch conversation count and last chat date
-    const convCountRes = await pool.query(
-      `SELECT COUNT(*) as count, MAX(created_at) as last_chat FROM bot_conversations WHERE discord_id = $1`,
-      [discordId]
-    );
-    const convCount = parseInt(convCountRes.rows[0].count, 10) || 0;
-    const lastChat = convCountRes.rows[0].last_chat
-      ? new Date(convCountRes.rows[0].last_chat).toISOString().split('T')[0]
-      : 'Never';
-    const convStatsLine = `Total conversations: ${convCount}, Last chat: ${lastChat}`;
+      // Fetch recent conversations with message counts
+      const convsRes = await pool.query(
+        `SELECT bc.id, bc.status, bc.created_at, bc.summary,
+                (SELECT COUNT(*) FROM bot_messages bm WHERE bm.conversation_id = bc.id) as msg_count
+         FROM bot_conversations bc
+         WHERE bc.discord_id = $1
+         ORDER BY bc.created_at DESC LIMIT 5`,
+        [discordId]
+      );
+      convsBlock = convsRes.rows.length > 0
+        ? convsRes.rows.map(c => {
+            const date = new Date(c.created_at).toISOString().split('T')[0];
+            const summary = c.summary ? ` - ${c.summary}` : '';
+            return `- [${c.status}] ${date}, ${c.msg_count} messages${summary}`;
+          }).join('\n')
+        : 'No conversations recorded.';
 
-    // Fetch alts
+      // Fetch conversation count and last chat date
+      const convCountRes = await pool.query(
+        `SELECT COUNT(*) as count, MAX(created_at) as last_chat FROM bot_conversations WHERE discord_id = $1`,
+        [discordId]
+      );
+      const convCount = parseInt(convCountRes.rows[0].count, 10) || 0;
+      const lastChat = convCountRes.rows[0].last_chat
+        ? new Date(convCountRes.rows[0].last_chat).toISOString().split('T')[0]
+        : 'Never';
+      convStatsLine = `Total conversations: ${convCount}, Last chat: ${lastChat}`;
+    }
+
+    // Fetch alts (public data — safe for all tiers)
     const altsResult = await fetchPlayerAlts(pool, [discordId]);
 
-    const result = `## ${characterName}\n${playerContext || 'No player data available.'}\n\n**Conversation Stats:** ${convStatsLine}\n\n**Maya's Notes:**\n${notesBlock}\n\n**Recent Conversations:**\n${convsBlock}${altsResult ? `\n\n${altsResult}` : ''}`;
+    // Build result based on tier
+    let result;
+    if (tier === 'officer') {
+      result = `## ${characterName}\n${playerContext || 'No player data available.'}\n\n**Conversation Stats:** ${convStatsLine}\n\n**Maya's Notes:**\n${notesBlock}\n\n**Recent Conversations:**\n${convsBlock}${altsResult ? `\n\n${altsResult}` : ''}`;
+    } else {
+      // Public tier: only general player profile, no notes or conversations
+      result = `## ${characterName}\n${playerContext || 'No player data available.'}${altsResult ? `\n\n${altsResult}` : ''}`;
+    }
+
     cacheSet(cacheKey, result);
     return result;
   } catch (err) {
@@ -1922,9 +1971,11 @@ async function fetchPlayerNotesTool(pool, identifier) {
  * @param {string} name - Tool name (must match a MANAGEMENT_TOOLS entry)
  * @param {object} input - Tool input parameters from the LLM
  * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {object} [options] - Optional parameters
+ * @param {string} [options.tier='officer'] - Channel tier passed to tier-aware tools
  * @returns {Promise<string>} Tool result string (data or friendly error)
  */
-async function executeManagementTool(name, input, pool) {
+async function executeManagementTool(name, input, pool, options = {}) {
   try {
     switch (name) {
       case 'get_roster':
@@ -1943,7 +1994,7 @@ async function executeManagementTool(name, input, pool) {
         return (await fetchAssignments(pool, input.event_id)) || 'No assignments found for this event.';
 
       case 'get_player_data':
-        return await fetchPlayerData(pool, input.identifier);
+        return await fetchPlayerData(pool, input.identifier, { tier: options.tier || 'officer' });
 
       case 'get_historical_attendance':
         return await fetchHistoricalAttendanceTool(pool, input.class, input.months);
@@ -1990,6 +2041,8 @@ module.exports = {
   getEventList,
   executeManagementTool,
   MANAGEMENT_TOOLS,
+  PUBLIC_TOOLS,
+  PUBLIC_TIER_INSTRUCTION,
 
   // Legacy exports (kept for backward compatibility)
   /** @deprecated Use MANAGEMENT_TOOLS + executeManagementTool instead */
