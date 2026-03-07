@@ -1080,10 +1080,17 @@ async function initializeMayaTables() {
         system_prompt TEXT NOT NULL,
         model TEXT NOT NULL DEFAULT 'claude-haiku-4-5',
         max_context_messages INT DEFAULT 20,
+        management_context TEXT,
+        channel_context TEXT,
+        gear_check_context TEXT,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    // Add context columns if they don't exist yet (migration for existing installs)
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS management_context TEXT`);
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS channel_context TEXT`);
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS gear_check_context TEXT`);
 
     // bot_conversations — One row per player conversation thread
     await pool.query(`
@@ -3420,7 +3427,7 @@ app.get('/api/admin/maya/persona', requireManagement, async (req, res) => {
 /** Update persona config */
 app.patch('/api/admin/maya/persona', requireManagement, express.json(), async (req, res) => {
   try {
-    const { system_prompt, model, max_context_messages } = req.body;
+    const { system_prompt, model, max_context_messages, management_context, channel_context, gear_check_context } = req.body;
     const updates = [];
     const params = [];
     let paramIdx = 1;
@@ -3436,6 +3443,18 @@ app.patch('/api/admin/maya/persona', requireManagement, express.json(), async (r
     if (max_context_messages !== undefined) {
       updates.push(`max_context_messages = $${paramIdx++}`);
       params.push(parseInt(max_context_messages) || 20);
+    }
+    if (management_context !== undefined) {
+      updates.push(`management_context = $${paramIdx++}`);
+      params.push(management_context || null);
+    }
+    if (channel_context !== undefined) {
+      updates.push(`channel_context = $${paramIdx++}`);
+      params.push(channel_context || null);
+    }
+    if (gear_check_context !== undefined) {
+      updates.push(`gear_check_context = $${paramIdx++}`);
+      params.push(gear_check_context || null);
     }
     if (updates.length === 0) {
       return res.status(400).json({ success: false, message: 'No fields to update' });

@@ -485,10 +485,11 @@ function createPersonaBot(options = {}) {
       // Load Soul from DB and prepend to management context
       const persona = await getPersona();
       const soulText = persona?.system_prompt || '';
+      const managementContextBlock = persona?.management_context ||
+        '--- CONTEXT: MANAGEMENT CHANNEL ---\nYou are responding in the private management Discord channel on Discord. This channel is for guild leadership only. You may freely discuss any player data, conversations, notes, raid history, gold, or anything else. Be concise, direct, and data-focused. Only respond to what is asked.';
       const systemPrompt = `${soulText}
 
---- CONTEXT: MANAGEMENT CHANNEL ---
-You are responding in the private management Discord channel on Discord. This channel is for guild leadership only. You may freely discuss any player data, conversations, notes, raid history, gold, or anything else. Be concise, direct, and data-focused. Only respond to what is asked.
+${managementContextBlock}
 
 Current date/time: ${currentDateTime}
 
@@ -645,11 +646,10 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       });
       // Load Soul from DB and prepend
       const personaForChannel = await getPersona();
-      const soulTextForChannel = personaForChannel?.system_prompt || '';
-      const basePrompt = `${soulTextForChannel}
-
---- CONTEXT: DISCORD CHANNEL ---
-You are responding in a Discord channel. Be concise and helpful. Only respond to what is asked. Do not reveal private player data or internal guild information.
+      const soulTextForChannel = personaForChannel?.system_prompt ? personaForChannel.system_prompt + '\n\n' : '';
+      const channelContextBlock = personaForChannel?.channel_context ||
+        '--- CONTEXT: DISCORD CHANNEL ---\nYou are responding in a Discord channel. Be concise and helpful. Only respond to what is asked. Do not reveal private player data or internal guild information.';
+      const basePrompt = `${soulTextForChannel}${channelContextBlock}
 
 Current date/time: ${currentDateTime}
 
@@ -1601,9 +1601,13 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     gearCheckLock = true;
 
     try {
-      // Load Soul once for all sub-prompts in this handler
+      // Load Soul + gear-check context once for all sub-prompts in this handler
       const gearCheckPersona = await getPersona();
-      const gearCheckSoul = gearCheckPersona?.system_prompt ? gearCheckPersona.system_prompt + '\n\n' : '';
+      const gearCheckSoulBase = gearCheckPersona?.system_prompt ? gearCheckPersona.system_prompt + '\n\n' : '';
+      const gearCheckContextBlock = gearCheckPersona?.gear_check_context
+        ? gearCheckPersona.gear_check_context + '\n\n'
+        : '';
+      const gearCheckSoul = gearCheckSoulBase + gearCheckContextBlock;
 
       const discordId = message.author.id;
       const username = message.author.username;

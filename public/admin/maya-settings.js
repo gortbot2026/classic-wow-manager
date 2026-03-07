@@ -32,13 +32,19 @@ async function loadPersona() {
   document.getElementById('system-prompt').value = p.system_prompt || '';
   document.getElementById('model-select').value = p.model || 'claude-haiku-4-5';
   document.getElementById('max-context').value = p.max_context_messages || 20;
+  document.getElementById('management-context').value = p.management_context || '';
+  document.getElementById('channel-context').value = p.channel_context || '';
+  document.getElementById('gear-check-context').value = p.gear_check_context || '';
 }
 
 async function savePersona() {
   const body = {
     system_prompt: document.getElementById('system-prompt').value,
     model: document.getElementById('model-select').value,
-    max_context_messages: parseInt(document.getElementById('max-context').value) || 20
+    max_context_messages: parseInt(document.getElementById('max-context').value) || 20,
+    management_context: document.getElementById('management-context').value.trim() || null,
+    channel_context: document.getElementById('channel-context').value.trim() || null,
+    gear_check_context: document.getElementById('gear-check-context').value.trim() || null
   };
   const data = await apiFetch('/api/admin/maya/persona', {
     method: 'PATCH',
