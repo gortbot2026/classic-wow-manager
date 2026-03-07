@@ -5236,11 +5236,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             rows.push(['🏰 Guild', guildLabel]);
         }
 
-        // Raids last 12 months (account)
-        if (apiData) {
-            rows.push(['⚔️ Raids acc (12 months)', String(apiData.raidsLast12Months)]);
-        }
-
         // Total raids char/acc bundled
         if (apiData) {
             rows.push(['📊 Total raids char/acc', `${apiData.characterRaidCount} / ${apiData.accountRaidCount}`]);
