@@ -1125,6 +1125,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         sortableInstances = [];
 
+        // Mount Swap plugin (included in SortableJS full CDN build)
+        try {
+            if (Sortable.Plugins && Sortable.Plugins.Swap) {
+                Sortable.mount(new Sortable.Plugins.Swap());
+            } else if (typeof Swap !== 'undefined') {
+                Sortable.mount(new Swap());
+            }
+        } catch (_) { /* already mounted */ }
+
         const sharedConfig = {
             group: { name: 'roster', pull: true, put: true },
             draggable: '.player-filled',
@@ -1135,7 +1144,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             ghostClass: 'drag-ghost',
             chosenClass: 'drag-chosen',
             dragClass: 'drag-active',
-            swapThreshold: 0.65,
+            swap: true,                     // Swap plugin: drop ON a player = swap, not insert
+            swapClass: 'drag-swap-target',  // Green highlight on swap target
+            sort: false,                    // Slots are fixed — no within-group reordering
             onStart: function () {
                 isDragging = true;
             },
@@ -1176,8 +1187,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const fromContainer = evt.from;
         const toContainer = evt.to;
 
-        // No-op: dropped back in same position
-        if (fromContainer === toContainer && evt.oldIndex === evt.newIndex) {
+        // No-op: same container, same element, no swap target
+        if (fromContainer === toContainer && !evt.swapItem && evt.oldIndex === evt.newIndex) {
             reattachAfterDrag(draggedEl, fromContainer, toContainer);
             return;
         }
@@ -1192,29 +1203,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         const toIsBench = toContainer.classList.contains('bench-class-column');
 
         // Revert the DOM move — let OptimisticUpdates handle visual updates cleanly
-        // SortableJS has already moved the node; we put it back
-        if (evt.oldIndex < fromContainer.children.length) {
-            fromContainer.insertBefore(draggedEl, fromContainer.children[evt.oldIndex]);
-        } else {
-            fromContainer.appendChild(draggedEl);
-        }
+        // SortableJS has already moved the node (and may have swapped); put both back
+        try {
+            if (evt.swapItem) {
+                // Swap mode: restore both elements to original positions
+                fromContainer.insertBefore(draggedEl, fromContainer.children[evt.oldIndex] || null);
+                toContainer.insertBefore(evt.swapItem, toContainer.children[evt.newIndex] || null);
+            } else if (evt.oldIndex < fromContainer.children.length) {
+                fromContainer.insertBefore(draggedEl, fromContainer.children[evt.oldIndex]);
+            } else {
+                fromContainer.appendChild(draggedEl);
+            }
+        } catch (_) { /* DOM revert best-effort */ }
 
         // Determine operation and execute
         if (!fromIsBench && toIsBench) {
-            // Raid → Bench: move player to bench (no confirmation for drag)
+            // Raid → Bench: move player to bench
             executeDragToBench(userid);
         } else if (fromIsBench && !toIsBench) {
             // Bench → Raid: move player into a raid slot
             const targetPartyId = toContainer.dataset.partyId;
-            // Determine target slot from drop position
-            const targetSlotId = getTargetSlotId(toContainer, evt.newIndex);
+            // Use swapItem slot directly if available (swap mode); otherwise fall back to index
+            const targetSlotId = evt.swapItem?.dataset?.slotId
+                ? parseInt(evt.swapItem.dataset.slotId, 10)
+                : getTargetSlotId(toContainer, evt.newIndex);
             if (targetPartyId && targetSlotId) {
                 executeDragToRaid(userid, targetPartyId, targetSlotId, true);
             }
         } else if (!fromIsBench && !toIsBench) {
-            // Raid → Raid: move or swap
+            // Raid → Raid: swap or move to empty
             const targetPartyId = toContainer.dataset.partyId;
-            const targetSlotId = getTargetSlotId(toContainer, evt.newIndex);
+            const targetSlotId = evt.swapItem?.dataset?.slotId
+                ? parseInt(evt.swapItem.dataset.slotId, 10)
+                : getTargetSlotId(toContainer, evt.newIndex);
             if (targetPartyId && targetSlotId) {
                 executeDragToRaid(userid, targetPartyId, targetSlotId, false);
             }
