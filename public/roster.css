@@ -363,10 +363,10 @@ i.spec-icon.placeholder-icon {
 
 /* Class icon next to anchor bar */
 .class-icon-badge {
-    width: 20px;
-    height: 20px;
+    width: 28px;
+    height: 28px;
     flex-shrink: 0;
-    margin-left: 4px;
+    margin-left: 6px;
     margin-right: 6px;
 }
 
