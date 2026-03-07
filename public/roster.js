@@ -1193,15 +1193,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         const fromContainer = evt.from;
         const toContainer = evt.to;
 
-        // Capture all IDs immediately — before any DOM changes
+        // Capture ALL IDs immediately from the DOM — before SortableJS modifies anything further
         const userid = draggedEl.dataset.userid;
         const fromIsBench = fromContainer.classList.contains('bench-class-column');
         const toIsBench = toContainer.classList.contains('bench-class-column');
+
+        // Capture source slot/party (draggedEl's original position)
+        const sourcePartyId = fromContainer.dataset.partyId;
+        const sourceSlotId = draggedEl.dataset.slotId ? parseInt(draggedEl.dataset.slotId, 10) : null;
+
         const targetPartyId = toContainer.dataset.partyId;
 
         // swapItem = the cell at the drop target (filled player OR empty slot)
         const swapItem = evt.swapItem;
-        // Get target slot — prefer swapItem's data-slot-id (reliable), fall back to index lookup
+        // Capture target slot from swapItem BEFORE anything changes
         const targetSlotId = swapItem?.dataset?.slotId
             ? parseInt(swapItem.dataset.slotId, 10)
             : getTargetSlotId(toContainer, evt.newIndex);
@@ -1211,30 +1216,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (fromContainer === toContainer && !swapItem && evt.oldIndex === evt.newIndex) return;
         if (!userid) return;
 
-        // Ignore if dragged element is an empty slot (shouldn't happen with filter, but safety check)
+        // Ignore if dragged element is an empty slot
         if (draggedEl.classList.contains('empty-slot-clickable')) return;
 
-        // SortableJS has already moved the DOM visually (swap looks correct).
-        // We let it stay — no manual DOM revert needed.
-        // After API responds, renderRoster() will sync DOM to server state.
+        // SortableJS has already visually moved the elements.
+        // After success: update data attributes so subsequent drags read correct IDs.
+        // After failure: re-render to rollback.
+
+        const updateDataAttrs = () => {
+            // draggedEl is now in toContainer at target position — update its slot/party
+            if (targetSlotId) draggedEl.dataset.slotId = targetSlotId;
+            if (targetPartyId) draggedEl.dataset.partyId = targetPartyId;
+            // swapItem is now in fromContainer at source position — update its slot/party
+            if (swapItem && swapItem.classList.contains('player-filled')) {
+                if (sourceSlotId) swapItem.dataset.slotId = sourceSlotId;
+                if (sourcePartyId) swapItem.dataset.partyId = sourcePartyId;
+            }
+        };
 
         if (!fromIsBench && toIsBench) {
             // Raid → Bench
             executeDragSimple(async () => {
                 await movePlayerToBench(eventId, userid);
-            });
+            }, null); // bench moves always re-render (bench HTML needs to update)
         } else if (fromIsBench && !toIsBench) {
             // Bench → Raid
             if (!targetPartyId || !targetSlotId) return;
             executeDragSimple(async () => {
                 await updatePlayerPosition(eventId, userid, targetPartyId, targetSlotId);
-            });
+            }, null); // bench→raid always re-render (bench HTML needs to update)
         } else if (!fromIsBench && !toIsBench) {
             // Raid → Raid (move or swap)
             if (!targetPartyId || !targetSlotId) return;
             executeDragSimple(async () => {
                 await updatePlayerPosition(eventId, userid, targetPartyId, targetSlotId);
-            });
+            }, updateDataAttrs); // pass callback to update data attrs on success
         }
         // Bench → Bench: no-op
     }
@@ -1243,12 +1259,18 @@ document.addEventListener('DOMContentLoaded', async () => {
      * Executes a drag API call. On success/failure, re-renders the roster to sync DOM.
      * SortableJS already shows the visual result; re-render confirms or rolls back.
      */
-    async function executeDragSimple(apiFn) {
+    async function executeDragSimple(apiFn, onSuccessCallback) {
         try {
             await apiFn();
-            // Success — SortableJS already shows the correct visual state, no re-render needed
+            // Success — SortableJS already shows the correct visual state
             isManaged = true;
             updateRevertButtonVisibility();
+            if (onSuccessCallback) {
+                onSuccessCallback(); // e.g. update data-slot-id / data-party-id attrs
+            } else {
+                // No callback = bench involved, re-render to sync bench HTML
+                try { await renderRoster(); } catch (_) {}
+            }
         } catch (error) {
             showAlert('Move Error', `Error moving player: ${error.message}`);
             // Failure — re-render to rollback to actual server state
