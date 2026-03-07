@@ -1592,9 +1592,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         let dropdownContentHTML = await buildDropdownContent(player, isBenched);
 
+        // Confirmation checkmark (management-only — server strips isConfirmed for non-management)
+        let confirmIconHTML = '';
+        if (!player.isPlaceholder && player.isConfirmed !== undefined && player.isConfirmed !== null) {
+            if (player.isConfirmed === 'confirmed' || player.isConfirmed === true) {
+                confirmIconHTML = '<i class="fas fa-check confirmation-icon confirmed" title="Confirmed"></i>';
+            } else {
+                confirmIconHTML = '<i class="fas fa-times confirmation-icon unconfirmed" title="Not Confirmed"></i>';
+            }
+        }
+
         // Single icon only: class-icon-badge is added by applyPlayerColor()
         cellDiv.innerHTML = `
-            <div class="player-name" data-character-name="${displayName}" data-discord-name="${player.name}"><span>${displayName}</span></div>
+            <div class="player-name" data-character-name="${displayName}" data-discord-name="${player.name}"><span>${displayName}</span>${confirmIconHTML}</div>
             <div class="player-details-dropdown">${dropdownContentHTML}</div>`;
 
         const cellCanonicalClass = getCanonicalClass(player.class);
