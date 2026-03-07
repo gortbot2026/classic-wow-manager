@@ -1238,7 +1238,7 @@ body.rules .rule-body { color: #d0d0d0; }
 body.roster { background-color: #111827; color: #e8e8e8; } /* bg-gray-900 */
 body.roster .content { background: transparent; }
 body.roster #roster-event-title { color: #e8e8e8; }
-body.roster .roster-container { background-color: #1a191e; border: 1px solid #555555; }
+body.roster .roster-container { background-color: #0b1220; border: 1px solid #555555; }
 body.roster #bench-container.bench-container { background-color: #0b1220; border: 1px solid #555555 !important; box-shadow: none; }
 body.roster .player-search-modal { background-color: #1a191e; border: 1px solid #555555; }
 body.roster .player-search-header { color: #e8e8e8; }
@@ -1253,7 +1253,7 @@ body.roster .roster-cell { border: 1px solid #555; }
 body.roster .roster-cell.empty-slot-clickable { background-color: #333; }
 
 /* --- Assignments dark theme --- */
-body.assignments { background-color: #121214; color: #e8e8e8; }
+body.assignments { background-color: #111827; color: #e8e8e8; }
 body.assignments .container { background: transparent; }
 body.assignments .manual-rewards-section { --panel-accent: #555555; background: linear-gradient(180deg, #0b1220, #1a2a45); border: 1px solid rgba(131, 168, 255, 0.18); box-shadow: none; }
 body.assignments .manual-rewards-section .section-header { background: #0b1220; color: #e8e8e8; }
@@ -1266,7 +1266,7 @@ body.assignments .floating-nav { background: #00233e; border: 1px solid rgba(255
 body.assignments .nav-buttons { border-color: rgba(255,255,255,0.12); }
 
 /* --- Raidlogs dark theme --- */
-body.raidlogs { background-color: #121214; color: #e8e8e8; }
+body.raidlogs { background-color: #111827; color: #e8e8e8; }
 body.raidlogs .container { background: transparent; }
 body.raidlogs .auth-gate { background: #1a191e; border: 1px solid #555555; color: #e8e8e8; }
 body.raidlogs .auth-gate .lock { background:#0b1220; border:1px solid #1f2937; color:#93c5fd; }
@@ -1288,7 +1288,7 @@ body.raidlogs .player-dropdown { background: #0b1220; border: 1px solid #333; }
 body.raidlogs .player-dropdown-item { border-bottom: 1px solid rgba(255,255,255,0.08); }
 
 /* --- Gold dark theme --- */
-body.gold { background-color: #121214; color: #e8e8e8; }
+body.gold { background-color: #111827; color: #e8e8e8; }
 body.gold .content { background: transparent; }
 body.gold .auth-gate { background: #1a191e; border: 1px solid #555555; color: #e8e8e8; }
 body.gold .gold-container .loading-indicator,
@@ -1303,7 +1303,7 @@ body.gold #copyGargul { background:#1f2937; color:#e5e7eb; border:1px solid #374
 body.gold #gargulCopyStatus { color:#9ca3af; }
 
 /* --- Loot dark theme --- */
-body.loot { background-color: #121214; color: #e8e8e8; }
+body.loot { background-color: #111827; color: #e8e8e8; }
 body.loot .main-content { background: transparent; }
 body.loot .auth-gate { background:#1a191e; border:1px solid #555555; color:#e8e8e8; }
 body.loot .import-section { background: linear-gradient(180deg, #0b1220, #1a2a45); border:1px solid rgba(131, 168, 255, 0.18); margin-top: 20px; }
