@@ -5206,6 +5206,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             flags.push('❌ Never logged in');
         }
 
+        // Flag: DB mismatch — player is known but assigned character name/class not in DB
+        // (e.g. accent mismatch like Bruut vs Brùút, or character not yet registered)
+        if (cell.classList.contains('db-mismatch') && apiData && apiData.playerInDb) {
+            flags.push('❌ Character not registered');
+        }
+
         // Warning: No account experience
         if (apiData && apiData.accountRaidCount === 0) {
             warnings.push('⚠️ No account raid experience');
