@@ -145,10 +145,16 @@ i.spec-icon.placeholder-icon {
 
 /* Roster Grid Container */
 #roster-grid {
-    display: flex; /* Use flexbox for horizontal layout */
-    flex-wrap: wrap; /* Allow groups to wrap to the next line on smaller screens */
-    gap: 20px; /* Space between columns */
-    justify-content: center; /* Center the groups */
+    display: grid;
+    grid-template-columns: repeat(8, 1fr); /* 1 row of 8 groups on wide screens */
+    gap: 12px;
+}
+
+/* On narrower screens: exactly 2 rows of 4 — no uneven splits */
+@media (max-width: 1200px) {
+    #roster-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
 }
 
 /* Roster Column (Party) */
@@ -170,8 +176,8 @@ i.spec-icon.placeholder-icon {
 
 /* Roster Cell (Slot) */
 .roster-cell {
-    width: 160px;
-    height: 30px;
+    width: 175px;
+    height: 34px;
     display: flex;
     align-items: center;
     justify-content: flex-start;
@@ -372,7 +378,7 @@ i.spec-icon.placeholder-icon {
 
 .player-name {
     font-weight: normal;
-    font-size: 0.8em;
+    font-size: 16px;
     text-shadow: none;
     display: flex;
     align-items: center;

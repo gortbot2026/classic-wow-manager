@@ -1453,7 +1453,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function renderGrid(rosterData) {
         const { raidDrop, partyPerRaid, slotPerParty, partyNames, title } = rosterData;
-            rosterGrid.style.gridTemplateColumns = `repeat(${partyPerRaid}, 1fr)`;
+            rosterGrid.style.gridTemplateColumns = ''; // Controlled by CSS (8 or 4 cols breakpoint)
             rosterGrid.innerHTML = '';
 
             const rosterMatrix = Array(partyPerRaid).fill(null).map(() => Array(slotPerParty).fill(null));
