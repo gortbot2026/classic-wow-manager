@@ -184,7 +184,7 @@ i.spec-icon.placeholder-icon {
     margin-bottom: 6px;
     z-index: 1;
     transition: all 0.3s ease, background-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
-    overflow: hidden; /* clip the left anchor bar */
+    overflow: visible; /* Must be visible so dropdown can render outside cell bounds */
 }
 
 /* When dropdown is open, raise the cell above others */
@@ -359,6 +359,7 @@ i.spec-icon.placeholder-icon {
     height: 100%;
     flex-shrink: 0;
     align-self: stretch;
+    border-radius: 4px 0 0 4px; /* rounds left edge flush with cell */
 }
 
 /* Class icon next to anchor bar */
