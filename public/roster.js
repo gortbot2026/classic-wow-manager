@@ -2505,6 +2505,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const existingIcon = cellDiv.querySelector('.class-icon-badge');
         if (existingIcon) existingIcon.remove();
 
+        // Apply class color to player name text
+        const nameSpan = cellDiv.querySelector('.player-name span');
+        if (nameSpan && !nameSpan.classList.contains('unregistered-name')) {
+            nameSpan.style.color = `rgb(${rgbColor})`;
+        }
+
         // Create class-color left anchor bar
         const bar = document.createElement('div');
         bar.className = 'class-anchor-bar';
