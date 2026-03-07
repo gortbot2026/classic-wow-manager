@@ -482,7 +482,13 @@ function createPersonaBot(options = {}) {
         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
         hour: '2-digit', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short'
       });
-      const systemPrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in the private management Discord channel. This channel is for guild leadership only — you can reveal any information about players, conversations, notes, raid data, or anything else. Be concise, direct, and helpful. Only respond to what is asked.
+      // Load Soul from DB and prepend to management context
+      const persona = await getPersona();
+      const soulText = persona?.system_prompt || '';
+      const systemPrompt = `${soulText}
+
+--- CONTEXT: MANAGEMENT CHANNEL ---
+You are responding in the private management Discord channel on Discord. This channel is for guild leadership only. You may freely discuss any player data, conversations, notes, raid history, gold, or anything else. Be concise, direct, and data-focused. Only respond to what is asked.
 
 Current date/time: ${currentDateTime}
 
@@ -494,9 +500,8 @@ Use the available tools to look up any data you need. The event list above shows
 
 FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise.`;
 
-      // Get persona for model selection
-      const persona = await getPersona();
-      const model = persona?.model || 'claude-sonnet-4-20250514';
+      // Model selection (persona already fetched above)
+      const model = persona?.model || 'claude-haiku-4-5';
 
       // Tool-use loop: call LLM, execute tools, repeat until text response or max iterations
       let messages = [...formattedMessages];
@@ -638,7 +643,13 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
         hour: '2-digit', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short'
       });
-      const basePrompt = `You are Maya, the AI guild assistant for 1Principles (a Classic WoW GDKP guild). You are responding in a Discord channel. Be concise, direct, and helpful. Only respond to what is asked.
+      // Load Soul from DB and prepend
+      const personaForChannel = await getPersona();
+      const soulTextForChannel = personaForChannel?.system_prompt || '';
+      const basePrompt = `${soulTextForChannel}
+
+--- CONTEXT: DISCORD CHANNEL ---
+You are responding in a Discord channel. Be concise and helpful. Only respond to what is asked. Do not reveal private player data or internal guild information.
 
 Current date/time: ${currentDateTime}
 
@@ -657,9 +668,8 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       // Select tools based on tier
       const tools = tier === 'public' ? PUBLIC_TOOLS : MANAGEMENT_TOOLS;
 
-      // Get persona for model selection
-      const persona = await getPersona();
-      const model = persona?.model || 'claude-sonnet-4-20250514';
+      // Model selection (persona already fetched above)
+      const model = personaForChannel?.model || 'claude-haiku-4-5';
 
       // Tool-use loop: call LLM, execute tools, repeat until text response or max iterations
       let messages = [...formattedMessages];
@@ -1591,6 +1601,10 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     gearCheckLock = true;
 
     try {
+      // Load Soul once for all sub-prompts in this handler
+      const gearCheckPersona = await getPersona();
+      const gearCheckSoul = gearCheckPersona?.system_prompt ? gearCheckPersona.system_prompt + '\n\n' : '';
+
       const discordId = message.author.id;
       const username = message.author.username;
       const displayName = message.author.displayName || username;
@@ -1622,8 +1636,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       // ── Step 2a: QUESTION_OR_CHAT path ──
       if (classification === 'QUESTION_OR_CHAT') {
         try {
-          const redirectPrompt =
-            'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
+          const redirectPrompt = gearCheckSoul +
             'A user posted a question or casual message in the gear-check channel. ' +
             'Generate a brief, warm reply (1-2 sentences) that @mentions them and politely suggests they DM you instead for questions. ' +
             'Keep it friendly and casual. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
@@ -1652,8 +1665,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
 
         if (existingConv.rows.length > 0) {
           try {
-            const welcomeBackPrompt =
-              'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
+            const welcomeBackPrompt = gearCheckSoul +
               'This player has already applied via the gear-check channel before. They just posted again. ' +
               'Generate a brief, warm "welcome back" acknowledgement (1-2 sentences) that @mentions them and references their new post. ' +
               'Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
@@ -1723,8 +1735,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         const persona = await getPersona();
         const responseModel = (persona && persona.model) || 'claude-sonnet-4-20250514';
 
-        const channelSystemPrompt =
-          'You are Maya, a warm and witty guild assistant for 1Principles, a Classic WoW GDKP guild. ' +
+        const channelSystemPrompt = gearCheckSoul +
           'A new player just posted in the gear-check channel. Generate a short personalised welcome greeting. ' +
           'Rules:\n' +
           '- Do NOT include any @mention or username — it will be added automatically\n' +
@@ -2243,8 +2254,9 @@ async function generateOpeningMessage(pool, template, discordId, eventId, conver
     // Apply variable substitution to opening instructions so LLM sees actual values
     const resolvedInstructions = applyTemplateVariables(template.opening_message, templateVars);
 
-    const systemPrompt =
-      'You are Maya, a friendly guild assistant for 1Principles (a Classic WoW GDKP guild). ' +
+    const openingPersona = await getPersona();
+    const openingSoul = openingPersona?.system_prompt ? openingPersona.system_prompt + '\n\n' : '';
+    const systemPrompt = openingSoul +
       'Generate an opening DM based on the instructions below. Keep it natural and conversational. ' +
       'Do not use em-dashes or en-dashes.\n\n' +
       '=== Opening Instructions ===\n' +
