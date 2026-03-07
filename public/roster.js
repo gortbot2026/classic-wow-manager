@@ -1177,6 +1177,56 @@ document.addEventListener('DOMContentLoaded', async () => {
             const instance = new Sortable(col, { ...sharedConfig, emptyInsertThreshold: 40 });
             sortableInstances.push(instance);
         });
+
+        // Bench drop zone — accepts raid players, routes them to correct class column
+        const benchDropzone = document.getElementById('bench-dropzone');
+        if (benchDropzone) {
+            const dropzoneInstance = new Sortable(benchDropzone, {
+                group: { name: 'roster', put: true, pull: false },
+                draggable: '.never-matches-anything',
+                animation: 150,
+                ghostClass: 'drag-ghost',
+                onAdd: function (evt) {
+                    const item = evt.item;
+                    const userid = item.dataset.userid;
+                    const playerClass = item.dataset.playerClass;
+
+                    // If empty slot or no userid, return to source
+                    if (!userid || item.classList.contains('empty-slot-clickable')) {
+                        evt.from.insertBefore(item, evt.from.children[evt.oldIndex] || null);
+                        return;
+                    }
+
+                    // Call bench API
+                    movePlayerToBench(eventId, userid).then(() => {
+                        isManaged = true;
+                        updateRevertButtonVisibility();
+                        // Route player to correct class column (no full re-render)
+                        const targetCol = playerClass
+                            ? document.querySelector(`.bench-class-column[data-class="${playerClass}"]`)
+                            : null;
+                        if (targetCol) {
+                            delete item.dataset.slotId;
+                            delete item.dataset.partyId;
+                            item.dataset.bench = 'true';
+                            targetCol.appendChild(item);
+                            targetCol.classList.remove('empty-class');
+                        } else {
+                            // Unknown class — just re-render
+                            renderRoster();
+                            return;
+                        }
+                        cleanupBenchDom();
+                        initDragAndDrop();
+                    }).catch(err => {
+                        // Return item to source on failure
+                        evt.from.insertBefore(item, evt.from.children[evt.oldIndex] || null);
+                        showAlert('Bench Error', `Failed to bench player: ${err.message}`);
+                    });
+                }
+            });
+            sortableInstances.push(dropzoneInstance);
+        }
     }
 
     /**
@@ -1874,9 +1924,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             benchContainer.style.display = 'none';
             return;
         }
-        if (benchData.length > 0) {
+        if (benchData.length > 0 || currentUserCanManage) {
             benchContainer.style.display = 'block';
             benchedList.innerHTML = '';
+
+            // Drop zone — always visible for managers so raid players can be benched
+            if (currentUserCanManage) {
+                const dropzone = document.createElement('div');
+                dropzone.id = 'bench-dropzone';
+                dropzone.className = 'bench-dropzone';
+                dropzone.innerHTML = '<i class="fas fa-chair"></i><span>Drag here to bench</span>';
+                benchedList.appendChild(dropzone);
+            }
 
             const discordAbsentEmoji = "612343589070045200";
 
@@ -1979,6 +2038,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const cellCanonicalClass = getCanonicalClass(player.class);
         applyPlayerColor(cellDiv, player.color, cellCanonicalClass);
+        if (cellCanonicalClass) cellDiv.dataset.playerClass = cellCanonicalClass; // used by bench drop zone routing
         if (!player.userid || player.isPlaceholder) { try { cellDiv.classList.add('no-discord-id'); } catch {} }
         applyNoAssignmentsStyling(cellDiv, player);
         markCellDbMismatch(cellDiv, player);

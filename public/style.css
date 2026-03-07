@@ -1238,8 +1238,8 @@ body.rules .rule-body { color: #d0d0d0; }
 body.roster { background-color: #111827; color: #e8e8e8; } /* bg-gray-900 */
 body.roster .content { background: transparent; }
 body.roster #roster-event-title { color: #e8e8e8; }
-body.roster .roster-container { background-color: #0b1220; border: 1px solid #555555; }
-body.roster #bench-container.bench-container { background-color: #0b1220; border: 1px solid #555555 !important; box-shadow: none; }
+body.roster .roster-container { background: rgba(31, 41, 55, 0.6); border: 1px solid #555555; }
+body.roster #bench-container.bench-container { background: rgba(31, 41, 55, 0.6); border: 1px solid #555555 !important; box-shadow: none; }
 body.roster .player-search-modal { background-color: #1a191e; border: 1px solid #555555; }
 body.roster .player-search-header { color: #e8e8e8; }
 body.roster .player-search-input { background-color: #0b1220; border: 1px solid #555555; color: #e8e8e8; }
