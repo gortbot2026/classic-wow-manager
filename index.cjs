@@ -14549,12 +14549,12 @@ app.put('/api/roster/:eventId/player/:discordUserId/position', requireRosterMana
                     await client.query(
                         `UPDATE roster_overrides SET
                             party_id = CASE
-                                WHEN discord_user_id = $1 THEN $2
-                                WHEN discord_user_id = $3 THEN $4
+                                WHEN discord_user_id = $1 THEN $2::integer
+                                WHEN discord_user_id = $3 THEN $4::integer
                             END,
                             slot_id = CASE
-                                WHEN discord_user_id = $1 THEN $5
-                                WHEN discord_user_id = $3 THEN $6
+                                WHEN discord_user_id = $1 THEN $5::integer
+                                WHEN discord_user_id = $3 THEN $6::integer
                             END
                         WHERE event_id = $7 AND discord_user_id IN ($1, $3)`,
                         [
