@@ -146,15 +146,8 @@ i.spec-icon.placeholder-icon {
 /* Roster Grid Container */
 #roster-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr); /* Default: 2 rows of 4 groups */
+    grid-template-columns: repeat(4, 1fr); /* Always 2 rows of 4 groups */
     gap: 12px;
-}
-
-/* On very wide screens: 1 row of 8 */
-@media (min-width: 1600px) {
-    #roster-grid {
-        grid-template-columns: repeat(8, 1fr);
-    }
 }
 
 /* Roster Column (Party) */
@@ -646,15 +639,9 @@ i.spec-icon.placeholder-icon {
 /* Bench class columns grid — mirrors roster layout */
 .bench-class-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr); /* match roster default */
+    grid-template-columns: repeat(4, 1fr); /* Always 2 rows of 4 — matches roster */
     gap: 12px;
     margin-top: 12px;
-}
-
-@media (min-width: 1600px) {
-    .bench-class-grid {
-        grid-template-columns: repeat(8, 1fr);
-    }
 }
 
 .bench-class-column {
