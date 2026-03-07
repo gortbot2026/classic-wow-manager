@@ -1187,62 +1187,61 @@ document.addEventListener('DOMContentLoaded', async () => {
         const fromContainer = evt.from;
         const toContainer = evt.to;
 
-        // No-op: same container, same element, no swap target
-        if (fromContainer === toContainer && !evt.swapItem && evt.oldIndex === evt.newIndex) {
-            reattachAfterDrag(draggedEl, fromContainer, toContainer);
-            return;
-        }
-
+        // Capture all IDs immediately — before any DOM changes
         const userid = draggedEl.dataset.userid;
-        if (!userid) {
-            reattachAfterDrag(draggedEl, fromContainer, toContainer);
-            return;
-        }
-
         const fromIsBench = fromContainer.classList.contains('bench-class-column');
         const toIsBench = toContainer.classList.contains('bench-class-column');
+        const targetPartyId = toContainer.dataset.partyId;
 
-        // Revert the DOM move — let OptimisticUpdates handle visual updates cleanly
-        // SortableJS has already moved the node (and may have swapped); put both back
-        try {
-            if (evt.swapItem) {
-                // Swap mode: restore both elements to original positions
-                fromContainer.insertBefore(draggedEl, fromContainer.children[evt.oldIndex] || null);
-                toContainer.insertBefore(evt.swapItem, toContainer.children[evt.newIndex] || null);
-            } else if (evt.oldIndex < fromContainer.children.length) {
-                fromContainer.insertBefore(draggedEl, fromContainer.children[evt.oldIndex]);
-            } else {
-                fromContainer.appendChild(draggedEl);
-            }
-        } catch (_) { /* DOM revert best-effort */ }
+        // swapItem = the player that was at the drop target (if any)
+        const swapItem = evt.swapItem;
+        const targetSlotId = swapItem?.dataset?.slotId
+            ? parseInt(swapItem.dataset.slotId, 10)
+            : getTargetSlotId(toContainer, evt.newIndex);
 
-        // Determine operation and execute
+        // No-op: same container, same slot, no swap
+        if (fromContainer === toContainer && !swapItem && evt.oldIndex === evt.newIndex) return;
+        if (!userid) return;
+
+        // SortableJS has already moved the DOM visually (swap looks correct).
+        // We let it stay — no manual DOM revert needed.
+        // After API responds, renderRoster() will sync DOM to server state.
+
         if (!fromIsBench && toIsBench) {
-            // Raid → Bench: move player to bench
-            executeDragToBench(userid);
+            // Raid → Bench
+            executeDragSimple(async () => {
+                await movePlayerToBench(eventId, userid);
+            });
         } else if (fromIsBench && !toIsBench) {
-            // Bench → Raid: move player into a raid slot
-            const targetPartyId = toContainer.dataset.partyId;
-            // Use swapItem slot directly if available (swap mode); otherwise fall back to index
-            const targetSlotId = evt.swapItem?.dataset?.slotId
-                ? parseInt(evt.swapItem.dataset.slotId, 10)
-                : getTargetSlotId(toContainer, evt.newIndex);
-            if (targetPartyId && targetSlotId) {
-                executeDragToRaid(userid, targetPartyId, targetSlotId, true);
-            }
+            // Bench → Raid
+            if (!targetPartyId || !targetSlotId) return;
+            executeDragSimple(async () => {
+                await updatePlayerPosition(eventId, userid, targetPartyId, targetSlotId);
+            });
         } else if (!fromIsBench && !toIsBench) {
-            // Raid → Raid: swap or move to empty
-            const targetPartyId = toContainer.dataset.partyId;
-            const targetSlotId = evt.swapItem?.dataset?.slotId
-                ? parseInt(evt.swapItem.dataset.slotId, 10)
-                : getTargetSlotId(toContainer, evt.newIndex);
-            if (targetPartyId && targetSlotId) {
-                executeDragToRaid(userid, targetPartyId, targetSlotId, false);
-            }
+            // Raid → Raid (move or swap)
+            if (!targetPartyId || !targetSlotId) return;
+            executeDragSimple(async () => {
+                await updatePlayerPosition(eventId, userid, targetPartyId, targetSlotId);
+            });
         }
-        // Bench → Bench: no meaningful operation, ignore
+        // Bench → Bench: no-op
+    }
 
-        reattachAfterDrag(draggedEl, fromContainer, toContainer);
+    /**
+     * Executes a drag API call. On success/failure, re-renders the roster to sync DOM.
+     * SortableJS already shows the visual result; re-render confirms or rolls back.
+     */
+    async function executeDragSimple(apiFn) {
+        try {
+            await apiFn();
+            isManaged = true;
+            updateRevertButtonVisibility();
+        } catch (error) {
+            showAlert('Move Error', `Error moving player: ${error.message}`);
+        }
+        // Always re-render to sync DOM with server state (success or rollback)
+        try { await renderRoster(); } catch (_) {}
     }
 
     /**
