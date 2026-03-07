@@ -1267,7 +1267,7 @@ body.assignments .nav-buttons { border-color: rgba(255,255,255,0.12); }
 
 /* --- Raidlogs dark theme --- */
 body.raidlogs { background-color: #111827; color: #e8e8e8; }
-body.raidlogs .container { background: transparent; }
+body.raidlogs .container { background: transparent; margin: 0 auto; }
 body.raidlogs .auth-gate { background: #1a191e; border: 1px solid #555555; color: #e8e8e8; }
 body.raidlogs .auth-gate .lock { background:#0b1220; border:1px solid #1f2937; color:#93c5fd; }
 body.raidlogs .loading-indicator,
