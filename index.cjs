@@ -13850,14 +13850,14 @@ app.get('/api/roster/:eventId/player-hover/:discordUserId', requireRosterManager
             }
         }
 
-        // 7. Gold earned last 10 raids — reuse computeTotalsFromSnapshot pattern
-        // Get 10 most recent published raids globally
+        // 7. Gold earned last 10 weeks — reuse computeTotalsFromSnapshot pattern
+        // Get all published raids in the last 10 weeks (70 days)
         const recentRaidsRes = await client.query(
             `SELECT event_id, shared_gold_pot
              FROM rewards_snapshot_events
              WHERE published = true AND shared_gold_pot IS NOT NULL AND shared_gold_pot > 0
-             ORDER BY published_at DESC NULLS LAST
-             LIMIT 10`
+               AND published_at >= NOW() - INTERVAL '70 days'
+             ORDER BY published_at DESC NULLS LAST`
         );
 
         let goldEarnedLast10Raids = 0;

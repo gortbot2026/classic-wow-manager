@@ -5246,12 +5246,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             rows.push(['📊 Total raids char/acc', `${apiData.characterRaidCount} / ${apiData.accountRaidCount}`]);
         }
 
-        // Gold earned/spent last 10 raids
+        // Gold earned/spent last 10 weeks
         if (apiData) {
             const earned = apiData.goldEarnedLast10Raids || 0;
             const spent = apiData.goldSpentLast10Raids || 0;
-            rows.push(['💰 Gold earned (10 raids)', `${earned.toLocaleString()}g`]);
-            rows.push(['💸 Gold spent (10 raids)', `${spent.toLocaleString()}g`]);
+            rows.push(['💰 Gold earned (10 weeks)', `${earned.toLocaleString()}g`]);
+            rows.push(['💸 Gold spent (10 weeks)', `${spent.toLocaleString()}g`]);
         }
 
         // Build HTML
