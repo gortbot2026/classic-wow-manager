@@ -1171,9 +1171,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         // Create Sortable for each bench class column
+        // emptyInsertThreshold allows drops into empty bench columns (no player cells present)
         document.querySelectorAll('.bench-class-column').forEach(col => {
             col.classList.add('sortable-enabled');
-            const instance = new Sortable(col, { ...sharedConfig });
+            const instance = new Sortable(col, { ...sharedConfig, emptyInsertThreshold: 40 });
             sortableInstances.push(instance);
         });
     }
@@ -1249,15 +1250,43 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (!fromIsBench && toIsBench) {
             // Raid → Bench
-            executeDragSimple(async () => {
-                await movePlayerToBench(eventId, userid);
-            }, null); // bench moves always re-render (bench HTML needs to update)
+            if (swapItem && swapItem.dataset.userid && !swapItem.classList.contains('empty-slot-clickable')) {
+                // Dropped ONTO a bench player → swap: bench player takes raid slot, raid player goes to bench
+                // Call updatePlayerPosition for the bench player to move them to the freed raid slot.
+                // Server will auto-bench the occupant (raid player) since they're currently there.
+                const benchPlayerUserId = swapItem.dataset.userid;
+                executeDragSimple(async () => {
+                    await updatePlayerPosition(eventId, benchPlayerUserId, sourcePartyId, sourceSlotId);
+                }, () => {
+                    // Update bench player's data attrs (now in raid slot)
+                    swapItem.dataset.slotId = sourceSlotId;
+                    swapItem.dataset.partyId = sourcePartyId;
+                    // Clean up empty slots that may have ended up in bench columns
+                    cleanupBenchDom();
+                    initDragAndDrop();
+                });
+            } else {
+                // Dropped onto empty bench area → just bench the raid player
+                executeDragSimple(async () => {
+                    await movePlayerToBench(eventId, userid);
+                }, () => {
+                    cleanupBenchDom();
+                    initDragAndDrop();
+                });
+            }
         } else if (fromIsBench && !toIsBench) {
             // Bench → Raid
             if (!targetPartyId || !targetSlotId) return;
             executeDragSimple(async () => {
                 await updatePlayerPosition(eventId, userid, targetPartyId, targetSlotId);
-            }, null); // bench→raid always re-render (bench HTML needs to update)
+            }, () => {
+                // Update the bench player's data attrs (now a raid slot)
+                draggedEl.dataset.slotId = targetSlotId;
+                draggedEl.dataset.partyId = targetPartyId;
+                // Clean up any empty-slot cells that landed in the bench
+                cleanupBenchDom();
+                initDragAndDrop();
+            });
         } else if (!fromIsBench && !toIsBench) {
             // Raid → Raid (move or swap)
             if (!targetPartyId || !targetSlotId) return;
@@ -1266,6 +1295,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             }, updateDataAttrs); // pass callback to update data attrs on success
         }
         // Bench → Bench: no-op
+    }
+
+    /**
+     * Removes empty-slot cells and other stray raid-DOM elements from bench columns.
+     * Called after bench drag operations to keep bench clean without a full re-render.
+     */
+    function cleanupBenchDom() {
+        document.querySelectorAll('.bench-class-column').forEach(col => {
+            // Remove empty-slot-clickable cells (they belong in raid columns only)
+            col.querySelectorAll('.empty-slot-clickable').forEach(el => el.remove());
+            // Update empty-class state
+            const hasBenchPlayers = col.querySelectorAll('.roster-cell.player-filled[data-bench="true"]').length > 0
+                || col.querySelectorAll('.roster-cell.player-filled:not([data-slot-id])').length > 0;
+            col.classList.toggle('empty-class', !hasBenchPlayers);
+        });
     }
 
     /**
