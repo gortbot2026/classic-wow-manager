@@ -2862,6 +2862,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             let html = '';
             joinEvents.forEach(event => {
                 const username = event.username || 'Unknown';
+                const discordId = event.userId || event.discordId || event.user_id || '';
                 const ts = event.timestamp ? new Date(event.timestamp) : null;
                 const ago = ts ? formatTimeAgoSidebar(ts) : '';
                 html += `<div style="background:rgba(87,242,135,0.05);border-left:3px solid #57F287;padding:6px 8px;border-radius:4px;margin-bottom:4px;">
@@ -2870,6 +2871,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         <span style="color:#fff;font-weight:600;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtmlSidebar(username)}</span>
                         <span style="color:#72767D;font-size:10px;white-space:nowrap;">${ago}</span>
                     </div>
+                    ${discordId ? `<div style="color:#72767D;font-size:10px;margin-top:2px;font-family:monospace;">${escapeHtmlSidebar(discordId)}</div>` : ''}
                 </div>`;
             });
             container.innerHTML = html;

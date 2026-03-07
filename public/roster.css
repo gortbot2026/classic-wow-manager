@@ -572,8 +572,9 @@ i.spec-icon.placeholder-icon {
     color: #f3f4f6;
 }
 
+/* Player name color is set via inline style (class color) in applyPlayerColor() */
 .roster-cell.player-filled .player-name span {
-    color: #f3f4f6 !important;
+    /* color managed by JS — do not override with !important */
 }
 
 .roster-cell.player-filled .alt-char-name {
