@@ -1540,10 +1540,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             for (const cls of BENCH_CLASS_ORDER) {
                 const players = classBuckets[cls];
-                if (players.length === 0) continue;
 
                 const col = document.createElement('div');
-                col.className = 'bench-class-column';
+                col.className = players.length === 0 ? 'bench-class-column empty-class' : 'bench-class-column';
 
                 // Class header
                 const header = document.createElement('div');
