@@ -170,7 +170,7 @@ i.spec-icon.placeholder-icon {
 
 /* Roster Cell (Slot) */
 .roster-cell {
-    width: 140px;
+    width: 160px;
     height: 30px;
     display: flex;
     align-items: center;
@@ -997,43 +997,64 @@ i.spec-icon.placeholder-icon {
     right: 0;
     top: 94px;
     bottom: 0;
-    width: 280px;
+    width: 300px;
     background: rgba(17, 24, 39, 0.97);
     border-left: 1px solid rgba(75, 85, 99, 0.5);
     z-index: 900;
     overflow-y: auto;
-    padding: 16px 12px;
+    padding: 20px 16px;
     transition: transform 0.3s ease;
     box-shadow: -4px 0 16px rgba(0, 0, 0, 0.3);
 }
 
 .admin-sidebar.collapsed {
-    transform: translateX(280px);
+    transform: translateX(300px);
 }
 
 /* Toggle button — always visible */
 .admin-sidebar-toggle {
     position: absolute;
-    left: -28px;
+    left: -36px;
     top: 12px;
-    width: 28px;
-    height: 36px;
-    background: rgba(17, 24, 39, 0.97);
-    border: 1px solid rgba(75, 85, 99, 0.5);
+    width: 36px;
+    height: 44px;
+    background: rgba(88, 101, 242, 0.9);
+    border: 1px solid rgba(88, 101, 242, 0.7);
     border-right: none;
-    border-radius: 6px 0 0 6px;
-    color: #9ca3af;
+    border-radius: 8px 0 0 8px;
+    color: #ffffff;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     font-size: 12px;
-    transition: color 0.2s ease;
+    gap: 2px;
+    transition: background 0.2s ease, color 0.2s ease;
     z-index: 901;
 }
 
+.admin-sidebar-toggle .toggle-label-text {
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    line-height: 1;
+}
+
 .admin-sidebar-toggle:hover {
-    color: #f3f4f6;
+    background: rgba(88, 101, 242, 1);
+    color: #ffffff;
+}
+
+/* First-load pulse animation for toggle */
+@keyframes adminTogglePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.6); }
+    50% { box-shadow: 0 0 12px 4px rgba(88, 101, 242, 0.8); }
+}
+
+.admin-sidebar-toggle.pulse-animate {
+    animation: adminTogglePulse 1.5s ease-in-out 3;
 }
 
 /* Sidebar section headings */
@@ -1043,7 +1064,7 @@ i.spec-icon.placeholder-icon {
     letter-spacing: 0.5px;
     color: #6b7280;
     font-weight: 600;
-    margin: 12px 0 6px 0;
+    margin: 16px 0 6px 0;
     padding-bottom: 4px;
     border-bottom: 1px solid rgba(75, 85, 99, 0.3);
 }
@@ -1051,23 +1072,33 @@ i.spec-icon.placeholder-icon {
 /* Override button-panel styles for sidebar context */
 .admin-sidebar .panel-button {
     width: 100%;
-    height: 32px;
-    font-size: 0.78em;
-    margin-bottom: 4px;
+    height: 38px;
+    font-size: 0.82em;
+    margin-bottom: 8px;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+    text-align: left;
 }
 
 .admin-sidebar .toggle-container {
     width: 100%;
-    margin-bottom: 4px;
+    margin-bottom: 8px;
 }
 
 .admin-sidebar .toggle-container.wide {
     width: 100%;
 }
 
+/* Safety net: hide spec and confirmation icons */
+.spec-icon,
+.confirmation-icon {
+    display: none;
+}
+
 /* Main content margin shift when sidebar is open */
 body.roster.sidebar-expanded .content {
-    margin-right: 290px;
+    margin-right: 310px;
 }
 
 /* Recent Joins panel inside sidebar */

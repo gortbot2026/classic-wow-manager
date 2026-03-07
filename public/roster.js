@@ -270,7 +270,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const displayName = newPlayerData.mainCharacterName || newPlayerData.name;
             const nameClass = newPlayerData.mainCharacterName ? 'player-name' : 'player-name unregistered-name';
-            const specIconHTML = newPlayerData.spec_emote ? `<img src="https://cdn.discordapp.com/emojis/${newPlayerData.spec_emote}.png" class="spec-icon">` : '';
             
             // Check if player is absent for bench display
             const discordAbsentEmoji = "612343589070045200";
@@ -281,20 +280,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 cell.classList.remove('absent-player');
             }
 
-            // Add confirmation status indicator — only if isConfirmed is explicitly present
-            let confirmationIconHTML = '';
-            if (newPlayerData.isConfirmed !== undefined && newPlayerData.isConfirmed !== null) {
-                if (newPlayerData.isConfirmed === "confirmed" || newPlayerData.isConfirmed === true) {
-                    confirmationIconHTML = '<i class="fas fa-check confirmation-icon confirmed" title="Confirmed"></i>';
-                } else {
-                    confirmationIconHTML = '<i class="fas fa-times confirmation-icon unconfirmed" title="Not Confirmed"></i>';
-                }
-            }
-
             let dropdownContentHTML = await buildDropdownContent(newPlayerData, isBenched);
 
+            // Single icon only: class-icon-badge is added by applyPlayerColor()
             cell.innerHTML = `
-                <div class="${nameClass}" data-character-name="${displayName}" data-discord-name="${newPlayerData.name}">${specIconHTML}${confirmationIconHTML}<span>${displayName}</span></div>
+                <div class="${nameClass}" data-character-name="${displayName}" data-discord-name="${newPlayerData.name}"><span>${displayName}</span></div>
                 <div class="player-details-dropdown">${dropdownContentHTML}</div>`;
 
             const cellCanonicalClass = getCanonicalClass(newPlayerData.class);
@@ -1595,34 +1585,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const displayName = player.mainCharacterName || player.name;
         
-        // For placeholders, use skull icon instead of spec icon
-        let specIconHTML = '';
+        // Mark placeholders for styling (dashed red border via CSS)
         if (player.isPlaceholder === true || player.is_placeholder === true) {
-            specIconHTML = '<i class="fas fa-skull spec-icon placeholder-icon" title="Placeholder - No Discord ID"></i>';
             cellDiv.classList.add('placeholder-player');
-        } else {
-            specIconHTML = player.spec_emote ? `<img src="https://cdn.discordapp.com/emojis/${player.spec_emote}.png" class="spec-icon">` : '';
-            
-            // Only add the extra absent icon if the player doesn't already have the Discord absent emoji as their spec icon
-            if (isAbsent && player.spec_emote !== "612343589070045200") {
-                specIconHTML += '<img src="https://cdn.discordapp.com/emojis/612343589070045200.png" class="spec-icon absent-icon">';
-            }
-        }
-
-        // Add confirmation status indicator (not for placeholders, only if isConfirmed is present)
-        let confirmationIconHTML = '';
-        if (!player.isPlaceholder && player.isConfirmed !== undefined && player.isConfirmed !== null) {
-            if (player.isConfirmed === "confirmed" || player.isConfirmed === true) {
-                confirmationIconHTML = '<i class="fas fa-check confirmation-icon confirmed" title="Confirmed"></i>';
-            } else {
-                confirmationIconHTML = '<i class="fas fa-times confirmation-icon unconfirmed" title="Not Confirmed"></i>';
-            }
         }
 
         let dropdownContentHTML = await buildDropdownContent(player, isBenched);
 
+        // Single icon only: class-icon-badge is added by applyPlayerColor()
         cellDiv.innerHTML = `
-            <div class="player-name" data-character-name="${displayName}" data-discord-name="${player.name}">${specIconHTML}${confirmationIconHTML}<span>${displayName}</span></div>
+            <div class="player-name" data-character-name="${displayName}" data-discord-name="${player.name}"><span>${displayName}</span></div>
             <div class="player-details-dropdown">${dropdownContentHTML}</div>`;
 
         const cellCanonicalClass = getCanonicalClass(player.class);
@@ -2377,19 +2349,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.body.classList.add('sidebar-expanded');
         }
 
-        // Toggle button
+        // Toggle button with "Admin" label
         const toggleBtn = document.createElement('div');
         toggleBtn.className = 'admin-sidebar-toggle';
         toggleBtn.innerHTML = isCollapsed
-            ? '<i class="fas fa-chevron-left"></i>'
-            : '<i class="fas fa-chevron-right"></i>';
+            ? '<i class="fas fa-chevron-left"></i><span class="toggle-label-text">Admin</span>'
+            : '<i class="fas fa-chevron-right"></i><span class="toggle-label-text">Admin</span>';
+
+        // First-load pulse animation (once per session)
+        if (!sessionStorage.getItem('adminToggleSeen')) {
+            toggleBtn.classList.add('pulse-animate');
+            toggleBtn.addEventListener('animationend', () => {
+                toggleBtn.classList.remove('pulse-animate');
+                sessionStorage.setItem('adminToggleSeen', '1');
+            });
+        }
+
         toggleBtn.addEventListener('click', () => {
             const nowCollapsed = sidebar.classList.toggle('collapsed');
             localStorage.setItem('adminSidebarCollapsed', nowCollapsed);
             document.body.classList.toggle('sidebar-expanded', !nowCollapsed);
             toggleBtn.innerHTML = nowCollapsed
-                ? '<i class="fas fa-chevron-left"></i>'
-                : '<i class="fas fa-chevron-right"></i>';
+                ? '<i class="fas fa-chevron-left"></i><span class="toggle-label-text">Admin</span>'
+                : '<i class="fas fa-chevron-right"></i><span class="toggle-label-text">Admin</span>';
         });
         sidebar.appendChild(toggleBtn);
 

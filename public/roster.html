@@ -106,6 +106,7 @@
         <div class="button-panel">
             <a id="comp-tool-button" href="#" class="panel-button" target="_blank">
                 <i class="fas fa-wrench"></i>
+                <span>Comp Tool</span>
             </a>
             <button id="compare-string-button" class="panel-button">
                 <i class="fas fa-clipboard-check"></i>
@@ -167,23 +168,21 @@
 
             <!-- Raidleader name (autocomplete) -->
             <div class="toggle-container wide" id="raidleader-container">
-                <span class="toggle-label">Raidleader</span>
                 <div class="input-wrap rl-inline">
                     <div class="rl-name">
-                        <input id="raidleader-input" type="text" class="player-search-input" placeholder="Type to search roster..." autocomplete="off">
+                        <input id="raidleader-input" type="text" class="player-search-input" placeholder="Raidleader" autocomplete="off">
                         <div id="raidleader-suggestions" class="player-dropdown" style="display:none;"></div>
                     </div>
                     <div class="rl-cut">
-                        <input id="raidleader-cut-input" type="number" inputmode="decimal" step="0.01" min="0" placeholder="e.g. 4">
+                        <input id="raidleader-cut-input" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Cut %">
                     </div>
                 </div>
             </div>
 
             <!-- Invites by (saved locally per event) -->
             <div class="toggle-container wide" id="invites-by-container">
-                <span class="toggle-label">Invites by</span>
                 <div class="input-wrap">
-                    <input id="invites-by-input" type="text" class="player-search-input" placeholder="Type name..." autocomplete="off">
+                    <input id="invites-by-input" type="text" class="player-search-input" placeholder="Invites by" autocomplete="off">
                 </div>
             </div>
 
