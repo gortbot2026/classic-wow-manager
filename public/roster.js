@@ -1136,7 +1136,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const sharedConfig = {
             group: { name: 'roster', pull: true, put: true },
-            draggable: '.player-filled',
+            draggable: '.roster-cell',      // All cells draggable (filled + empty) so empty slots are valid targets
+            filter: '.empty-slot-clickable', // Empty slots can't be PICKED UP, only dropped onto
+            preventOnFilter: false,
             animation: 150,
             delay: 150,
             delayOnTouchOnly: true,
@@ -1144,10 +1146,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             ghostClass: 'drag-ghost',
             chosenClass: 'drag-chosen',
             dragClass: 'drag-active',
-            swap: true,                     // Swap plugin: drop ON a player = swap, not insert
-            swapClass: 'drag-swap-target',  // Green highlight on swap target
-            sort: false,                    // Slots are fixed — no within-group reordering
-            onStart: function () {
+            swap: true,                     // Swap plugin: drop ON a cell = swap/move, not insert
+            swapClass: 'drag-swap-target',  // Green highlight on drop target
+            invertSwap: true,               // Snap to swap (not insert gap) across full cell height
+            onStart: function (evt) {
+                // Only allow dragging filled cells — cancel if empty slot is somehow grabbed
+                if (evt.item.classList.contains('empty-slot-clickable')) {
+                    evt.cancel ? evt.cancel() : (evt.item.style.display = '');
+                }
                 isDragging = true;
             },
             onEnd: function (evt) {
@@ -1193,15 +1199,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         const toIsBench = toContainer.classList.contains('bench-class-column');
         const targetPartyId = toContainer.dataset.partyId;
 
-        // swapItem = the player that was at the drop target (if any)
+        // swapItem = the cell at the drop target (filled player OR empty slot)
         const swapItem = evt.swapItem;
+        // Get target slot — prefer swapItem's data-slot-id (reliable), fall back to index lookup
         const targetSlotId = swapItem?.dataset?.slotId
             ? parseInt(swapItem.dataset.slotId, 10)
             : getTargetSlotId(toContainer, evt.newIndex);
 
-        // No-op: same container, same slot, no swap
+        // No-op: same slot (dropped on self or nothing changed)
+        if (fromContainer === toContainer && swapItem === draggedEl) return;
         if (fromContainer === toContainer && !swapItem && evt.oldIndex === evt.newIndex) return;
         if (!userid) return;
+
+        // Ignore if dragged element is an empty slot (shouldn't happen with filter, but safety check)
+        if (draggedEl.classList.contains('empty-slot-clickable')) return;
 
         // SortableJS has already moved the DOM visually (swap looks correct).
         // We let it stay — no manual DOM revert needed.
