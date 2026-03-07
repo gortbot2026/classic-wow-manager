@@ -101,6 +101,48 @@
         .btn-sm { padding: 4px 10px; font-size: 12px; }
         .form-row { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
         .form-row label { font-weight: 500; min-width: 120px; }
+
+        /* Maya configuration layout */
+        .maya-soul-block { margin-bottom: 28px; }
+        .maya-section-label {
+            font-size: 13px; font-weight: 600; color: var(--text);
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 8px;
+        }
+        .maya-section-label i { color: #f59e0b; }
+        .maya-section-sub { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 4px; }
+        .maya-contexts-label {
+            font-size: 13px; font-weight: 600; color: var(--text);
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 12px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+        .maya-contexts-label i { color: #60a5fa; }
+        .maya-contexts-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+        .maya-context-col {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .maya-ctx-header {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 14px; font-weight: 600; color: var(--text);
+        }
+        .maya-ctx-desc {
+            font-size: 12px; color: var(--muted); line-height: 1.5;
+        }
+        .maya-context-col textarea {
+            min-height: 160px; font-size: 12px; flex: 1;
+        }
         .template-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
@@ -252,32 +294,62 @@
         <!-- Soul Editor -->
         <div class="panel">
             <div class="panel-header">
-                <h2><i class="fas fa-brain"></i> Soul Editor</h2>
-                <button class="btn btn-primary" onclick="savePersona()"><i class="fas fa-save"></i> Save</button>
-            </div>
-            <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:4px;">Soul (base persona — used in all contexts)</label>
-            <textarea id="system-prompt" placeholder="Loading Maya's system prompt..."></textarea>
-            <div class="form-row" style="margin-top: 12px;">
-                <label>Model:</label>
-                <select id="model-select">
-                    <option value="claude-haiku-4-5">claude-haiku-4-5 (Fast, cheap)</option>
-                    <option value="claude-sonnet-4-5">claude-sonnet-4-5 (Smarter, pricier)</option>
-                </select>
-                <label>Max Context:</label>
-                <input type="number" id="max-context" min="5" max="100" value="20" style="width: 80px;">
+                <h2><i class="fas fa-brain"></i> Maya Configuration</h2>
+                <button class="btn btn-primary" onclick="savePersona()"><i class="fas fa-save"></i> Save All</button>
             </div>
 
-            <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
-                <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--muted);">Context Overrides <span style="font-weight:400;font-size:12px;">(appended after Soul for each context — leave blank for defaults)</span></h3>
+            <!-- Soul — full width -->
+            <div class="maya-soul-block">
+                <div class="maya-section-label">
+                    <i class="fas fa-star"></i> Soul
+                    <span class="maya-section-sub">Base persona — shared across all contexts</span>
+                </div>
+                <textarea id="system-prompt" placeholder="Loading Maya's soul..."></textarea>
+                <div class="form-row" style="margin-top:10px;">
+                    <label>Default model:</label>
+                    <select id="model-select">
+                        <option value="claude-haiku-4-5">claude-haiku-4-5 (Fast, cheap)</option>
+                        <option value="claude-sonnet-4-5">claude-sonnet-4-5 (Smarter, pricier)</option>
+                    </select>
+                    <label>Max context messages:</label>
+                    <input type="number" id="max-context" min="5" max="100" value="20" style="width:70px;">
+                </div>
+            </div>
 
-                <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:4px;">Management Channel Context</label>
-                <textarea id="management-context" placeholder="Leave blank to use default. Override the context block injected when Maya responds in the management Discord channel." style="height:100px;margin-bottom:12px;"></textarea>
+            <!-- 3-column Maya contexts -->
+            <div class="maya-contexts-label">
+                <i class="fas fa-layer-group"></i> Contexts
+                <span class="maya-section-sub">Each context is appended after the Soul — leave blank to use the built-in default</span>
+            </div>
+            <div class="maya-contexts-grid">
 
-                <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:4px;">Public/Officer Channel Context</label>
-                <textarea id="channel-context" placeholder="Leave blank to use default. Override the context block for @maya mentions in Discord channels." style="height:100px;margin-bottom:12px;"></textarea>
+                <div class="maya-context-col">
+                    <div class="maya-ctx-header">
+                        <i class="fas fa-shield-alt" style="color:#a78bfa;"></i>
+                        <span>Management Channel</span>
+                    </div>
+                    <div class="maya-ctx-desc">Responds to everything in the private management Discord channel. Full access to all player data, gold, conversations.</div>
+                    <textarea id="management-context" placeholder="Override management channel context..."></textarea>
+                </div>
 
-                <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:4px;">Gear-Check Channel Context</label>
-                <textarea id="gear-check-context" placeholder="Leave blank to use default. Extra context injected for all gear-check channel responses." style="height:100px;"></textarea>
+                <div class="maya-context-col">
+                    <div class="maya-ctx-header">
+                        <i class="fas fa-hashtag" style="color:#60a5fa;"></i>
+                        <span>Discord Channels</span>
+                    </div>
+                    <div class="maya-ctx-desc">Responds when @maya is used in any public or officer Discord channel. Restricted to non-private data.</div>
+                    <textarea id="channel-context" placeholder="Override channel context..."></textarea>
+                </div>
+
+                <div class="maya-context-col">
+                    <div class="maya-ctx-header">
+                        <i class="fas fa-user-check" style="color:#34d399;"></i>
+                        <span>Gear-Check Channel</span>
+                    </div>
+                    <div class="maya-ctx-desc">Responds to new applicants posting in the gear-check channel. Warm, welcoming tone. Can DM players directly.</div>
+                    <textarea id="gear-check-context" placeholder="Override gear-check context..."></textarea>
+                </div>
+
             </div>
         </div>
 
