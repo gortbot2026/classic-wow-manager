@@ -1500,7 +1500,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     /** Class ordering for bench columns */
-    const BENCH_CLASS_ORDER = ['warrior', 'paladin', 'hunter', 'rogue', 'priest', 'shaman', 'mage', 'warlock', 'druid'];
+    const BENCH_CLASS_ORDER = ['warrior', 'hunter', 'rogue', 'priest', 'shaman', 'mage', 'warlock', 'druid']; // No paladin — Horde only
 
     async function renderBench(benchData) {
         if (!currentUserCanManage) {

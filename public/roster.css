@@ -120,10 +120,10 @@ i.spec-icon.placeholder-icon {
 }
 
 .roster-cell.placeholder-player {
-    border: 2px dashed #ef4444 !important;
+    background-color: rgba(239, 68, 68, 0.5) !important; /* 50% transparent red */
+    border: none !important;
     position: relative;
     opacity: 0.95;
-    /* Background color is set by applyPlayerColor() based on class */
 }
 
 #roster-event-title {
@@ -910,7 +910,8 @@ i.spec-icon.placeholder-icon {
 
 /* Roster DB mismatch indicator */
 .roster-cell.db-mismatch {
-    border: 3px solid #ff0000 !important; /* Solid red, no transparency */
+    background-color: rgba(255, 0, 0, 0.5) !important; /* 50% transparent red */
+    border: none !important;
 }
 
 /* Fix Name overlay styles */
