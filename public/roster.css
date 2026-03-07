@@ -162,10 +162,11 @@ i.spec-icon.placeholder-icon {
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 10px 12px;
+    padding: 10px 8px;
     background: rgba(17, 24, 39, 0.5);
     border: 1px solid rgba(75, 85, 99, 0.3);
     border-radius: 8px;
+    min-width: 0; /* Allow grid to shrink columns to fit */
 }
 
 /* Thin vertical divider lines between roster groups */
@@ -176,7 +177,7 @@ i.spec-icon.placeholder-icon {
 
 /* Roster Cell (Slot) */
 .roster-cell {
-    width: 175px;
+    width: 100%; /* Fill group column width */
     height: 34px;
     display: flex;
     align-items: center;
@@ -369,11 +370,11 @@ i.spec-icon.placeholder-icon {
 
 /* Class icon next to anchor bar */
 .class-icon-badge {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
     flex-shrink: 0;
-    margin-left: 3px;
-    margin-right: 2px;
+    margin-left: 4px;
+    margin-right: 6px;
 }
 
 .player-name {
@@ -1007,10 +1008,17 @@ i.spec-icon.placeholder-icon {
     background: rgba(17, 24, 39, 0.97);
     border-left: 1px solid rgba(75, 85, 99, 0.5);
     z-index: 900;
-    overflow-y: auto;
+    overflow: visible; /* Must be visible so toggle tab isn't clipped */
     padding: 20px 16px;
     transition: transform 0.3s ease;
     box-shadow: -4px 0 16px rgba(0, 0, 0, 0.3);
+}
+
+/* Inner scroll container so sidebar content scrolls without clipping the toggle */
+.admin-sidebar-inner {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .admin-sidebar.collapsed {

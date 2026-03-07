@@ -2385,11 +2385,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         sidebar.appendChild(toggleBtn);
 
+        // Inner scrollable container (keeps toggle visible outside overflow)
+        const sidebarInner = document.createElement('div');
+        sidebarInner.className = 'admin-sidebar-inner';
+        sidebar.appendChild(sidebarInner);
+
         // Title
         const title = document.createElement('div');
         title.style.cssText = 'color:#e5e7eb;font-weight:700;font-size:0.9em;margin-bottom:12px;padding-left:2px;';
         title.textContent = 'Admin Controls';
-        sidebar.appendChild(title);
+        sidebarInner.appendChild(title);
 
         // Move all button-panel content into sidebar
         const btnPanel = document.querySelector('.button-panel');
@@ -2398,7 +2403,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const sectionTitle1 = document.createElement('div');
             sectionTitle1.className = 'sidebar-section-title';
             sectionTitle1.textContent = 'Actions';
-            sidebar.appendChild(sectionTitle1);
+            sidebarInner.appendChild(sectionTitle1);
 
             // Move action buttons
             const buttons = btnPanel.querySelectorAll('.panel-button');
@@ -2406,32 +2411,32 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const clone = btn.cloneNode(true);
                 clone.style.width = '100%';
                 clone.style.marginBottom = '4px';
-                sidebar.appendChild(clone);
+                sidebarInner.appendChild(clone);
             });
 
             const sectionTitle2 = document.createElement('div');
             sectionTitle2.className = 'sidebar-section-title';
             sectionTitle2.textContent = 'Toggles';
-            sidebar.appendChild(sectionTitle2);
+            sidebarInner.appendChild(sectionTitle2);
 
             // Move toggle containers
             const toggles = btnPanel.querySelectorAll('.toggle-container');
             toggles.forEach(toggle => {
                 const clone = toggle.cloneNode(true);
-                sidebar.appendChild(clone);
+                sidebarInner.appendChild(clone);
             });
 
             const sectionTitle3 = document.createElement('div');
             sectionTitle3.className = 'sidebar-section-title';
             sectionTitle3.textContent = 'Settings';
-            sidebar.appendChild(sectionTitle3);
+            sidebarInner.appendChild(sectionTitle3);
 
             // Move inputs (raidleader, cut, invites-by)
             const inputContainers = btnPanel.querySelectorAll('.input-container, .raidleader-container, .cut-container, .invites-by-container');
             inputContainers.forEach(container => {
                 const clone = container.cloneNode(true);
                 clone.style.width = '100%';
-                sidebar.appendChild(clone);
+                sidebarInner.appendChild(clone);
             });
 
             // Move any remaining children that weren't captured above
@@ -2439,7 +2444,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             remaining.forEach(el => {
                 const clone = el.cloneNode(true);
                 clone.style.width = '100%';
-                sidebar.appendChild(clone);
+                sidebarInner.appendChild(clone);
             });
         }
 
@@ -2447,19 +2452,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         const joinsSection = document.createElement('div');
         joinsSection.className = 'sidebar-section-title';
         joinsSection.textContent = 'Discord';
-        sidebar.appendChild(joinsSection);
+        sidebarInner.appendChild(joinsSection);
 
         const joinsBtn = document.createElement('button');
         joinsBtn.className = 'panel-button';
         joinsBtn.style.cssText = 'width:100%;margin-bottom:4px;height:32px;font-size:0.78em;';
         joinsBtn.innerHTML = '<i class="fab fa-discord"></i><span>Recent Joins</span>';
-        sidebar.appendChild(joinsBtn);
+        sidebarInner.appendChild(joinsBtn);
 
         const joinsPanel = document.createElement('div');
         joinsPanel.className = 'sidebar-recent-joins';
         joinsPanel.id = 'sidebar-recent-joins';
         joinsPanel.innerHTML = '<div style="color:#72767D;text-align:center;padding:12px;font-size:11px;"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
-        sidebar.appendChild(joinsPanel);
+        sidebarInner.appendChild(joinsPanel);
 
         joinsBtn.addEventListener('click', () => {
             joinsPanel.classList.toggle('visible');
