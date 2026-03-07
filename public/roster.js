@@ -1246,13 +1246,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function executeDragSimple(apiFn) {
         try {
             await apiFn();
+            // Success — SortableJS already shows the correct visual state, no re-render needed
             isManaged = true;
             updateRevertButtonVisibility();
         } catch (error) {
             showAlert('Move Error', `Error moving player: ${error.message}`);
+            // Failure — re-render to rollback to actual server state
+            try { await renderRoster(); } catch (_) {}
         }
-        // Always re-render to sync DOM with server state (success or rollback)
-        try { await renderRoster(); } catch (_) {}
     }
 
     /**
