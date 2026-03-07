@@ -661,9 +661,8 @@ Use the available tools to look up any data you need. The event list above shows
 
 FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise.`;
 
-      const systemPrompt = tier === 'public'
-        ? basePrompt + PUBLIC_TIER_INSTRUCTION
-        : basePrompt;
+      // PUBLIC_TIER_INSTRUCTION is now embedded in channel_context in the DB
+      const systemPrompt = basePrompt;
 
       // Select tools based on tier
       const tools = tier === 'public' ? PUBLIC_TOOLS : MANAGEMENT_TOOLS;
@@ -1641,9 +1640,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       if (classification === 'QUESTION_OR_CHAT') {
         try {
           const redirectPrompt = gearCheckSoul +
-            'A user posted a question or casual message in the gear-check channel. ' +
-            'Generate a brief, warm reply (1-2 sentences) that @mentions them and politely suggests they DM you instead for questions. ' +
-            'Keep it friendly and casual. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
+            'Task: generate a redirect reply for an off-topic message in the gear-check channel. Follow the gear-check redirect rules in your context. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
 
           const redirectMessages = [
             { role: 'user', content: `Discord user: ${displayName} (${username})\nTheir message: ${postContent}\n\nGenerate a polite redirect reply. Use <@${discordId}> to mention them.` }
@@ -1670,9 +1667,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         if (existingConv.rows.length > 0) {
           try {
             const welcomeBackPrompt = gearCheckSoul +
-              'This player has already applied via the gear-check channel before. They just posted again. ' +
-              'Generate a brief, warm "welcome back" acknowledgement (1-2 sentences) that @mentions them and references their new post. ' +
-              'Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
+              'Task: generate a welcome-back reply for a returning applicant in the gear-check channel. Follow the welcome-back rules in your context. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
 
             const welcomeBackMessages = [
               { role: 'user', content: `Discord user: ${displayName} (${username})\nTheir new post: ${postContent}\n\nGenerate a welcome-back reply. Use <@${discordId}> to mention them.` }
@@ -1740,17 +1735,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         const responseModel = (persona && persona.model) || 'claude-sonnet-4-20250514';
 
         const channelSystemPrompt = gearCheckSoul +
-          'A new player just posted in the gear-check channel. Generate a short personalised welcome greeting. ' +
-          'Rules:\n' +
-          '- Do NOT include any @mention or username — it will be added automatically\n' +
-          '- Start directly with your comment about them or their post — e.g. "A Holy Priest with AQ experience, love it!"\n' +
-          '- Reference something specific from their post (class, spec, name, experience, budget etc.)\n' +
-          '- If an image is attached: describe ONE specific visual detail you notice (e.g. transmog colour, character race, visible gear, UI). Be creative and fun, like a real person reacting to a screenshot.\n' +
-          '- End with a single short sentence saying you will DM them shortly with a couple of quick questions\n' +
-          '- MAXIMUM 2 sentences total — short, punchy, and personal\n' +
-          '- NEVER start sentences with "Real quick" or "Quick question"\n' +
-          '- Do NOT use em-dashes or en-dashes\n' +
-          '- Do NOT use backticks or code formatting';
+          'Task: generate a new-applicant channel welcome greeting. Follow the new applicant greeting rules in your context. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
 
         // Build content blocks for the user message
         const contentBlocks = [];
