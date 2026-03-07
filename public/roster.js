@@ -1197,11 +1197,30 @@ document.addEventListener('DOMContentLoaded', async () => {
                         return;
                     }
 
+                    // Capture source location BEFORE any DOM changes
+                    const sourceColumn = evt.from;
+                    const sourceSlotId = item.dataset.slotId;
+                    const sourcePartyId = sourceColumn.dataset.partyId;
+                    // oldIndex is among draggable .roster-cell elements; header is at DOM[0]
+                    const domInsertIndex = evt.oldIndex + 1; // +1 to skip .party-name header
+
                     // Call bench API
                     movePlayerToBench(eventId, userid).then(() => {
                         isManaged = true;
                         updateRevertButtonVisibility();
-                        // Route player to correct class column (no full re-render)
+
+                        // Restore an empty slot in the vacated roster position
+                        const emptyCell = document.createElement('div');
+                        emptyCell.className = 'roster-cell empty-slot-clickable';
+                        emptyCell.dataset.slotId = sourceSlotId || '';
+                        emptyCell.dataset.userid = '';
+                        const emptyDropdownContent = buildEmptySlotDropdownContent(sourcePartyId, sourceSlotId);
+                        emptyCell.innerHTML = `<div class="player-name">Empty</div><div class="player-details-dropdown">${emptyDropdownContent}</div>`;
+                        const insertRef = sourceColumn.children[domInsertIndex] || null;
+                        sourceColumn.insertBefore(emptyCell, insertRef);
+                        attachEmptySlotListeners(emptyCell);
+
+                        // Route player to correct class column
                         const targetCol = playerClass
                             ? document.querySelector(`.bench-class-column[data-class="${playerClass}"]`)
                             : null;
@@ -1212,7 +1231,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                             targetCol.appendChild(item);
                             targetCol.classList.remove('empty-class');
                         } else {
-                            // Unknown class — just re-render
                             renderRoster();
                             return;
                         }
@@ -1220,7 +1238,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         initDragAndDrop();
                     }).catch(err => {
                         // Return item to source on failure
-                        evt.from.insertBefore(item, evt.from.children[evt.oldIndex] || null);
+                        sourceColumn.insertBefore(item, sourceColumn.children[domInsertIndex] || null);
                         showAlert('Bench Error', `Failed to bench player: ${err.message}`);
                     });
                 }
