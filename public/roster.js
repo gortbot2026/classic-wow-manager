@@ -281,12 +281,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 cell.classList.remove('absent-player');
             }
 
-            // Add confirmation status indicator
+            // Add confirmation status indicator — only if isConfirmed is explicitly present
             let confirmationIconHTML = '';
-            if (newPlayerData.isConfirmed === "confirmed" || newPlayerData.isConfirmed === true) {
-                confirmationIconHTML = '<i class="fas fa-check confirmation-icon confirmed" title="Confirmed"></i>';
-            } else {
-                confirmationIconHTML = '<i class="fas fa-times confirmation-icon unconfirmed" title="Not Confirmed"></i>';
+            if (newPlayerData.isConfirmed !== undefined && newPlayerData.isConfirmed !== null) {
+                if (newPlayerData.isConfirmed === "confirmed" || newPlayerData.isConfirmed === true) {
+                    confirmationIconHTML = '<i class="fas fa-check confirmation-icon confirmed" title="Confirmed"></i>';
+                } else {
+                    confirmationIconHTML = '<i class="fas fa-times confirmation-icon unconfirmed" title="Not Confirmed"></i>';
+                }
             }
 
             let dropdownContentHTML = await buildDropdownContent(newPlayerData, isBenched);
@@ -295,7 +297,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="${nameClass}" data-character-name="${displayName}" data-discord-name="${newPlayerData.name}">${specIconHTML}${confirmationIconHTML}<span>${displayName}</span></div>
                 <div class="player-details-dropdown">${dropdownContentHTML}</div>`;
 
-            applyPlayerColor(cell, newPlayerData.color);
+            const cellCanonicalClass = getCanonicalClass(newPlayerData.class);
+            applyPlayerColor(cell, newPlayerData.color, cellCanonicalClass);
             try {
                 if (!newPlayerData.userid) cell.classList.add('no-discord-id');
                 else cell.classList.remove('no-discord-id');
@@ -756,6 +759,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (d !== dropdown) d.classList.remove('show');
                 });
                 dropdown.classList.toggle('show');
+                if (dropdown.classList.contains('show')) {
+                    positionDropdownSmart(newCell, dropdown);
+                }
             });
 
             // Add listeners for dropdown actions
@@ -1119,8 +1125,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Show management-only sections for management users
         if (currentUserCanManage) {
             try {
+                // Hide old button-panel — we move controls to sidebar
                 const btnPanel = document.querySelector('.button-panel');
-                if (btnPanel) btnPanel.classList.add('visible');
+                if (btnPanel) btnPanel.style.display = 'none';
+
                 if (benchContainer) {
                     benchContainer.classList.add('bench-visible');
                 }
@@ -1128,6 +1136,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (statsSection) statsSection.style.display = '';
                 const hostLiveBtn = document.getElementById('host-live-button');
                 if (hostLiveBtn) hostLiveBtn.style.display = '';
+
+                // Create admin sidebar
+                createAdminSidebar();
             } catch {}
         }
 
@@ -1498,9 +1509,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // setupEventListeners();
     }
 
+    /** Class ordering for bench columns */
+    const BENCH_CLASS_ORDER = ['warrior', 'paladin', 'hunter', 'rogue', 'priest', 'shaman', 'mage', 'warlock', 'druid'];
+
     async function renderBench(benchData) {
         if (!currentUserCanManage) {
-            // Keep bench hidden for non-management
             benchContainer.style.display = 'none';
             return;
         }
@@ -1508,32 +1521,66 @@ document.addEventListener('DOMContentLoaded', async () => {
             benchContainer.style.display = 'block';
             benchedList.innerHTML = '';
 
-            // Sort players: real spec icons first, then Discord absent emoji last
-            
-            const sortedPlayers = benchData.sort((a, b) => {
-                // Discord absent emoji ID from the provided URL
-                const discordAbsentEmoji = "612343589070045200";
-                
-                // Determine if player has Discord absent emoji vs real spec icon
-                const aIsAbsent = a.spec_emote === discordAbsentEmoji;
-                const bIsAbsent = b.spec_emote === discordAbsentEmoji;
-                
-                // If one has real spec icon and one has absent emoji, real spec comes first
-                if (!aIsAbsent && bIsAbsent) return -1;
-                if (aIsAbsent && !bIsAbsent) return 1;
-                
-                return 0; // Keep original order for same category
+            const discordAbsentEmoji = "612343589070045200";
+
+            // Group bench players by canonical class
+            const classBuckets = {};
+            BENCH_CLASS_ORDER.forEach(cls => { classBuckets[cls] = []; });
+
+            benchData.forEach(player => {
+                const canonical = getCanonicalClass(player.class);
+                if (!classBuckets[canonical]) classBuckets[canonical] = [];
+                classBuckets[canonical].push(player);
             });
 
-            // Display all players in the benched list (single column)
-            for (const player of sortedPlayers) {
-                // Players with Discord absent emoji get the additional absent icon
-                const discordAbsentEmoji = "612343589070045200";
-                const isAbsent = player.spec_emote === discordAbsentEmoji;
-                const cellDiv = await createPlayerCell(player, true, isAbsent);
-                benchedList.appendChild(cellDiv);
+            // Sort each bucket: real spec icons first, absent emoji last
+            Object.values(classBuckets).forEach(bucket => {
+                bucket.sort((a, b) => {
+                    const aAbs = a.spec_emote === discordAbsentEmoji;
+                    const bAbs = b.spec_emote === discordAbsentEmoji;
+                    if (!aAbs && bAbs) return -1;
+                    if (aAbs && !bAbs) return 1;
+                    return 0;
+                });
+            });
+
+            // Build class-column grid
+            const grid = document.createElement('div');
+            grid.className = 'bench-class-grid';
+
+            for (const cls of BENCH_CLASS_ORDER) {
+                const players = classBuckets[cls];
+                if (players.length === 0) continue;
+
+                const col = document.createElement('div');
+                col.className = 'bench-class-column';
+
+                // Class header
+                const header = document.createElement('div');
+                header.className = 'bench-class-header';
+                const iconUrl = getClassIconUrl(cls);
+                if (iconUrl) {
+                    const img = document.createElement('img');
+                    img.src = iconUrl;
+                    img.alt = cls;
+                    header.appendChild(img);
+                }
+                const label = document.createElement('span');
+                label.textContent = cls.charAt(0).toUpperCase() + cls.slice(1);
+                header.appendChild(label);
+                col.appendChild(header);
+
+                // Player cells
+                for (const player of players) {
+                    const isAbsent = player.spec_emote === discordAbsentEmoji;
+                    const cellDiv = await createPlayerCell(player, true, isAbsent);
+                    col.appendChild(cellDiv);
+                }
+
+                grid.appendChild(col);
             }
 
+            benchedList.appendChild(grid);
         } else {
             benchContainer.style.display = 'none';
         }
@@ -1562,9 +1609,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Add confirmation status indicator (not for placeholders)
+        // Add confirmation status indicator (not for placeholders, only if isConfirmed is present)
         let confirmationIconHTML = '';
-        if (!player.isPlaceholder) {
+        if (!player.isPlaceholder && player.isConfirmed !== undefined && player.isConfirmed !== null) {
             if (player.isConfirmed === "confirmed" || player.isConfirmed === true) {
                 confirmationIconHTML = '<i class="fas fa-check confirmation-icon confirmed" title="Confirmed"></i>';
             } else {
@@ -1578,7 +1625,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             <div class="player-name" data-character-name="${displayName}" data-discord-name="${player.name}">${specIconHTML}${confirmationIconHTML}<span>${displayName}</span></div>
             <div class="player-details-dropdown">${dropdownContentHTML}</div>`;
 
-        applyPlayerColor(cellDiv, player.color);
+        const cellCanonicalClass = getCanonicalClass(player.class);
+        applyPlayerColor(cellDiv, player.color, cellCanonicalClass);
         if (!player.userid || player.isPlaceholder) { try { cellDiv.classList.add('no-discord-id'); } catch {} }
         applyNoAssignmentsStyling(cellDiv, player);
         markCellDbMismatch(cellDiv, player);
@@ -1874,7 +1922,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Show player data page — opens admin profile in new tab
         const showPlayerDisabled = !player.userid;
-        content += `<div class="dropdown-item${showPlayerDisabled ? ' disabled' : ''}" data-action="show-player-page" data-userid="${player.userid || ''}"${showPlayerDisabled ? ' style="opacity:0.4;cursor:not-allowed;pointer-events:none;"' : ''}><i class="fas fa-external-link-alt menu-icon"></i>Show player data page</div>`;
+        content += `<div class="dropdown-separator"></div>`;
+        content += `<div class="dropdown-item show-player-btn${showPlayerDisabled ? ' disabled' : ''}" data-action="show-player-page" data-userid="${player.userid || ''}"${showPlayerDisabled ? ' style="opacity:0.4;cursor:not-allowed;pointer-events:none;"' : ''}><i class="fas fa-external-link-alt menu-icon"></i>Show player data page</div>`;
 
                 // Build complete character list (main + alts)
         const allCharacters = [];
@@ -2007,7 +2056,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (allCharacters.length > 1) { // Only show if there are options to switch to
             content += '<div class="dropdown-separator"></div><div class="dropdown-header">Switch Character</div>';
             content += allCharacters.map(char => {
-                const iconHtml = char.icon ? `<img src="https://cdn.discordapp.com/emojis/${char.icon}.png" class="menu-icon">` : '<i class="fas fa-user menu-icon"></i>';
+                // Use class icon from CLASS_ICONS map, fall back to char.icon, then fa-user
+                const charCanonical = getCanonicalClass(char.class);
+                const classIconUrl = getClassIconUrl(charCanonical);
+                const iconHtml = classIconUrl
+                    ? `<img src="${classIconUrl}" class="menu-icon" style="width:16px;height:16px;">`
+                    : (char.icon ? `<img src="https://cdn.discordapp.com/emojis/${char.icon}.png" class="menu-icon">` : '<i class="fas fa-user menu-icon"></i>');
                 const colorStyle = char.color ? `style="color: rgb(${char.color});"` : '';
                 const disabledClass = char.isCurrent ? ' disabled' : '';
                 const itemText = char.isCurrent ? `${char.name} (Current)` : char.name;
@@ -2038,20 +2092,84 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
     }
 
-    function applyPlayerColor(cellDiv, color) {
-        if (!color) return;
-        if (typeof color === 'string' && color.includes(',')) {
-            cellDiv.style.backgroundColor = `rgb(${color})`;
-            const rgb = color.split(',').map(Number);
-            cellDiv.style.color = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 < 128 ? 'white' : 'black';
-        } else {
-            cellDiv.style.backgroundColor = color;
-            const hexColor = color.startsWith('#') ? color.substring(1) : color;
-            if (hexColor.length === 6) {
-                const r = parseInt(hexColor.substr(0, 2), 16);
-                const g = parseInt(hexColor.substr(2, 2), 16);
-                const b = parseInt(hexColor.substr(4, 2), 16);
-                cellDiv.style.color = (r * 299 + g * 587 + b * 114) / 1000 < 128 ? 'white' : 'black';
+        /**
+     * CLASS_ICONS — Discord emoji IDs for each WoW class icon.
+     * Used for badge class icons and context menu character icons.
+     */
+    const CLASS_ICONS = {
+        'warrior': '579532030153588739',
+        'paladin': '579532029906124840',
+        'hunter': '579532029880827924',
+        'rogue': '579532030086217748',
+        'priest': '579532029901799437',
+        'shaman': '579532030056857600',
+        'mage': '579532030161977355',
+        'warlock': '579532029851336716',
+        'druid': '579532029675438081',
+    };
+
+    /**
+     * Returns the Discord CDN URL for a class icon.
+     * @param {string} canonicalClass - Lowercase canonical class name
+     * @returns {string} URL to the class icon image
+     */
+    function getClassIconUrl(canonicalClass) {
+        const emojiId = CLASS_ICONS[canonicalClass];
+        return emojiId ? `https://cdn.discordapp.com/emojis/${emojiId}.png` : '';
+    }
+
+    /**
+     * Applies player styling to a roster cell:
+     * - Uniform dark background (#374151)
+     * - 4px left anchor bar in the player's class color
+     * - Small class icon next to the anchor bar
+     * - Light text color (#f3f4f6)
+     *
+     * @param {HTMLElement} cellDiv - The roster-cell element
+     * @param {string} color - RGB color string (e.g. "199, 156, 110") or hex
+     * @param {string} [canonicalClass] - Optional canonical class for the icon
+     */
+    function applyPlayerColor(cellDiv, color, canonicalClass) {
+        // Set uniform dark background
+        cellDiv.style.backgroundColor = '#374151';
+        cellDiv.style.color = '#f3f4f6';
+
+        // Parse color to RGB string
+        let rgbColor = '128,128,128'; // fallback gray
+        if (color) {
+            if (typeof color === 'string' && color.includes(',')) {
+                rgbColor = color;
+            } else if (typeof color === 'string' && color.startsWith('#')) {
+                const hex = color.substring(1);
+                if (hex.length === 6) {
+                    rgbColor = `${parseInt(hex.substr(0, 2), 16)},${parseInt(hex.substr(2, 2), 16)},${parseInt(hex.substr(4, 2), 16)}`;
+                }
+            }
+        }
+
+        // Remove any existing anchor bar and class icon (for re-renders)
+        const existingBar = cellDiv.querySelector('.class-anchor-bar');
+        if (existingBar) existingBar.remove();
+        const existingIcon = cellDiv.querySelector('.class-icon-badge');
+        if (existingIcon) existingIcon.remove();
+
+        // Create class-color left anchor bar
+        const bar = document.createElement('div');
+        bar.className = 'class-anchor-bar';
+        bar.style.backgroundColor = `rgb(${rgbColor})`;
+        cellDiv.insertBefore(bar, cellDiv.firstChild);
+
+        // Create class icon
+        if (canonicalClass) {
+            const iconUrl = getClassIconUrl(canonicalClass);
+            if (iconUrl) {
+                const icon = document.createElement('img');
+                icon.className = 'class-icon-badge';
+                icon.src = iconUrl;
+                icon.alt = canonicalClass;
+                icon.loading = 'lazy';
+                // Insert after the anchor bar
+                bar.after(icon);
             }
         }
     }
@@ -2114,6 +2232,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             if (dropdown) {
                 dropdown.classList.toggle('show');
+                if (dropdown.classList.contains('show')) {
+                    positionDropdownSmart(newCell, dropdown);
+                }
             }
         });
 
@@ -2194,6 +2315,277 @@ document.addEventListener('DOMContentLoaded', async () => {
             'warrior': '199,156,110'
         };
         return classColors[canonicalClass] || '128,128,128'; // Default gray
+    }
+
+    /**
+     * Positions a dropdown smartly to avoid viewport overflow.
+     * If the dropdown would overflow the right edge, positions it to the left.
+     * Also positions flyout submenus to flip direction if needed.
+     */
+    function positionDropdownSmart(cellDiv, dropdown) {
+        // Reset positioning
+        dropdown.style.left = '0';
+        dropdown.style.right = 'auto';
+
+        requestAnimationFrame(() => {
+            const cellRect = cellDiv.getBoundingClientRect();
+            const dropdownWidth = 260;
+
+            // Check right overflow
+            if (cellRect.left + dropdownWidth > window.innerWidth) {
+                dropdown.style.left = 'auto';
+                dropdown.style.right = '0';
+            }
+
+            // Position flyout submenus: check if they'd overflow the right edge
+            dropdown.querySelectorAll('.has-submenu').forEach(item => {
+                const sub = item.querySelector('.move-submenu, .spec-submenu');
+                if (!sub) return;
+                sub.classList.remove('flip-left');
+
+                // Temporarily show to measure
+                const origDisplay = sub.style.display;
+                sub.style.display = 'block';
+                sub.style.visibility = 'hidden';
+                const subRect = sub.getBoundingClientRect();
+                sub.style.display = origDisplay;
+                sub.style.visibility = '';
+
+                if (subRect.right > window.innerWidth || subRect.left < 0) {
+                    sub.classList.add('flip-left');
+                }
+            });
+        });
+    }
+
+    /**
+     * Creates the admin right sidebar, moving all button-panel controls into it.
+     * Only called when currentUserCanManage is true.
+     */
+    function createAdminSidebar() {
+        // Don't create duplicate sidebars
+        if (document.querySelector('.admin-sidebar')) return;
+
+        const sidebar = document.createElement('div');
+        sidebar.className = 'admin-sidebar';
+
+        // Restore collapsed state from localStorage
+        const isCollapsed = localStorage.getItem('adminSidebarCollapsed') === 'true';
+        if (isCollapsed) {
+            sidebar.classList.add('collapsed');
+        } else {
+            document.body.classList.add('sidebar-expanded');
+        }
+
+        // Toggle button
+        const toggleBtn = document.createElement('div');
+        toggleBtn.className = 'admin-sidebar-toggle';
+        toggleBtn.innerHTML = isCollapsed
+            ? '<i class="fas fa-chevron-left"></i>'
+            : '<i class="fas fa-chevron-right"></i>';
+        toggleBtn.addEventListener('click', () => {
+            const nowCollapsed = sidebar.classList.toggle('collapsed');
+            localStorage.setItem('adminSidebarCollapsed', nowCollapsed);
+            document.body.classList.toggle('sidebar-expanded', !nowCollapsed);
+            toggleBtn.innerHTML = nowCollapsed
+                ? '<i class="fas fa-chevron-left"></i>'
+                : '<i class="fas fa-chevron-right"></i>';
+        });
+        sidebar.appendChild(toggleBtn);
+
+        // Title
+        const title = document.createElement('div');
+        title.style.cssText = 'color:#e5e7eb;font-weight:700;font-size:0.9em;margin-bottom:12px;padding-left:2px;';
+        title.textContent = 'Admin Controls';
+        sidebar.appendChild(title);
+
+        // Move all button-panel content into sidebar
+        const btnPanel = document.querySelector('.button-panel');
+        if (btnPanel) {
+            // Clone each child of button-panel into sidebar
+            const sectionTitle1 = document.createElement('div');
+            sectionTitle1.className = 'sidebar-section-title';
+            sectionTitle1.textContent = 'Actions';
+            sidebar.appendChild(sectionTitle1);
+
+            // Move action buttons
+            const buttons = btnPanel.querySelectorAll('.panel-button');
+            buttons.forEach(btn => {
+                const clone = btn.cloneNode(true);
+                clone.style.width = '100%';
+                clone.style.marginBottom = '4px';
+                sidebar.appendChild(clone);
+            });
+
+            const sectionTitle2 = document.createElement('div');
+            sectionTitle2.className = 'sidebar-section-title';
+            sectionTitle2.textContent = 'Toggles';
+            sidebar.appendChild(sectionTitle2);
+
+            // Move toggle containers
+            const toggles = btnPanel.querySelectorAll('.toggle-container');
+            toggles.forEach(toggle => {
+                const clone = toggle.cloneNode(true);
+                sidebar.appendChild(clone);
+            });
+
+            const sectionTitle3 = document.createElement('div');
+            sectionTitle3.className = 'sidebar-section-title';
+            sectionTitle3.textContent = 'Settings';
+            sidebar.appendChild(sectionTitle3);
+
+            // Move inputs (raidleader, cut, invites-by)
+            const inputContainers = btnPanel.querySelectorAll('.input-container, .raidleader-container, .cut-container, .invites-by-container');
+            inputContainers.forEach(container => {
+                const clone = container.cloneNode(true);
+                clone.style.width = '100%';
+                sidebar.appendChild(clone);
+            });
+
+            // Move any remaining children that weren't captured above
+            const remaining = btnPanel.querySelectorAll('.panel-row, .input-row');
+            remaining.forEach(el => {
+                const clone = el.cloneNode(true);
+                clone.style.width = '100%';
+                sidebar.appendChild(clone);
+            });
+        }
+
+        // Recent Joins toggle button
+        const joinsSection = document.createElement('div');
+        joinsSection.className = 'sidebar-section-title';
+        joinsSection.textContent = 'Discord';
+        sidebar.appendChild(joinsSection);
+
+        const joinsBtn = document.createElement('button');
+        joinsBtn.className = 'panel-button';
+        joinsBtn.style.cssText = 'width:100%;margin-bottom:4px;height:32px;font-size:0.78em;';
+        joinsBtn.innerHTML = '<i class="fab fa-discord"></i><span>Recent Joins</span>';
+        sidebar.appendChild(joinsBtn);
+
+        const joinsPanel = document.createElement('div');
+        joinsPanel.className = 'sidebar-recent-joins';
+        joinsPanel.id = 'sidebar-recent-joins';
+        joinsPanel.innerHTML = '<div style="color:#72767D;text-align:center;padding:12px;font-size:11px;"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+        sidebar.appendChild(joinsPanel);
+
+        joinsBtn.addEventListener('click', () => {
+            joinsPanel.classList.toggle('visible');
+            if (joinsPanel.classList.contains('visible')) {
+                fetchRecentJoinsForSidebar(joinsPanel);
+            }
+        });
+
+        document.body.appendChild(sidebar);
+
+        // Re-wire all cloned button event listeners from original button-panel
+        rewireSidebarButtons(sidebar);
+    }
+
+    /**
+     * Fetches recent Discord joins and renders in the sidebar panel.
+     */
+    async function fetchRecentJoinsForSidebar(container) {
+        try {
+            const response = await fetch('/api/discord/member-events?limit=20');
+            if (!response.ok) throw new Error('Failed to fetch');
+            const data = await response.json();
+            if (!data.ok || !data.events) throw new Error('Invalid response');
+
+            const joinEvents = data.events.filter(e => e.eventType === 'join').slice(0, 5);
+            if (joinEvents.length === 0) {
+                container.innerHTML = '<div style="color:#72767D;text-align:center;padding:12px;font-style:italic;font-size:11px;">No recent joins</div>';
+                return;
+            }
+
+            let html = '';
+            joinEvents.forEach(event => {
+                const username = event.username || 'Unknown';
+                const ts = event.timestamp ? new Date(event.timestamp) : null;
+                const ago = ts ? formatTimeAgoSidebar(ts) : '';
+                html += `<div style="background:rgba(87,242,135,0.05);border-left:3px solid #57F287;padding:6px 8px;border-radius:4px;margin-bottom:4px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                        <span style="color:#57F287;font-size:11px;">👋</span>
+                        <span style="color:#fff;font-weight:600;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtmlSidebar(username)}</span>
+                        <span style="color:#72767D;font-size:10px;white-space:nowrap;">${ago}</span>
+                    </div>
+                </div>`;
+            });
+            container.innerHTML = html;
+        } catch (err) {
+            container.innerHTML = '<div style="color:#ED4245;text-align:center;padding:12px;font-size:11px;"><i class="fas fa-exclamation-triangle"></i> Failed to load</div>';
+        }
+    }
+
+    function formatTimeAgoSidebar(date) {
+        const diffMs = Date.now() - date.getTime();
+        const min = Math.floor(diffMs / 60000);
+        const hr = Math.floor(min / 60);
+        const day = Math.floor(hr / 24);
+        if (min < 1) return 'just now';
+        if (min < 60) return `${min}m ago`;
+        if (hr < 24) return `${hr}h ago`;
+        if (day < 7) return `${day}d ago`;
+        return date.toLocaleDateString();
+    }
+
+    function escapeHtmlSidebar(text) {
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+
+    /**
+     * Re-wires event listeners for cloned buttons in the sidebar.
+     * Matches buttons by their inner text/icon and dispatches to the same handlers.
+     */
+    function rewireSidebarButtons(sidebar) {
+        // Re-wire buttons by finding their data attributes or matching text
+        sidebar.querySelectorAll('.panel-button').forEach(btn => {
+            const originalBtn = findOriginalButton(btn);
+            if (originalBtn) {
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    originalBtn.click();
+                });
+            }
+        });
+
+        // Re-wire toggle switches
+        sidebar.querySelectorAll('.toggle-switch').forEach(toggle => {
+            const label = toggle.closest('.toggle-container')?.querySelector('.toggle-label')?.textContent?.trim();
+            const originalToggle = findOriginalToggle(label);
+            if (originalToggle) {
+                toggle.addEventListener('click', () => {
+                    originalToggle.click();
+                });
+            }
+        });
+    }
+
+    function findOriginalButton(clonedBtn) {
+        const btnPanel = document.querySelector('.button-panel');
+        if (!btnPanel) return null;
+        const clonedText = clonedBtn.textContent.trim();
+        const originals = btnPanel.querySelectorAll('.panel-button');
+        for (const orig of originals) {
+            if (orig.textContent.trim() === clonedText) return orig;
+        }
+        return null;
+    }
+
+    function findOriginalToggle(labelText) {
+        if (!labelText) return null;
+        const btnPanel = document.querySelector('.button-panel');
+        if (!btnPanel) return null;
+        const toggles = btnPanel.querySelectorAll('.toggle-container');
+        for (const container of toggles) {
+            const lbl = container.querySelector('.toggle-label');
+            if (lbl && lbl.textContent.trim() === labelText) {
+                return container.querySelector('.toggle-switch');
+            }
+        }
+        return null;
     }
 
     // General toggle switch functionality

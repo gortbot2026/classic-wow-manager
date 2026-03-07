@@ -13688,6 +13688,24 @@ app.get('/api/roster/:eventId', async (req, res) => {
             }
         }
         
+        // Strip isConfirmed from response for non-management users
+        let isManagement = false;
+        try {
+            if (req.isAuthenticated && req.isAuthenticated() && req.user && req.user.id) {
+                isManagement = await hasManagementRoleById(req.user.id);
+            }
+        } catch (authErr) {
+            // If auth check fails, treat as non-management
+        }
+        if (!isManagement) {
+            if (Array.isArray(rosterData.raidDrop)) {
+                rosterData.raidDrop.forEach(p => { if (p) delete p.isConfirmed; });
+            }
+            if (Array.isArray(rosterData.bench)) {
+                rosterData.bench.forEach(p => { if (p) delete p.isConfirmed; });
+            }
+        }
+
         res.json(rosterData);
     } catch (error) {
         console.error(`Error in /api/roster/:eventId for event ${eventId}:\n`, error);

@@ -3,6 +3,12 @@ module.exports = {
   content: [
     "./public/admin*.html",
     "./public/admin/**/*.html",
+    "./public/roster.html",
+    "./public/assignments.html",
+    "./public/gold.html",
+    "./public/loot.html",
+    "./public/raidlogs.html",
+    "./public/raidlogs_view.html",
   ],
   darkMode: 'class', // Enable class-based dark mode
   theme: {

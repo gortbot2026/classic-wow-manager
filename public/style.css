@@ -7,6 +7,12 @@ body {
     padding-top: 44px; /* Account for actual fixed header height */
 }
 
+/* Dark background for all event pages (roster, assignments, gold, loot, raidlogs) */
+body.event-page {
+    background-color: rgb(17, 24, 39); /* Tailwind bg-gray-900 */
+    color: #f3f4f6;
+}
+
 body.has-raid-bar {
     padding-top: 94px; /* Account for both header bars when raid is active (44px + ~50px) */
 }

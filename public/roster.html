@@ -10,8 +10,9 @@
     <link rel="stylesheet" href="/add-character.css">
     <link rel="stylesheet" href="/confirmation-modal.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="stylesheet" href="/event-styles.css">
 </head>
-<body class="roster">
+<body class="roster event-page">
     <div class="top-bar">
         <div class="top-bar-left">
             <img src="/images/1p_logo.png" alt="1Principles" class="app-logo" width="110" height="30">
@@ -190,20 +191,9 @@
             <div id="compare-results" style="display:none; margin-top:15px; width: 100%;"></div>
         </div>
 
-        <!-- Discord Server Activity Console (Management Only) -->
-        <div id="member-events-console" class="management-only" style="display: none; margin: 20px auto; max-width: 415px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 1px solid #5865F2; border-radius: 8px; padding: 0; overflow: hidden; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.1);">
-            <div style="background: linear-gradient(90deg, #5865F2 0%, #4752C4 100%); padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                <h3 style="margin: 0; font-size: 13px; font-weight: 600; color: #FFFFFF; display: flex; align-items: center; gap: 8px;">
-                    <i class="fas fa-user-plus" style="color: #57F287;"></i>
-                    Recent Discord Joins
-                </h3>
-            </div>
-            <div id="member-events-list" style="padding: 12px; font-size: 12px;">
-                <div style="color: #B9BBBE; text-align: center; padding: 12px;">
-                    <i class="fas fa-spinner fa-spin"></i> Loading...
-                </div>
-            </div>
-        </div>
+        <!-- Discord Server Activity Console — moved to admin sidebar -->
+        <div id="member-events-console" class="management-only" style="display: none !important;"></div>
+        <div id="member-events-list" style="display: none !important;"></div>
     </div>
 
     <!-- Player Search Overlay -->
@@ -333,12 +323,11 @@
     <script src="/roster.js"></script>
     <script src="/top-bar.js?v=sandbox-fix-3"></script>
     
-    <!-- Member Events Script -->
+    <!-- Member Events Script — moved to admin sidebar in roster.js -->
     <script>
     (function() {
-        const eventsConsole = document.getElementById('member-events-console');
-        const eventsList = document.getElementById('member-events-list');
-        if (!eventsList || !eventsConsole) return;
+        // Discord join events are now handled by the admin sidebar in roster.js
+        return;
         
         // Check if user has management role
         async function checkManagementRole() {

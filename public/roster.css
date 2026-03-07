@@ -8,18 +8,21 @@ body, html {
 
 .content {
     width: 100%;
-    box-sizing: border-box; /* Ensures padding is included in the width */
+    box-sizing: border-box;
     padding: 20px;
-    text-align: center; /* Center the roster-container */
+    text-align: center;
+    max-width: 1400px;
+    margin: 0 auto;
+    transition: margin-right 0.3s ease;
 }
 
 /* Roster stats wraps the dashboard to the same max width look as roster container */
 .roster-stats-wrapper .stats-section {
-    background: linear-gradient(180deg, #0b1220, #1a2a45);
-    border: 1px solid rgba(131, 168, 255, 0.18);
-    border-radius: 8px;
+    background: rgba(31, 41, 55, 0.6);
+    border: 1px solid rgba(75, 85, 99, 0.4);
+    border-radius: 10px;
     padding: 12px 16px;
-    display: none; /* Hidden by default, shown by JS for management users */
+    display: none;
 }
 
 /* Reuse raidlogs stat cards look */
@@ -31,8 +34,8 @@ body, html {
 }
 
 .stat-card {
-    background: linear-gradient(180deg, #0b1220, #1a2a45);
-    border: 1px solid rgba(131, 168, 255, 0.18);
+    background: rgba(17, 24, 39, 0.8);
+    border: 1px solid rgba(75, 85, 99, 0.4);
     border-radius: 10px;
     padding: 14px;
     text-align: center;
@@ -131,13 +134,13 @@ i.spec-icon.placeholder-icon {
 }
 
 .roster-container {
-    background: linear-gradient(180deg, #0b1220, #1a2a45);
+    background: rgba(31, 41, 55, 0.6); /* bg-gray-800 with opacity */
     padding: 20px;
-    border-radius: 8px;
-    border: 1px solid rgba(131, 168, 255, 0.18);
-    display: inline-block; /* Allow the container to shrink to fit the content */
-    min-width: 0; /* Override default min-width for flex children */
-    vertical-align: top; /* Align to top with bench container */
+    border-radius: 10px;
+    border: 1px solid rgba(75, 85, 99, 0.4); /* gray-600 border */
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 /* Roster Grid Container */
@@ -152,26 +155,36 @@ i.spec-icon.placeholder-icon {
 .roster-column {
     display: flex;
     flex-direction: column;
-    gap: 5px; /* Space between player cells */
+    gap: 5px;
+    padding: 10px 12px;
+    background: rgba(17, 24, 39, 0.5);
+    border: 1px solid rgba(75, 85, 99, 0.3);
+    border-radius: 8px;
+}
+
+/* Thin vertical divider lines between roster groups */
+.roster-column + .roster-column {
+    border-left: 1px solid rgba(75, 85, 99, 0.5);
+    margin-left: -1px;
 }
 
 /* Roster Cell (Slot) */
 .roster-cell {
-    width: 120px;
-    height: 30px; /* Match icon height */
+    width: 140px;
+    height: 30px;
     display: flex;
     align-items: center;
-    justify-content: flex-start; /* Align content to the left */
-    border: 1px solid #444;
-    border-radius: 0px;
-    padding: 0 8px 0 0; /* Remove left padding */
-    position: relative; /* Crucial for positioning the dropdown */
-    cursor: default; /* Change cursor as the cell itself isn't a link anymore */
-    background-color: #777; /* Background for empty cells */
-    margin-bottom: 10px;
-    z-index: 1; /* Default z-index */
-    /* Add smooth transitions for all changes */
+    justify-content: flex-start;
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    border-radius: 4px;
+    padding: 0 8px 0 0;
+    position: relative;
+    cursor: default;
+    background-color: #374151; /* bg-gray-700 uniform dark */
+    margin-bottom: 6px;
+    z-index: 1;
     transition: all 0.3s ease, background-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+    overflow: hidden; /* clip the left anchor bar */
 }
 
 /* When dropdown is open, raise the cell above others */
@@ -320,7 +333,7 @@ i.spec-icon.placeholder-icon {
 }
 
 .roster-cell.empty-slot-clickable:hover {
-    background-color: #888 !important;
+    background-color: rgba(75, 85, 99, 0.6) !important;
     border-color: #5865F2;
 }
 
@@ -339,18 +352,36 @@ i.spec-icon.placeholder-icon {
     justify-content: flex-start;
 }
 
+/* Class color left anchor bar */
+.class-anchor-bar {
+    width: 4px;
+    min-width: 4px;
+    height: 100%;
+    flex-shrink: 0;
+    align-self: stretch;
+}
+
+/* Class icon next to anchor bar */
+.class-icon-badge {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    margin-left: 3px;
+    margin-right: 2px;
+}
+
 .player-name {
     font-weight: normal;
     font-size: 0.8em;
     text-shadow: none;
     display: flex;
     align-items: center;
-    flex-grow: 1; /* Allows the name to take up available space */
+    flex-grow: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    position: relative; /* For absolute positioning of confirmation icon */
-    color: #000; /* Force player names to black on roster page */
+    position: relative;
+    color: #f3f4f6; /* Light text for dark badges */
 }
 
 .player-name span {
@@ -374,19 +405,21 @@ i.spec-icon.placeholder-icon {
 /* Dropdown Styles */
 
 .player-details-dropdown {
-    display: none; /* Hidden by default */
+    display: none;
     position: absolute;
-    top: 100%; /* Position it right below the cell */
+    top: 100%;
     left: 0;
-    width: 250px;
-    background-color: #333;
-    border: 1px solid #555;
-    border-radius: 0 0 5px 5px;
-    z-index: 9999; /* High z-index to appear above all other content */
+    width: 260px;
+    background: rgba(17, 24, 39, 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    border-radius: 8px;
+    z-index: 9999;
     padding: 8px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-    text-align: left; /* Override parent's text-align: center */
-    opacity: 1 !important; /* Always keep dropdown fully visible */
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+    text-align: left;
+    opacity: 1 !important;
 }
 
 .player-details-dropdown.show {
@@ -405,19 +438,19 @@ i.spec-icon.placeholder-icon {
 
 .dropdown-item[data-action]:hover,
 .dropdown-item.has-submenu:hover {
-    background-color: #4a4a4a;
+    background-color: rgba(75, 85, 99, 0.5);
     cursor: pointer;
-    text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+    text-shadow: none;
 }
 
 .dropdown-item.disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     cursor: default;
-    background-color: #2a2a2a;
+    background-color: transparent;
 }
 
 .dropdown-item.disabled:hover {
-    background-color: #2a2a2a;
+    background-color: transparent;
     cursor: default;
     text-shadow: none;
 }
@@ -430,18 +463,22 @@ i.spec-icon.placeholder-icon {
     display: none;
     position: absolute;
     left: 100%;
-    top: 0;
-    background-color: #3a3a3a;
-    border: 1px solid #555;
-    border-radius: 5px;
+    top: -5px;
+    background: rgba(17, 24, 39, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    border-radius: 8px;
     z-index: 11;
     min-width: 150px;
-    padding: 5px;
-    /* Adjust positioning to prevent menu disappearing on hover */
-    top: -5px;
-    left: 98%;
-    padding-top: 10px;
-    padding-bottom: 10px;
+    padding: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Flip flyout to the left when needed (added by JS) */
+.spec-submenu.flip-left {
+    left: auto;
+    right: 100%;
 }
 
 .dropdown-item.has-submenu {
@@ -455,36 +492,63 @@ i.spec-icon.placeholder-icon {
 
 .spec-submenu .dropdown-item:hover,
 .move-submenu .dropdown-item:hover {
-    background-color: #5865F2;
+    background-color: rgba(88, 101, 242, 0.6);
+}
+
+/* Show player data page button — visually distinct at bottom */
+.dropdown-item.show-player-btn {
+    background: rgba(88, 101, 242, 0.25);
+    border: 1px solid rgba(88, 101, 242, 0.4);
+    border-radius: 6px;
+    margin-top: 6px;
+    padding: 8px 10px;
+    font-weight: 600;
+    text-align: center;
+    justify-content: center;
+    color: #a5b4fc;
+}
+
+.dropdown-item.show-player-btn:hover {
+    background: rgba(88, 101, 242, 0.45);
+    color: #c7d2fe;
 }
 
 .move-submenu {
     display: none;
     position: absolute;
     left: 100%;
-    top: 0;
-    background-color: #3a3a3a;
-    border: 1px solid #555;
-    border-radius: 5px;
-    z-index: 12; /* One level higher than spec submenu */
-    min-width: 150px;
-    max-height: 200px; /* Allow scrolling for long lists */
+    top: -5px;
+    background: rgba(17, 24, 39, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    border-radius: 8px;
+    z-index: 12;
+    min-width: 160px;
+    max-height: 280px;
     overflow-y: auto;
-    padding: 5px;
+    padding: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.move-submenu.flip-left {
+    left: auto;
+    right: 100%;
 }
 
 .dropdown-header {
     padding: 4px 8px;
     font-size: 0.7em;
     font-weight: bold;
-    color: #999;
+    color: #6b7280;
     text-transform: uppercase;
     margin-top: 8px;
+    letter-spacing: 0.3px;
 }
 
 .dropdown-separator {
     height: 1px;
-    background-color: #444;
+    background-color: rgba(75, 85, 99, 0.4);
     margin: 6px 0;
 }
 
@@ -497,23 +561,22 @@ i.spec-icon.placeholder-icon {
 }
 
 
-/* Make text darker on light backgrounds for better readability */
+/* Uniform light text for all player badges */
 .roster-cell.player-filled .player-id {
-    color: #555;
+    color: #9ca3af;
 }
 
 .roster-cell.player-filled .player-name,
 .roster-cell.player-filled .registered-char-name {
-    color: #000; /* Ensure player name and main name are black on colored backgrounds */
+    color: #f3f4f6;
 }
 
-/* Force black text for filled player names even if span inherits from global styles */
 .roster-cell.player-filled .player-name span {
-    color: #000 !important;
+    color: #f3f4f6 !important;
 }
 
 .roster-cell.player-filled .alt-char-name {
-    color: #333; /* Darker grey for light backgrounds */
+    color: #d1d5db;
 }
 
 .party-name {
@@ -524,13 +587,12 @@ i.spec-icon.placeholder-icon {
     color: #fff;
 }
 
-/* Specific color for cells with players */
+/* Uniform dark background for filled player cells */
 .roster-cell.player-filled {
-    /* Background color will be set dynamically via JS from event.color */
-    color: #333; /* Darker text for colored cells for contrast */
-    text-shadow: 0 1px 1px rgba(0,0,0,0.2);
-    /* You can add more styling here like border, subtle gradients etc. */
-    border: 1px solid rgba(0,0,0,0.1);
+    background-color: #374151;
+    color: #f3f4f6;
+    text-shadow: none;
+    border: 1px solid rgba(75, 85, 99, 0.5);
 }
 
 /* Highlight cells with missing Discord ID (but not placeholders) */
@@ -551,26 +613,62 @@ i.spec-icon.placeholder-icon {
 }
 
 #bench-container.bench-container {
-    background: linear-gradient(180deg, #0b1220, #1a2a45) !important; /* Match roster-container background */
-    border: 1px solid rgba(131, 168, 255, 0.18) !important; /* Keep consistent with roster-container */
-    border-radius: 8px;
-    padding: 15px;
-    margin-left: 20px; /* Space between roster and bench */
+    background: rgba(31, 41, 55, 0.6) !important;
+    border: 1px solid rgba(75, 85, 99, 0.4) !important;
+    border-radius: 10px;
+    padding: 20px;
+    margin-top: 24px;
+    margin-left: 0;
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-    display: none !important; /* Hidden by default, shown by JS for management users */
-    min-width: 0; /* Override default min-width for flex children */
-    text-align: center; /* Center the bench title and content */
-    vertical-align: top; /* Align to top with roster container */
+    display: none !important;
+    width: 100%;
+    box-sizing: border-box;
+    text-align: center;
 }
 
 /* Show bench when management user has access */
 #bench-container.bench-visible {
-    display: inline-block !important;
+    display: block !important;
 }
 
 /* Hide bench when toggle is active */
 #bench-container.bench-hidden {
     display: none !important;
+}
+
+/* Bench class columns grid */
+.bench-class-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.bench-class-column {
+    background: rgba(17, 24, 39, 0.5);
+    border: 1px solid rgba(75, 85, 99, 0.3);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.bench-class-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(75, 85, 99, 0.4);
+    margin-bottom: 4px;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #e5e7eb;
+}
+
+.bench-class-header img {
+    width: 18px;
+    height: 18px;
 }
 
 /* Player search overlay */
@@ -892,4 +990,98 @@ i.spec-icon.placeholder-icon {
 
 #fix-name-overlay .fix-name-actions .panel-button {
     height: 32px;
+}
+/* ===== Admin Right Sidebar ===== */
+.admin-sidebar {
+    position: fixed;
+    right: 0;
+    top: 94px;
+    bottom: 0;
+    width: 280px;
+    background: rgba(17, 24, 39, 0.97);
+    border-left: 1px solid rgba(75, 85, 99, 0.5);
+    z-index: 900;
+    overflow-y: auto;
+    padding: 16px 12px;
+    transition: transform 0.3s ease;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.3);
+}
+
+.admin-sidebar.collapsed {
+    transform: translateX(280px);
+}
+
+/* Toggle button — always visible */
+.admin-sidebar-toggle {
+    position: absolute;
+    left: -28px;
+    top: 12px;
+    width: 28px;
+    height: 36px;
+    background: rgba(17, 24, 39, 0.97);
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    color: #9ca3af;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 12px;
+    transition: color 0.2s ease;
+    z-index: 901;
+}
+
+.admin-sidebar-toggle:hover {
+    color: #f3f4f6;
+}
+
+/* Sidebar section headings */
+.sidebar-section-title {
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #6b7280;
+    font-weight: 600;
+    margin: 12px 0 6px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(75, 85, 99, 0.3);
+}
+
+/* Override button-panel styles for sidebar context */
+.admin-sidebar .panel-button {
+    width: 100%;
+    height: 32px;
+    font-size: 0.78em;
+    margin-bottom: 4px;
+}
+
+.admin-sidebar .toggle-container {
+    width: 100%;
+    margin-bottom: 4px;
+}
+
+.admin-sidebar .toggle-container.wide {
+    width: 100%;
+}
+
+/* Main content margin shift when sidebar is open */
+body.roster.sidebar-expanded .content {
+    margin-right: 290px;
+}
+
+/* Recent Joins panel inside sidebar */
+.sidebar-recent-joins {
+    display: none;
+    background: rgba(31, 41, 55, 0.8);
+    border: 1px solid rgba(75, 85, 99, 0.4);
+    border-radius: 6px;
+    padding: 8px;
+    margin-top: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.sidebar-recent-joins.visible {
+    display: block;
 }

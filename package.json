@@ -13,7 +13,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build-admin-css": "npx tailwindcss -i ./src/admin-tailwind.css -o ./public/admin-styles.css --minify",
     "watch-admin-css": "npx tailwindcss -i ./src/admin-tailwind.css -o ./public/admin-styles.css --watch",
-    "build": "npm run build-admin-css"
+    "build": "npm run build-admin-css && npm run build-event-css",
+    "build-event-css": "npx tailwindcss -i ./src/event-tailwind.css -o ./public/event-styles.css --minify",
+    "watch-event-css": "npx tailwindcss -i ./src/event-tailwind.css -o ./public/event-styles.css --watch"
   },
   "keywords": [],
   "author": "",
