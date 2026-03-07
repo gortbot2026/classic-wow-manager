@@ -741,9 +741,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return cell;
             }
 
-            // Add click listener for dropdown
+            // Add click listener for dropdown (suppressed if drag just ended)
             newCell.addEventListener('click', (e) => {
                 e.stopPropagation();
+                // Suppress dropdown if a drag operation just ended within 100ms
+                if (isDragging || (Date.now() - dragEndTimestamp) < 100) return;
                 const dropdown = newCell.querySelector('.player-details-dropdown');
                 document.querySelectorAll('.player-details-dropdown').forEach(d => {
                     if (d !== dropdown) d.classList.remove('show');
@@ -1099,6 +1101,262 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
+    // ===== Drag-and-Drop via SortableJS =====
+
+    /** Track active Sortable instances for cleanup on re-render */
+    let sortableInstances = [];
+
+    /** Drag state flag to prevent click-handler from opening dropdown after a drag */
+    let isDragging = false;
+    let dragEndTimestamp = 0;
+
+    /**
+     * Initializes SortableJS drag-and-drop on all roster columns and bench columns.
+     * Only called when currentUserCanManage is true.
+     * Destroys previous instances before creating new ones (safe for re-renders).
+     */
+    function initDragAndDrop() {
+        // Gate behind management permission
+        if (!currentUserCanManage) return;
+
+        // Destroy previous instances
+        sortableInstances.forEach(instance => {
+            try { instance.destroy(); } catch (_) {}
+        });
+        sortableInstances = [];
+
+        const sharedConfig = {
+            group: { name: 'roster', pull: true, put: true },
+            draggable: '.player-filled',
+            animation: 150,
+            delay: 150,
+            delayOnTouchOnly: true,
+            touchStartThreshold: 5,
+            ghostClass: 'drag-ghost',
+            chosenClass: 'drag-chosen',
+            dragClass: 'drag-active',
+            swapThreshold: 0.65,
+            onStart: function () {
+                isDragging = true;
+            },
+            onEnd: function (evt) {
+                isDragging = false;
+                dragEndTimestamp = Date.now();
+                handleDragEnd(evt);
+            }
+        };
+
+        // Create Sortable for each roster column
+        document.querySelectorAll('.roster-column').forEach(col => {
+            col.classList.add('sortable-enabled');
+            const instance = new Sortable(col, { ...sharedConfig });
+            sortableInstances.push(instance);
+        });
+
+        // Create Sortable for each bench class column
+        document.querySelectorAll('.bench-class-column').forEach(col => {
+            col.classList.add('sortable-enabled');
+            const instance = new Sortable(col, { ...sharedConfig });
+            sortableInstances.push(instance);
+        });
+    }
+
+    /**
+     * Handles the end of a drag operation. Reads data attributes from source/target
+     * to determine the operation (swap, move, bench) and calls the appropriate API.
+     *
+     * IMPORTANT: SortableJS has already moved the DOM node by the time onEnd fires.
+     * We revert the DOM move immediately and let OptimisticUpdates handle the visual
+     * update, ensuring data consistency with the existing optimistic update system.
+     *
+     * @param {Sortable.SortableEvent} evt - The SortableJS onEnd event
+     */
+    function handleDragEnd(evt) {
+        const draggedEl = evt.item;
+        const fromContainer = evt.from;
+        const toContainer = evt.to;
+
+        // No-op: dropped back in same position
+        if (fromContainer === toContainer && evt.oldIndex === evt.newIndex) {
+            reattachAfterDrag(draggedEl, fromContainer, toContainer);
+            return;
+        }
+
+        const userid = draggedEl.dataset.userid;
+        if (!userid) {
+            reattachAfterDrag(draggedEl, fromContainer, toContainer);
+            return;
+        }
+
+        const fromIsBench = fromContainer.classList.contains('bench-class-column');
+        const toIsBench = toContainer.classList.contains('bench-class-column');
+
+        // Revert the DOM move — let OptimisticUpdates handle visual updates cleanly
+        // SortableJS has already moved the node; we put it back
+        if (evt.oldIndex < fromContainer.children.length) {
+            fromContainer.insertBefore(draggedEl, fromContainer.children[evt.oldIndex]);
+        } else {
+            fromContainer.appendChild(draggedEl);
+        }
+
+        // Determine operation and execute
+        if (!fromIsBench && toIsBench) {
+            // Raid → Bench: move player to bench (no confirmation for drag)
+            executeDragToBench(userid);
+        } else if (fromIsBench && !toIsBench) {
+            // Bench → Raid: move player into a raid slot
+            const targetPartyId = toContainer.dataset.partyId;
+            // Determine target slot from drop position
+            const targetSlotId = getTargetSlotId(toContainer, evt.newIndex);
+            if (targetPartyId && targetSlotId) {
+                executeDragToRaid(userid, targetPartyId, targetSlotId, true);
+            }
+        } else if (!fromIsBench && !toIsBench) {
+            // Raid → Raid: move or swap
+            const targetPartyId = toContainer.dataset.partyId;
+            const targetSlotId = getTargetSlotId(toContainer, evt.newIndex);
+            if (targetPartyId && targetSlotId) {
+                executeDragToRaid(userid, targetPartyId, targetSlotId, false);
+            }
+        }
+        // Bench → Bench: no meaningful operation, ignore
+
+        reattachAfterDrag(draggedEl, fromContainer, toContainer);
+    }
+
+    /**
+     * Determines the target slot ID based on drop index within a roster column.
+     * Accounts for the party-name header element at index 0.
+     *
+     * @param {HTMLElement} column - The roster column container
+     * @param {number} newIndex - SortableJS newIndex (within draggable elements)
+     * @returns {number|null} The 1-indexed slot ID, or null if invalid
+     */
+    function getTargetSlotId(column, newIndex) {
+        // SortableJS newIndex is relative to draggable items (.player-filled only)
+        // but we need slot position including empty slots
+        const allCells = column.querySelectorAll('.roster-cell');
+        if (newIndex >= 0 && newIndex < allCells.length) {
+            const targetCell = allCells[newIndex];
+            if (targetCell && targetCell.dataset.slotId) {
+                return parseInt(targetCell.dataset.slotId, 10);
+            }
+        }
+        // Fallback: if dropped past the end, use the last slot
+        if (allCells.length > 0) {
+            const lastCell = allCells[allCells.length - 1];
+            if (lastCell && lastCell.dataset.slotId) {
+                return parseInt(lastCell.dataset.slotId, 10);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Executes a drag-to-raid move (raid→raid or bench→raid).
+     * Uses OptimisticUpdates.movePlayerToPosition for instant UI and rollback.
+     */
+    async function executeDragToRaid(userid, targetPartyId, targetSlotId, isFromBench) {
+        const rollbackInfo = OptimisticUpdates.movePlayerToPosition(userid, parseInt(targetPartyId), parseInt(targetSlotId));
+
+        try {
+            await updatePlayerPosition(eventId, userid, targetPartyId, targetSlotId);
+            // Success
+            isManaged = true;
+            updateRevertButtonVisibility();
+
+            // Flash success on the target cell after optimistic update settles
+            setTimeout(() => {
+                const cell = OptimisticUpdates.findPlayerCell(userid);
+                if (cell) {
+                    cell.classList.add('success-update');
+                    setTimeout(() => cell.classList.remove('success-update'), 600);
+                }
+            }, 200);
+        } catch (error) {
+            // Rollback on error
+            if (rollbackInfo) {
+                if (rollbackInfo.sourceCell) rollbackInfo.sourceCell.classList.add('error-rollback');
+                rollbackInfo.targetCell.classList.add('error-rollback');
+
+                setTimeout(() => {
+                    if (rollbackInfo.sourceCell) {
+                        rollbackInfo.sourceCell.innerHTML = rollbackInfo.sourceOriginalContent;
+                        OptimisticUpdates.attachCellEventListeners(rollbackInfo.sourceCell);
+                    }
+                    rollbackInfo.targetCell.innerHTML = rollbackInfo.targetOriginalContent;
+                    OptimisticUpdates.attachCellEventListeners(rollbackInfo.targetCell);
+
+                    setTimeout(() => {
+                        if (rollbackInfo.sourceCell) rollbackInfo.sourceCell.classList.remove('error-rollback');
+                        rollbackInfo.targetCell.classList.remove('error-rollback');
+                    }, 500);
+                }, 250);
+            }
+            showAlert('Move Error', `Error moving player: ${error.message}`);
+        }
+    }
+
+    /**
+     * Executes a drag-to-bench move (raid→bench).
+     * Uses OptimisticUpdates.moveToBench for instant UI and rollback.
+     * Skips the confirmation dialog that the dropdown menu uses.
+     */
+    async function executeDragToBench(userid) {
+        const rollbackInfo = OptimisticUpdates.moveToBench(userid);
+
+        try {
+            await movePlayerToBench(eventId, userid);
+            // Success
+            isManaged = true;
+            updateRevertButtonVisibility();
+        } catch (error) {
+            // Rollback on error
+            if (rollbackInfo) {
+                rollbackInfo.sourceCell.classList.add('error-rollback');
+
+                setTimeout(() => {
+                    rollbackInfo.sourceCell.innerHTML = rollbackInfo.originalContent;
+                    rollbackInfo.sourceCell.classList.add('player-filled');
+                    OptimisticUpdates.attachCellEventListeners(rollbackInfo.sourceCell);
+
+                    // Remove from bench data
+                    const benchIndex = currentRosterData.bench.findIndex(p => p && p.userid === userid);
+                    if (benchIndex !== -1) {
+                        currentRosterData.bench.splice(benchIndex, 1);
+                    }
+                    currentRosterData.raidDrop.push(rollbackInfo.playerData);
+
+                    setTimeout(() => {
+                        rollbackInfo.sourceCell.classList.remove('error-rollback');
+                    }, 500);
+                }, 250);
+            }
+            showAlert('Bench Error', `Error moving player to bench: ${error.message}`);
+        }
+    }
+
+    /**
+     * Re-attaches event listeners on cells affected by a drag operation.
+     * Called after every drag end (success or cancel).
+     */
+    function reattachAfterDrag(draggedEl, fromContainer, toContainer) {
+        // Re-attach listeners on the dragged element
+        if (draggedEl.classList.contains('player-filled')) {
+            OptimisticUpdates.attachCellEventListeners(draggedEl);
+        } else if (draggedEl.classList.contains('empty-slot-clickable')) {
+            attachEmptySlotListeners(draggedEl);
+        }
+
+        // Re-attach on any empty slots that may have been affected
+        [fromContainer, toContainer].forEach(container => {
+            if (!container) return;
+            container.querySelectorAll('.roster-cell.empty-slot-clickable').forEach(cell => {
+                attachEmptySlotListeners(cell);
+            });
+        });
+    }
+
     try {
         // Determine user management role to gate UI/menus
         try {
@@ -1180,6 +1438,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateRaidleaderStat().catch(()=>{});
             updateInvitesByStat().catch(()=>{});
             updateInvitesStartedStat().catch(()=>{});
+
+            // Initialize drag-and-drop after all rendering and listeners are set up
+            initDragAndDrop();
         } catch (error) {
             console.error('roster.js: A critical error occurred during renderRoster:', error);
             const rosterGrid = document.getElementById('roster-grid');
@@ -1466,6 +1727,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             for (let i = 0; i < partyPerRaid; i++) {
                 const columnDiv = document.createElement('div');
                 columnDiv.classList.add('roster-column');
+                columnDiv.dataset.partyId = String(i + 1);
             const partyNameText = (partyNames && partyNames[i]) ? partyNames[i] : `Group ${i + 1}`;
                     const partyName = document.createElement('div');
                     partyName.classList.add('party-name');
@@ -1478,11 +1740,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (player && player.name) {
                         // Use createPlayerCell to handle both regular and placeholder players
                         const cellDiv = await createPlayerCell(player, false, false);
+                        cellDiv.dataset.slotId = String(j + 1);
+                        cellDiv.dataset.userid = player.userid || '';
                         columnDiv.appendChild(cellDiv);
                     } else {
                         // Empty slot - make it clickable with "Add new character" option
                         const cellDiv = document.createElement('div');
                         cellDiv.classList.add('roster-cell', 'empty-slot-clickable');
+                        cellDiv.dataset.slotId = String(j + 1);
+                        cellDiv.dataset.userid = '';
                         const emptyDropdownContent = buildEmptySlotDropdownContent(i + 1, j + 1);
                         cellDiv.innerHTML = `
                             <div class="player-name">Empty</div>
@@ -1543,6 +1809,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 const col = document.createElement('div');
                 col.className = players.length === 0 ? 'bench-class-column empty-class' : 'bench-class-column';
+                col.dataset.class = cls;
 
                 // Class header
                 const header = document.createElement('div');
@@ -1563,6 +1830,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 for (const player of players) {
                     const isAbsent = player.spec_emote === discordAbsentEmoji;
                     const cellDiv = await createPlayerCell(player, true, isAbsent);
+                    cellDiv.dataset.userid = player.userid || '';
+                    cellDiv.dataset.bench = 'true';
                     col.appendChild(cellDiv);
                 }
 
@@ -1578,6 +1847,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function createPlayerCell(player, isBenched, isAbsent = false) {
         const cellDiv = document.createElement('div');
         cellDiv.classList.add('roster-cell', 'player-filled');
+        cellDiv.dataset.userid = player.userid || '';
         if (isAbsent) {
             cellDiv.classList.add('absent-player');
         }

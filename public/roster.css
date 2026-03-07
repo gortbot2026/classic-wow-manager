@@ -1128,3 +1128,39 @@ i.spec-icon.placeholder-icon {
 .sidebar-recent-joins.visible {
     display: block;
 }
+
+/* ===== Drag-and-Drop (SortableJS) ===== */
+
+/* Ghost element left in the original position — dim it */
+.drag-ghost {
+    opacity: 0.4 !important;
+}
+
+/* The chosen (picked-up) element before dragging starts */
+.drag-chosen {
+    box-shadow: 0 0 0 2px #22c55e;
+    z-index: 10001 !important;
+}
+
+/* The clone being dragged around */
+.drag-active {
+    transform: scale(1.05);
+    opacity: 1 !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    z-index: 10002 !important;
+}
+
+/* SortableJS applies .sortable-drag to the moving clone */
+.sortable-drag {
+    opacity: 1 !important;
+}
+
+/* Cursor for draggable items */
+.roster-cell.player-filled[draggable="true"],
+.sortable-enabled .roster-cell.player-filled {
+    cursor: grab;
+}
+
+.sortable-enabled .roster-cell.player-filled:active {
+    cursor: grabbing;
+}
