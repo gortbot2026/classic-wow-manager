@@ -5126,15 +5126,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         const vw = window.innerWidth;
         const vh = window.innerHeight;
 
-        // Show temporarily off-screen to measure
-        hoverCard.style.display = 'block';
-        hoverCard.style.opacity = '0';
-        hoverCard.style.left = '-9999px';
-        hoverCard.style.top = '-9999px';
+        const alreadyVisible = hoverCard.classList.contains('visible');
+        if (!alreadyVisible) {
+            // Only move off-screen to measure when not yet visible (avoids flicker)
+            hoverCard.style.display = 'block';
+            hoverCard.style.opacity = '0';
+            hoverCard.style.left = '-9999px';
+            hoverCard.style.top = '-9999px';
+        }
 
         const rect = hoverCard.getBoundingClientRect();
-        const cardW = rect.width;
-        const cardH = rect.height;
+        const cardW = rect.width || 220;
+        const cardH = rect.height || 100;
 
         let left = x + offset;
         let top = y + offset;
@@ -5213,46 +5216,36 @@ document.addEventListener('DOMContentLoaded', async () => {
             warnings.push('⚠️ No experience on this character');
         }
 
-        // Info: Role
-        infos.push(`🎯 Role: ${role}`);
+        // Info rows: [label, value] pairs for 2-column layout
+        const rows = [];
 
-        // Info: Guild status
+        // Role
+        rows.push(['🎯 Role', role]);
+
+        // Guild status
         if (apiData) {
-            if (apiData.guildStatus === 'in_guild_this_char') {
-                infos.push('🏰 In guild (this character)');
-            } else if (apiData.guildStatus === 'in_guild_other_char') {
-                infos.push('🏰 In guild (different character)');
-            } else {
-                infos.push('🏰 Not in guild');
-            }
+            const guildLabel = apiData.guildStatus === 'in_guild_this_char' ? 'In guild (this char)'
+                : apiData.guildStatus === 'in_guild_other_char' ? 'In guild (other char)'
+                : 'Not in guild';
+            rows.push(['🏰 Guild', guildLabel]);
         }
 
-        // Info: Guild join date
-        if (apiData && apiData.guildJoinDate) {
-            infos.push(`📅 Joined: ${apiData.guildJoinDate}`);
-        }
-
-        // Info: Raids last 12 months
+        // Raids last 12 months (account)
         if (apiData) {
-            infos.push(`⚔️ Raids (12mo): ${apiData.raidsLast12Months}`);
+            rows.push(['⚔️ Raids acc (12 months)', String(apiData.raidsLast12Months)]);
         }
 
-        // Info: Account raid count
+        // Total raids char/acc bundled
         if (apiData) {
-            infos.push(`📊 Total raids (account): ${apiData.accountRaidCount}`);
+            rows.push(['📊 Total raids char/acc', `${apiData.characterRaidCount} / ${apiData.accountRaidCount}`]);
         }
 
-        // Info: Character raid count
-        if (apiData) {
-            infos.push(`📊 Raids (this char): ${apiData.characterRaidCount}`);
-        }
-
-        // Info: Gold earned/spent
+        // Gold earned/spent last 10 raids
         if (apiData) {
             const earned = apiData.goldEarnedLast10Raids || 0;
             const spent = apiData.goldSpentLast10Raids || 0;
-            infos.push(`💰 Gold earned (last 10): ${earned.toLocaleString()}g`);
-            infos.push(`💸 Gold spent (last 10): ${spent.toLocaleString()}g`);
+            rows.push(['💰 Gold earned (10 raids)', `${earned.toLocaleString()}g`]);
+            rows.push(['💸 Gold spent (10 raids)', `${spent.toLocaleString()}g`]);
         }
 
         // Build HTML
@@ -5270,9 +5263,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             html += '</div>';
         }
 
-        if (infos.length > 0) {
-            html += '<div class="hover-section">';
-            infos.forEach(i => { html += `<div class="hover-row hover-info">${i}</div>`; });
+        if (rows.length > 0) {
+            html += '<div class="hover-section hover-table">';
+            rows.forEach(([label, value]) => {
+                html += `<div class="hover-row hover-info">
+                    <span class="hover-label">${label}</span>
+                    <span class="hover-value">${escapeHtml(String(value))}</span>
+                </div>`;
+            });
             html += '</div>';
         }
 

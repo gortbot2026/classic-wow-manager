@@ -1294,6 +1294,28 @@ i.spec-icon.placeholder-icon {
     white-space: nowrap;
 }
 
+/* 2-column table layout for info rows */
+#player-hover-card .hover-table .hover-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 2px 0;
+}
+
+#player-hover-card .hover-label {
+    color: #9ca3af;
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+#player-hover-card .hover-value {
+    color: #f3f4f6;
+    font-weight: 600;
+    text-align: right;
+    font-size: 12px;
+}
+
 #player-hover-card .hover-loading {
     color: #9ca3af;
     font-style: italic;
