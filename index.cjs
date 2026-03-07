@@ -14543,17 +14543,37 @@ app.put('/api/roster/:eventId/player/:discordUserId/position', requireRosterMana
             if (targetPlayer && targetPlayer.discord_user_id === discordUserId) {
                 // Source and target are the same player in the same slot. No action taken.
             } else {
-                if (targetPlayer) { // It's a SWAP with another player
+                if (targetPlayer) {
+                    // SWAP: update both players atomically in a single query to avoid unique constraint violation
+                    // (two sequential UPDATEs would briefly have both records at the same position)
+                    await client.query(
+                        `UPDATE roster_overrides SET
+                            party_id = CASE
+                                WHEN discord_user_id = $1 THEN $2
+                                WHEN discord_user_id = $3 THEN $4
+                            END,
+                            slot_id = CASE
+                                WHEN discord_user_id = $1 THEN $5
+                                WHEN discord_user_id = $3 THEN $6
+                            END
+                        WHERE event_id = $7 AND discord_user_id IN ($1, $3)`,
+                        [
+                            discordUserId,           // $1 source player → moves to target position
+                            targetPartyId,           // $2
+                            targetPlayer.discord_user_id, // $3 target player → moves to source position
+                            sourcePlayer.party_id,   // $4
+                            targetSlotId,            // $5
+                            sourcePlayer.slot_id,    // $6
+                            eventId,                 // $7
+                        ]
+                    );
+                } else {
+                    // MOVE TO EMPTY: just update the source player's position
                     await client.query(
                         `UPDATE roster_overrides SET party_id = $1, slot_id = $2 WHERE event_id = $3 AND discord_user_id = $4`,
-                        [sourcePlayer.party_id, sourcePlayer.slot_id, eventId, targetPlayer.discord_user_id]
+                        [targetPartyId, targetSlotId, eventId, discordUserId]
                     );
                 }
-                // This query always runs for a move-to-empty or a swap with another player
-                await client.query(
-                    `UPDATE roster_overrides SET party_id = $1, slot_id = $2 WHERE event_id = $3 AND discord_user_id = $4`,
-                    [targetPartyId, targetSlotId, eventId, discordUserId]
-                );
             }
         } else {
             // --- MOVING A PLAYER FROM THE BENCH ---
