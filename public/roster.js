@@ -2719,22 +2719,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         title.textContent = 'Admin Controls';
         sidebarInner.appendChild(title);
 
-        // Move all button-panel content into sidebar
+        // Move all button-panel content into sidebar (move originals, not clones, so event listeners stay intact)
         const btnPanel = document.querySelector('.button-panel');
         if (btnPanel) {
-            // Clone each child of button-panel into sidebar
             const sectionTitle1 = document.createElement('div');
             sectionTitle1.className = 'sidebar-section-title';
             sectionTitle1.textContent = 'Actions';
             sidebarInner.appendChild(sectionTitle1);
 
-            // Move action buttons
-            const buttons = btnPanel.querySelectorAll('.panel-button');
-            buttons.forEach(btn => {
-                const clone = btn.cloneNode(true);
-                clone.style.width = '100%';
-                clone.style.marginBottom = '4px';
-                sidebarInner.appendChild(clone);
+            // Move action buttons (originals — preserves event listeners + IDs)
+            Array.from(btnPanel.querySelectorAll('.panel-button')).forEach(btn => {
+                btn.style.width = '100%';
+                btn.style.marginBottom = '4px';
+                sidebarInner.appendChild(btn); // moves the real node
             });
 
             const sectionTitle2 = document.createElement('div');
@@ -2742,11 +2739,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             sectionTitle2.textContent = 'Toggles';
             sidebarInner.appendChild(sectionTitle2);
 
-            // Move toggle containers
-            const toggles = btnPanel.querySelectorAll('.toggle-container');
-            toggles.forEach(toggle => {
-                const clone = toggle.cloneNode(true);
-                sidebarInner.appendChild(clone);
+            Array.from(btnPanel.querySelectorAll('.toggle-container')).forEach(toggle => {
+                sidebarInner.appendChild(toggle);
             });
 
             const sectionTitle3 = document.createElement('div');
@@ -2754,20 +2748,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             sectionTitle3.textContent = 'Settings';
             sidebarInner.appendChild(sectionTitle3);
 
-            // Move inputs (raidleader, cut, invites-by)
-            const inputContainers = btnPanel.querySelectorAll('.input-container, .raidleader-container, .cut-container, .invites-by-container');
-            inputContainers.forEach(container => {
-                const clone = container.cloneNode(true);
-                clone.style.width = '100%';
-                sidebarInner.appendChild(clone);
+            Array.from(btnPanel.querySelectorAll('.input-container, .raidleader-container, .cut-container, .invites-by-container')).forEach(container => {
+                container.style.width = '100%';
+                sidebarInner.appendChild(container);
             });
 
-            // Move any remaining children that weren't captured above
-            const remaining = btnPanel.querySelectorAll('.panel-row, .input-row');
-            remaining.forEach(el => {
-                const clone = el.cloneNode(true);
-                clone.style.width = '100%';
-                sidebarInner.appendChild(clone);
+            Array.from(btnPanel.querySelectorAll('.panel-row, .input-row')).forEach(el => {
+                el.style.width = '100%';
+                sidebarInner.appendChild(el);
             });
         }
 
