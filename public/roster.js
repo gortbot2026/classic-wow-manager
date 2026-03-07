@@ -1155,6 +1155,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     evt.cancel ? evt.cancel() : (evt.item.style.display = '');
                 }
                 isDragging = true;
+                // Hide hover card immediately on drag start
+                try { hideHoverCard(); } catch (_) {}
             },
             onEnd: function (evt) {
                 isDragging = false;
@@ -1566,6 +1568,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function renderRoster() {
+        // Hide hover card on re-render
+        if (typeof hideHoverCard === 'function') { try { hideHoverCard(); } catch (_) {} }
         // Keep roster page title text empty
         if (rosterEventTitle) rosterEventTitle.textContent = '';
         try {
@@ -2055,6 +2059,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             <div class="player-details-dropdown">${dropdownContentHTML}</div>`;
 
         const cellCanonicalClass = getCanonicalClass(player.class);
+        // Store spec data for hover card and icon crossfade
+        if (player.spec_emote) cellDiv.dataset.specEmote = player.spec_emote;
+        if (player.spec) cellDiv.dataset.specName = player.spec;
         applyPlayerColor(cellDiv, player.color, cellCanonicalClass);
         if (cellCanonicalClass) cellDiv.dataset.playerClass = cellCanonicalClass; // used by bench drop zone routing
         if (!player.userid || player.isPlaceholder) { try { cellDiv.classList.add('no-discord-id'); } catch {} }
@@ -2577,9 +2584,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Remove any existing anchor bar and class icon (for re-renders)
+        // Remove any existing anchor bar and class icon wrapper/badge (for re-renders)
         const existingBar = cellDiv.querySelector('.class-anchor-bar');
         if (existingBar) existingBar.remove();
+        const existingWrapper = cellDiv.querySelector('.class-icon-wrapper');
+        if (existingWrapper) existingWrapper.remove();
         const existingIcon = cellDiv.querySelector('.class-icon-badge');
         if (existingIcon) existingIcon.remove();
 
@@ -2595,17 +2604,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         bar.style.backgroundColor = `rgb(${rgbColor})`;
         cellDiv.insertBefore(bar, cellDiv.firstChild);
 
-        // Create class icon
+        // Create class icon with optional spec icon crossfade overlay
         if (canonicalClass) {
             const iconUrl = getClassIconUrl(canonicalClass);
             if (iconUrl) {
-                const icon = document.createElement('img');
-                icon.className = 'class-icon-badge';
-                icon.src = iconUrl;
-                icon.alt = canonicalClass;
-                icon.loading = 'lazy';
-                // Insert after the anchor bar
-                bar.after(icon);
+                const specEmote = cellDiv.dataset.specEmote;
+                const ABSENT_EMOJI = '612343589070045200';
+                const hasSpecIcon = specEmote && specEmote !== ABSENT_EMOJI;
+
+                if (hasSpecIcon) {
+                    // Wrap in div for crossfade effect
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'class-icon-wrapper';
+
+                    const classIcon = document.createElement('img');
+                    classIcon.className = 'class-icon-badge';
+                    classIcon.src = iconUrl;
+                    classIcon.alt = canonicalClass;
+                    classIcon.loading = 'lazy';
+
+                    const specIcon = document.createElement('img');
+                    specIcon.className = 'spec-icon-badge';
+                    specIcon.src = `https://cdn.discordapp.com/emojis/${specEmote}.png`;
+                    specIcon.alt = cellDiv.dataset.specName || 'spec';
+                    specIcon.loading = 'lazy';
+
+                    wrapper.appendChild(classIcon);
+                    wrapper.appendChild(specIcon);
+                    bar.after(wrapper);
+                } else {
+                    // No spec icon — plain class icon (no crossfade)
+                    const icon = document.createElement('img');
+                    icon.className = 'class-icon-badge';
+                    icon.src = iconUrl;
+                    icon.alt = canonicalClass;
+                    icon.loading = 'lazy';
+                    bar.after(icon);
+                }
             }
         }
     }
@@ -5048,6 +5083,342 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener('click', () => {
         document.querySelectorAll('.player-details-dropdown.show').forEach(d => d.classList.remove('show'));
     });
+
+    // ===== Player Hover Card Module =====
+
+    /** Singleton hover card DOM element */
+    const hoverCard = document.createElement('div');
+    hoverCard.id = 'player-hover-card';
+    document.body.appendChild(hoverCard);
+
+    /** Cache API responses per discordUserId for the page session */
+    const hoverDataCache = new Map();
+
+    /** Active hover timer ID */
+    let hoverTimerId = null;
+
+    /** Mouse position at mouseenter and latest position */
+    let hoverEnterX = 0;
+    let hoverEnterY = 0;
+    let hoverLastX = 0;
+    let hoverLastY = 0;
+
+    /**
+     * Hides the hover card instantly (no fade-out).
+     */
+    function hideHoverCard() {
+        if (hoverTimerId) {
+            clearTimeout(hoverTimerId);
+            hoverTimerId = null;
+        }
+        hoverCard.classList.remove('visible');
+        hoverCard.style.display = 'none';
+        hoverCard.style.opacity = '0';
+    }
+
+    /**
+     * Positions the hover card near the cursor, flipping if near viewport edges.
+     * @param {number} x - Cursor X (clientX)
+     * @param {number} y - Cursor Y (clientY)
+     */
+    function positionHoverCard(x, y) {
+        const offset = 12;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        // Show temporarily off-screen to measure
+        hoverCard.style.display = 'block';
+        hoverCard.style.opacity = '0';
+        hoverCard.style.left = '-9999px';
+        hoverCard.style.top = '-9999px';
+
+        const rect = hoverCard.getBoundingClientRect();
+        const cardW = rect.width;
+        const cardH = rect.height;
+
+        let left = x + offset;
+        let top = y + offset;
+
+        // Flip horizontally if overflowing right
+        if (left + cardW > vw - 8) {
+            left = x - offset - cardW;
+        }
+        // Flip vertically if overflowing bottom
+        if (top + cardH > vh - 8) {
+            top = y - offset - cardH;
+        }
+
+        // Clamp to viewport
+        left = Math.max(4, Math.min(left, vw - cardW - 4));
+        top = Math.max(4, Math.min(top, vh - cardH - 4));
+
+        hoverCard.style.left = left + 'px';
+        hoverCard.style.top = top + 'px';
+    }
+
+    /**
+     * Renders the hover card content from client-side data + API response.
+     * @param {HTMLElement} cell - The roster cell element
+     * @param {Object|null} apiData - Response from player-hover API, or null if loading/error
+     */
+    function renderHoverCardContent(cell, apiData) {
+        const charName = cell.querySelector('.player-name span')?.textContent || 'Unknown';
+        const playerClass = cell.dataset.playerClass || '';
+        const specName = cell.dataset.specName || '';
+        const role = deriveRole(playerClass, specName);
+
+        // Derive class color for the header
+        let classColor = '#f3f4f6';
+        const nameSpan = cell.querySelector('.player-name span');
+        if (nameSpan && nameSpan.style.color) {
+            classColor = nameSpan.style.color;
+        }
+
+        // === Client-side flags ===
+        const flags = [];
+        const warnings = [];
+        const infos = [];
+
+        // Flag: Not confirmed (management view only — confirmation icon only appears for management)
+        const confirmIcon = cell.querySelector('.confirmation-icon');
+        if (confirmIcon && confirmIcon.classList.contains('unconfirmed')) {
+            flags.push('❌ Not confirmed');
+        }
+
+        // Flag: No Discord ID
+        if (cell.classList.contains('no-discord-id')) {
+            flags.push('❌ No Discord ID');
+        }
+
+        if (apiData === null) {
+            // Still loading
+            hoverCard.innerHTML = `
+                <div class="hover-header" style="color: ${classColor}">${escapeHtml(charName)}</div>
+                <div class="hover-loading">Loading...</div>`;
+            return;
+        }
+
+        // Flag: Never logged in (not in players/guildies DB)
+        if (apiData && !apiData.playerInDb) {
+            flags.push('❌ Never logged in');
+        }
+
+        // Warning: No account experience
+        if (apiData && apiData.accountRaidCount === 0) {
+            warnings.push('⚠️ No account raid experience');
+        }
+
+        // Warning: No character experience (has account raids but not on this char)
+        if (apiData && apiData.accountRaidCount > 0 && apiData.characterRaidCount === 0) {
+            warnings.push('⚠️ No experience on this character');
+        }
+
+        // Info: Role
+        infos.push(`🎯 Role: ${role}`);
+
+        // Info: Guild status
+        if (apiData) {
+            if (apiData.guildStatus === 'in_guild_this_char') {
+                infos.push('🏰 In guild (this character)');
+            } else if (apiData.guildStatus === 'in_guild_other_char') {
+                infos.push('🏰 In guild (different character)');
+            } else {
+                infos.push('🏰 Not in guild');
+            }
+        }
+
+        // Info: Guild join date
+        if (apiData && apiData.guildJoinDate) {
+            infos.push(`📅 Joined: ${apiData.guildJoinDate}`);
+        }
+
+        // Info: Raids last 12 months
+        if (apiData) {
+            infos.push(`⚔️ Raids (12mo): ${apiData.raidsLast12Months}`);
+        }
+
+        // Info: Account raid count
+        if (apiData) {
+            infos.push(`📊 Total raids (account): ${apiData.accountRaidCount}`);
+        }
+
+        // Info: Character raid count
+        if (apiData) {
+            infos.push(`📊 Raids (this char): ${apiData.characterRaidCount}`);
+        }
+
+        // Info: Gold earned/spent
+        if (apiData) {
+            const earned = apiData.goldEarnedLast10Raids || 0;
+            const spent = apiData.goldSpentLast10Raids || 0;
+            infos.push(`💰 Gold earned (last 10): ${earned.toLocaleString()}g`);
+            infos.push(`💸 Gold spent (last 10): ${spent.toLocaleString()}g`);
+        }
+
+        // Build HTML
+        let html = `<div class="hover-header" style="color: ${classColor}">${escapeHtml(charName)}</div>`;
+
+        if (flags.length > 0) {
+            html += '<div class="hover-section">';
+            flags.forEach(f => { html += `<div class="hover-row hover-flag">${f}</div>`; });
+            html += '</div>';
+        }
+
+        if (warnings.length > 0) {
+            html += '<div class="hover-section">';
+            warnings.forEach(w => { html += `<div class="hover-row hover-warning">${w}</div>`; });
+            html += '</div>';
+        }
+
+        if (infos.length > 0) {
+            html += '<div class="hover-section">';
+            infos.forEach(i => { html += `<div class="hover-row hover-info">${i}</div>`; });
+            html += '</div>';
+        }
+
+        hoverCard.innerHTML = html;
+    }
+
+    /**
+     * Shows the hover card for a given roster cell.
+     * @param {HTMLElement} cell - The roster cell
+     */
+    async function showHoverCard(cell) {
+        const discordUserId = cell.dataset.userid;
+        const charName = cell.querySelector('.player-name span')?.textContent || '';
+        const playerClass = cell.dataset.playerClass || '';
+
+        // Render immediately with client-side data (show loading for API data)
+        renderHoverCardContent(cell, null);
+        positionHoverCard(hoverLastX, hoverLastY);
+        hoverCard.style.display = 'block';
+        // Trigger fade-in on next frame
+        requestAnimationFrame(() => {
+            hoverCard.classList.add('visible');
+            hoverCard.style.opacity = '1';
+        });
+
+        // Fetch API data (only for management users with a valid discord user ID)
+        if (!discordUserId || !currentUserCanManage) {
+            renderHoverCardContent(cell, { playerInDb: false, accountRaidCount: 0, characterRaidCount: 0, guildStatus: 'not_in_guild', guildJoinDate: null, raidsLast12Months: 0, goldEarnedLast10Raids: 0, goldSpentLast10Raids: 0 });
+            positionHoverCard(hoverLastX, hoverLastY);
+            return;
+        }
+
+        if (hoverDataCache.has(discordUserId)) {
+            renderHoverCardContent(cell, hoverDataCache.get(discordUserId));
+            positionHoverCard(hoverLastX, hoverLastY);
+            return;
+        }
+
+        try {
+            const resp = await fetch(`/api/roster/${eventId}/player-hover/${discordUserId}?charName=${encodeURIComponent(charName)}&charClass=${encodeURIComponent(playerClass)}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                hoverDataCache.set(discordUserId, data);
+                // Only render if card is still visible (user didn't move away)
+                if (hoverCard.classList.contains('visible')) {
+                    renderHoverCardContent(cell, data);
+                    positionHoverCard(hoverLastX, hoverLastY);
+                }
+            }
+        } catch (_) {
+            // Silently fail — card stays with client-side data only
+        }
+    }
+
+    /**
+     * Attaches hover card event listeners to all player-filled roster cells.
+     * Safe to call multiple times (removes old listeners via cloneNode is impractical;
+     * instead we use a delegated approach).
+     */
+    function attachHoverListeners() {
+        // Use event delegation on body for roster cells
+        // Detach previous delegated handler if any
+        if (attachHoverListeners._handler) {
+            document.removeEventListener('mouseenter', attachHoverListeners._handler, true);
+            document.removeEventListener('mousemove', attachHoverListeners._moveHandler, true);
+            document.removeEventListener('mouseleave', attachHoverListeners._handler, true);
+            document.removeEventListener('mousedown', attachHoverListeners._downHandler, true);
+        }
+
+        let activeCell = null;
+
+        const enterHandler = (e) => {
+            const cell = e.target.closest('.roster-cell.player-filled');
+            if (!cell) return;
+
+            // Suppress during drag
+            if (isDragging || (Date.now() - dragEndTimestamp) < 200) return;
+
+            activeCell = cell;
+            hoverEnterX = e.clientX;
+            hoverEnterY = e.clientY;
+            hoverLastX = e.clientX;
+            hoverLastY = e.clientY;
+
+            if (hoverTimerId) clearTimeout(hoverTimerId);
+            hoverTimerId = setTimeout(() => {
+                if (isDragging || (Date.now() - dragEndTimestamp) < 200) return;
+                showHoverCard(cell);
+            }, 600);
+        };
+
+        const moveHandler = (e) => {
+            if (!activeCell) return;
+
+            hoverLastX = e.clientX;
+            hoverLastY = e.clientY;
+
+            // Check if moved more than 5px from enter point — reset timer
+            const dx = e.clientX - hoverEnterX;
+            const dy = e.clientY - hoverEnterY;
+            if (Math.sqrt(dx * dx + dy * dy) > 5) {
+                hoverEnterX = e.clientX;
+                hoverEnterY = e.clientY;
+                if (hoverTimerId) clearTimeout(hoverTimerId);
+                // Only restart timer if card is not already visible
+                if (!hoverCard.classList.contains('visible')) {
+                    hoverTimerId = setTimeout(() => {
+                        if (isDragging || (Date.now() - dragEndTimestamp) < 200) return;
+                        showHoverCard(activeCell);
+                    }, 600);
+                }
+            }
+        };
+
+        const leaveHandler = (e) => {
+            const cell = e.target.closest('.roster-cell.player-filled');
+            if (!cell || cell !== activeCell) return;
+            // Check if we're actually leaving the cell (not entering a child)
+            const related = e.relatedTarget;
+            if (related && cell.contains(related)) return;
+            activeCell = null;
+            hideHoverCard();
+        };
+
+        const downHandler = (e) => {
+            // Hide on any mousedown (click or drag start)
+            if (activeCell) {
+                activeCell = null;
+                hideHoverCard();
+            }
+        };
+
+        document.addEventListener('mouseenter', enterHandler, true);
+        document.addEventListener('mousemove', moveHandler, true);
+        document.addEventListener('mouseleave', leaveHandler, true);
+        document.addEventListener('mousedown', downHandler, true);
+
+        // Store for potential cleanup
+        attachHoverListeners._handler = enterHandler;
+        attachHoverListeners._moveHandler = moveHandler;
+        attachHoverListeners._leaveHandler = leaveHandler;
+        attachHoverListeners._downHandler = downHandler;
+    }
+
+    // Initialize hover listeners once (event delegation handles dynamic elements)
+    attachHoverListeners();
 
     renderRoster();
     // setupNameToggle(); // Now called from inside renderRoster

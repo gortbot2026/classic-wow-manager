@@ -362,11 +362,53 @@ i.spec-icon.placeholder-icon {
     border-radius: 4px 0 0 4px; /* rounds left edge flush with cell */
 }
 
+/* Class/spec icon wrapper for hover crossfade */
+.class-icon-wrapper {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    margin-left: 6px;
+    margin-right: 6px;
+}
+
 /* Class icon next to anchor bar */
 .class-icon-badge {
     width: 28px;
     height: 28px;
     flex-shrink: 0;
+    opacity: 1;
+    transition: opacity 0.5s ease;
+}
+
+/* When inside wrapper, position absolutely */
+.class-icon-wrapper .class-icon-badge {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+/* Spec/role icon overlay — hidden by default */
+.spec-icon-badge {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 28px;
+    height: 28px;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+}
+
+/* On cell hover: crossfade class → spec icon */
+.roster-cell:hover .class-icon-wrapper .class-icon-badge {
+    opacity: 0;
+}
+.roster-cell:hover .class-icon-wrapper .spec-icon-badge {
+    opacity: 1;
+}
+
+/* Legacy: standalone class-icon-badge (without wrapper) keeps original sizing */
+.roster-cell > .class-icon-badge {
     margin-left: 6px;
     margin-right: 6px;
 }
@@ -1193,4 +1235,66 @@ i.spec-icon.placeholder-icon {
 
 .sortable-enabled .roster-cell.player-filled:active {
     cursor: grabbing;
+}
+
+/* ===== Player Hover Info Card ===== */
+#player-hover-card {
+    position: fixed;
+    z-index: 100000;
+    background: rgba(20, 20, 22, 0.98);
+    color: #f0f0f0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.55), 0 6px 18px rgba(0,0,0,0.35);
+    max-width: 320px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    display: none;
+    font-size: 13px;
+    line-height: 1.5;
+}
+#player-hover-card.visible {
+    display: block;
+    opacity: 1;
+}
+
+#player-hover-card .hover-header {
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 6px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(75, 85, 99, 0.5);
+}
+
+#player-hover-card .hover-section {
+    padding: 4px 0;
+}
+
+#player-hover-card .hover-section + .hover-section {
+    border-top: 1px solid rgba(75, 85, 99, 0.3);
+    margin-top: 2px;
+    padding-top: 6px;
+}
+
+#player-hover-card .hover-flag {
+    color: #ef4444;
+}
+
+#player-hover-card .hover-warning {
+    color: #fbbf24;
+}
+
+#player-hover-card .hover-info {
+    color: #d1d5db;
+}
+
+#player-hover-card .hover-row {
+    padding: 1px 0;
+    white-space: nowrap;
+}
+
+#player-hover-card .hover-loading {
+    color: #9ca3af;
+    font-style: italic;
 }

@@ -13741,6 +13741,305 @@ async function getRaidDetailsFromRaidHelper(eventId) {
     }
 }
 
+/**
+ * GET /api/roster/:eventId/player-hover/:discordUserId
+ *
+ * Returns hover card data for a player: DB existence, raid counts,
+ * guild status, gold earned/spent. Management-only endpoint.
+ *
+ * Query params:
+ *   charName  — character name (for character-level raid count)
+ *   charClass — character class (for guild status matching)
+ */
+app.get('/api/roster/:eventId/player-hover/:discordUserId', requireRosterManager, async (req, res) => {
+    const { eventId, discordUserId } = req.params;
+    const charName = req.query.charName || '';
+    const charClass = (req.query.charClass || '').toLowerCase();
+    let client;
+
+    try {
+        client = await pool.connect();
+
+        // Run independent queries in parallel for speed
+        const [
+            playerExistsRes,
+            guildiExistsRes,
+            accountRaidCountRes,
+            charRaidCountRes,
+            guildStatusRes,
+            raidsLast12MonthsRes,
+        ] = await Promise.all([
+            // 1. Player exists in players table
+            client.query(
+                'SELECT 1 FROM players WHERE discord_id = $1 LIMIT 1',
+                [discordUserId]
+            ),
+            // 2. Player exists in guildies table
+            client.query(
+                'SELECT 1 FROM guildies WHERE discord_id = $1 LIMIT 1',
+                [discordUserId]
+            ),
+            // 3. Account raid experience (all characters)
+            client.query(
+                `SELECT COUNT(DISTINCT event_id) AS total
+                 FROM roster_overrides
+                 WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false`,
+                [discordUserId]
+            ),
+            // 4. Character raid experience (this character only)
+            charName ? client.query(
+                `SELECT COUNT(DISTINCT event_id) AS total
+                 FROM roster_overrides
+                 WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false
+                   AND LOWER(assigned_char_name) = LOWER($2)`,
+                [discordUserId, charName]
+            ) : Promise.resolve({ rows: [{ total: 0 }] }),
+            // 5. Guild status — all guildies rows for this discord_id
+            client.query(
+                'SELECT character_name, class, join_date FROM guildies WHERE discord_id = $1',
+                [discordUserId]
+            ),
+            // 6. Raids last 12 months — use raid_helper_events_cache for start_time
+            //    Fall back to counting all raids if cache unavailable
+            (async () => {
+                try {
+                    const result = await client.query(
+                        `SELECT COUNT(DISTINCT ro.event_id) AS total
+                         FROM roster_overrides ro
+                         JOIN raid_helper_events_cache rhec ON rhec.event_id = ro.event_id
+                         WHERE ro.discord_user_id = $1
+                           AND ro.in_raid = true
+                           AND ro.is_placeholder = false
+                           AND (rhec.event_data->>'startTime')::bigint > EXTRACT(EPOCH FROM (NOW() - INTERVAL '12 months'))`,
+                        [discordUserId]
+                    );
+                    return result;
+                } catch (_) {
+                    // Fallback: count all raids if cache table or startTime unavailable
+                    return client.query(
+                        `SELECT COUNT(DISTINCT event_id) AS total
+                         FROM roster_overrides
+                         WHERE discord_user_id = $1 AND in_raid = true AND is_placeholder = false`,
+                        [discordUserId]
+                    );
+                }
+            })(),
+        ]);
+
+        const playerInDb = playerExistsRes.rows.length > 0 || guildiExistsRes.rows.length > 0;
+        const accountRaidCount = parseInt(accountRaidCountRes.rows[0]?.total, 10) || 0;
+        const characterRaidCount = parseInt(charRaidCountRes.rows[0]?.total, 10) || 0;
+        const raidsLast12Months = parseInt(raidsLast12MonthsRes.rows[0]?.total, 10) || 0;
+
+        // Determine guild status
+        let guildStatus = 'not_in_guild';
+        let guildJoinDate = null;
+        if (guildStatusRes.rows.length > 0) {
+            // Check if any row matches this character + class
+            const matchingRow = guildStatusRes.rows.find(r =>
+                r.character_name && charName &&
+                r.character_name.toLowerCase() === charName.toLowerCase() &&
+                (!charClass || (r.class || '').toLowerCase() === charClass)
+            );
+            if (matchingRow) {
+                guildStatus = 'in_guild_this_char';
+                guildJoinDate = matchingRow.join_date || null;
+            } else {
+                guildStatus = 'in_guild_other_char';
+                guildJoinDate = guildStatusRes.rows[0].join_date || null;
+            }
+        }
+
+        // 7. Gold earned last 10 raids — reuse computeTotalsFromSnapshot pattern
+        // Get 10 most recent published raids globally
+        const recentRaidsRes = await client.query(
+            `SELECT event_id, shared_gold_pot
+             FROM rewards_snapshot_events
+             WHERE published = true AND shared_gold_pot IS NOT NULL AND shared_gold_pot > 0
+             ORDER BY published_at DESC NULLS LAST
+             LIMIT 10`
+        );
+
+        let goldEarnedLast10Raids = 0;
+        let goldSpentLast10Raids = 0;
+
+        if (recentRaidsRes.rows.length > 0) {
+            const recentEventIds = recentRaidsRes.rows.map(r => r.event_id);
+            const sharedPotByEvent = new Map();
+            for (const r of recentRaidsRes.rows) {
+                sharedPotByEvent.set(r.event_id, Number(r.shared_gold_pot) || 0);
+            }
+
+            // Collect all character names for this player
+            const playerCharNamesSet = new Set();
+            const [charsFromPlayers, charsFromGuildies] = await Promise.all([
+                client.query('SELECT character_name FROM players WHERE discord_id = $1', [discordUserId]),
+                client.query('SELECT character_name FROM guildies WHERE discord_id = $1', [discordUserId]),
+            ]);
+            for (const r of charsFromPlayers.rows) {
+                if (r.character_name) playerCharNamesSet.add(r.character_name.toLowerCase());
+            }
+            for (const r of charsFromGuildies.rows) {
+                if (r.character_name) playerCharNamesSet.add(r.character_name.toLowerCase());
+            }
+            // Also add the current character name
+            if (charName) playerCharNamesSet.add(charName.toLowerCase());
+
+            if (playerCharNamesSet.size > 0) {
+                const charNamesArray = Array.from(playerCharNamesSet);
+
+                // Helper functions matching gold.js pattern
+                const normalizeSnapshotName = (name) => {
+                    try {
+                        let s = String(name || '').trim();
+                        s = s.replace(/^[\s•\u2022\u00B7\-\u2013\u2014]+/, '');
+                        s = s.replace(/\s*\((?:tank\s*)?gr(?:ou)?p\s*\d*\)\s*$/i, '');
+                        return s.trim();
+                    } catch { return String(name || '').trim(); }
+                };
+                const isValidWoWName = (name) => {
+                    const s = String(name || '');
+                    if (/\d/.test(s)) return false;
+                    if (/\s/.test(s)) return false;
+                    return true;
+                };
+                const lower = s => String(s || '').toLowerCase();
+
+                // Batch-fetch snapshot entries and confirmed players for these 10 events
+                const [snapshotRes, confirmedRes, lootSpentRes] = await Promise.all([
+                    client.query(
+                        `SELECT event_id, character_name, panel_key,
+                                COALESCE(point_value_edited, point_value_original) AS point_value,
+                                aux_json
+                         FROM rewards_and_deductions_points
+                         WHERE event_id = ANY($1)`,
+                        [recentEventIds]
+                    ),
+                    client.query(
+                        `SELECT DISTINCT raid_id AS event_id, character_name
+                         FROM player_confirmed_logs
+                         WHERE raid_id = ANY($1)`,
+                        [recentEventIds]
+                    ),
+                    // Gold spent: loot items for this player's characters in these events
+                    client.query(
+                        `SELECT COALESCE(SUM(gold_amount), 0) AS total_spent
+                         FROM loot_items
+                         WHERE event_id = ANY($1) AND LOWER(player_name) = ANY($2)`,
+                        [recentEventIds, charNamesArray]
+                    ),
+                ]);
+
+                goldSpentLast10Raids = parseInt(lootSpentRes.rows[0]?.total_spent, 10) || 0;
+
+                // Group by event
+                const snapshotByEvent = new Map();
+                for (const r of snapshotRes.rows) {
+                    if (!snapshotByEvent.has(r.event_id)) snapshotByEvent.set(r.event_id, []);
+                    snapshotByEvent.get(r.event_id).push(r);
+                }
+                const confirmedByEvent = new Map();
+                for (const r of confirmedRes.rows) {
+                    if (!confirmedByEvent.has(r.event_id)) confirmedByEvent.set(r.event_id, []);
+                    confirmedByEvent.get(r.event_id).push(r);
+                }
+
+                // Per-raid gold calculation (6-step formula)
+                for (const eid of recentEventIds) {
+                    const sharedPot = sharedPotByEvent.get(eid) || 0;
+                    const entries = snapshotByEvent.get(eid) || [];
+                    const confirmed = confirmedByEvent.get(eid) || [];
+
+                    const nameToPlayer = new Map();
+                    for (const p of confirmed) {
+                        const normalized = normalizeSnapshotName(p.character_name);
+                        if (!isValidWoWName(normalized)) continue;
+                        const key = lower(normalized);
+                        if (!nameToPlayer.has(key)) {
+                            nameToPlayer.set(key, { points: 0, gold: 0 });
+                        }
+                    }
+
+                    // Step A: Sum panel points (excluding manual_points)
+                    for (const r of entries) {
+                        const normalized = normalizeSnapshotName(r.character_name || '');
+                        if (!isValidWoWName(normalized)) continue;
+                        const key = lower(normalized);
+                        const v = nameToPlayer.get(key);
+                        if (!v) continue;
+                        if (String(r.panel_key || '') === 'manual_points') continue;
+                        v.points += (Number(r.point_value) || 0);
+                    }
+
+                    // Step B: Add 100 base points if no base panel
+                    const hasBasePoints = entries.some(r => String(r.panel_key || '') === 'base');
+                    if (!hasBasePoints) {
+                        nameToPlayer.forEach(v => { v.points += 100; });
+                    }
+
+                    // Step C: Manual gold payouts
+                    let manualGoldPayoutTotal = 0;
+                    for (const r of entries) {
+                        if (String(r.panel_key || '') !== 'manual_points') continue;
+                        const normalized = normalizeSnapshotName(r.character_name || '');
+                        if (!isValidWoWName(normalized)) continue;
+                        const key = lower(normalized);
+                        const v = nameToPlayer.get(key);
+                        if (!v) continue;
+                        const aux = r.aux_json || {};
+                        const isGold = !!(aux.is_gold === true || aux.is_gold === 'true');
+                        const amt = Number(r.point_value) || 0;
+                        if (isGold) {
+                            if (amt > 0) {
+                                manualGoldPayoutTotal += amt;
+                                v.gold = Math.max(0, (Number(v.gold) || 0) + amt);
+                            }
+                        } else {
+                            v.points += amt;
+                        }
+                    }
+
+                    // Step D: Adjusted pot
+                    const adjustedPot = Math.max(0, sharedPot - manualGoldPayoutTotal);
+
+                    // Step E: Total points
+                    let totalPointsAll = 0;
+                    nameToPlayer.forEach(v => { totalPointsAll += Math.max(0, Number(v.points) || 0); });
+
+                    // Step F: Gold per point
+                    const goldPerPoint = (adjustedPot > 0 && totalPointsAll > 0) ? adjustedPot / totalPointsAll : 0;
+                    nameToPlayer.forEach(v => {
+                        const effPts = Math.max(0, Number(v.points) || 0);
+                        v.gold = Math.max(0, Math.floor(effPts * goldPerPoint) + (Number(v.gold) || 0));
+                    });
+
+                    // Sum gold for target player's characters
+                    for (const cn of playerCharNamesSet) {
+                        const v = nameToPlayer.get(cn);
+                        if (v) goldEarnedLast10Raids += v.gold;
+                    }
+                }
+            }
+        }
+
+        res.json({
+            playerInDb,
+            accountRaidCount,
+            characterRaidCount,
+            guildStatus,
+            guildJoinDate,
+            raidsLast12Months,
+            goldEarnedLast10Raids,
+            goldSpentLast10Raids,
+        });
+    } catch (err) {
+        console.error('[PLAYER_HOVER] Error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch hover data' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
 // Endpoint to handle swapping a player's character
 app.put('/api/roster/:eventId/player/:discordUserId', requireRosterManager, async (req, res) => {
     const { eventId, discordUserId } = req.params;
