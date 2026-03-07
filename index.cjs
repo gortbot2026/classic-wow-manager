@@ -13915,10 +13915,12 @@ app.get('/api/roster/:eventId/player-hover/:discordUserId', requireRosterManager
                          WHERE event_id = ANY($1)`,
                         [recentEventIds]
                     ),
+                    // Use roster_overrides (source of truth) not player_confirmed_logs
+                    // player_confirmed_logs is not reliably populated for recent raids
                     client.query(
-                        `SELECT DISTINCT raid_id AS event_id, character_name
-                         FROM player_confirmed_logs
-                         WHERE raid_id = ANY($1)`,
+                        `SELECT DISTINCT event_id, assigned_char_name AS character_name
+                         FROM roster_overrides
+                         WHERE event_id = ANY($1) AND in_raid = true AND is_placeholder = false`,
                         [recentEventIds]
                     ),
                     // Gold spent: loot items for this player's characters in these events
