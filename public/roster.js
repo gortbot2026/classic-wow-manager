@@ -1212,18 +1212,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             ? parseInt(swapItem.dataset.slotId, 10)
             : getTargetSlotId(toContainer, evt.newIndex);
 
-        // Debug logging — remove once DnD is stable
-        console.log('[DnD]', {
-            userid,
-            fromIsBench, toIsBench,
-            sourcePartyId, sourceSlotId,
-            targetPartyId, targetSlotId,
-            swapItemUserId: swapItem?.dataset?.userid,
-            swapItemSlotId: swapItem?.dataset?.slotId,
-            swapItemClasses: swapItem?.className,
-            oldIndex: evt.oldIndex, newIndex: evt.newIndex,
-            sameContainer: fromContainer === toContainer,
-        });
+
 
         // No-op: same slot (dropped on self or nothing changed)
         if (fromContainer === toContainer && swapItem === draggedEl) return;
@@ -1318,8 +1307,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      */
     async function executeDragSimple(apiFn, onSuccessCallback) {
         try {
-            const result = await apiFn();
-            console.log('[DnD] API success:', result);
+            await apiFn();
             // Success — SortableJS already shows the correct visual state
             isManaged = true;
             updateRevertButtonVisibility();
@@ -1330,7 +1318,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 try { await renderRoster(); } catch (_) {}
             }
         } catch (error) {
-            console.error('[DnD] API error:', error);
+
             showAlert('Move Error', `Error moving player: ${error.message}`);
             // Failure — re-render to rollback to actual server state
             try { await renderRoster(); } catch (_) {}
