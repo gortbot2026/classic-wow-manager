@@ -14997,6 +14997,8 @@ app.post('/api/roster/:eventId/revert', requireRosterManager, async (req, res) =
 /**
  * Find raid candidates — players who raided within a lookback period,
  * have a character of the requested class(es), but are not already in this event.
+ * Returns one row per character (accounts with multiple matching chars appear multiple times).
+ * Includes gold_spent_12mo and gold_earned_12mo per account.
  */
 app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res) => {
     const { eventId } = req.params;
@@ -15021,7 +15023,6 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             if (rhRes.ok) {
                 const rhData = await rhRes.json();
                 (rhData.slots || []).forEach(s => { if (s.id) raidHelperExclude.add(s.id); });
-                // Also check absence list if present
                 (rhData.absences || []).forEach(a => { if (a.id) raidHelperExclude.add(a.id); });
             }
         } catch (rhErr) {
@@ -15030,20 +15031,13 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
 
         const rhExcludeArr = Array.from(raidHelperExclude);
 
-        // Build interval string from weeks param
         const intervalSql = weeks >= 52 ? '1 year'
             : weeks >= 12 ? `${Math.round(weeks / 4)} months`
             : `${weeks} weeks`;
 
-        // Find candidates:
-        // 1. Have a character of the requested class(es) in players table
-        // 2. Their discord_id has been in a raid (any character) within lookback period
-        // 3. Not already in roster_overrides for this event (any character)
-        // 4. In discord_users (on Discord)
-        // 5. Not in Raid Helper signups for this event
+        // Main candidate query — one row per character (not per account)
         const result = await client.query(`
             WITH recent_raiders AS (
-                -- All discord_ids that raided (any character) within lookback
                 SELECT DISTINCT ro.discord_user_id
                 FROM roster_overrides ro
                 JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
@@ -15052,45 +15046,243 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
                   AND rse.published_at >= NOW() - INTERVAL '${intervalSql}'
             ),
             last_raid_per_account AS (
-                -- Most recent raid per discord_id (for last raided as / raid name)
                 SELECT DISTINCT ON (ro.discord_user_id)
                     ro.discord_user_id,
                     ro.assigned_char_name  AS last_char_name,
                     ro.assigned_char_class AS last_char_class,
-                    ec.title               AS last_raid_name,
-                    rse.published_at       AS last_raid_date
+                    rse.published_at       AS last_raid_date,
+                    rse.event_id           AS last_raid_event_id
                 FROM roster_overrides ro
                 JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
-                LEFT JOIN events_cache ec ON ec.cache_key = 'raid_helper_events'
                 WHERE ro.in_raid = true
                   AND ro.is_placeholder = false
                 ORDER BY ro.discord_user_id, rse.published_at DESC
             ),
             already_in_event AS (
-                -- discord_ids already in this event's roster
                 SELECT DISTINCT discord_user_id FROM roster_overrides WHERE event_id = $1
             )
             SELECT
                 p.discord_id,
-                du.username         AS discord_username,
-                p.character_name    AS candidate_char_name,
-                p.class             AS candidate_class,
+                du.username              AS discord_username,
+                p.character_name         AS candidate_char_name,
+                p.class                  AS candidate_class,
                 lr.last_char_name,
                 lr.last_char_class,
-                lr.last_raid_name,
+                lr.last_raid_event_id,
                 lr.last_raid_date
             FROM players p
-            JOIN discord_users du       ON du.discord_id = p.discord_id
-            JOIN recent_raiders rr      ON rr.discord_user_id = p.discord_id
-            JOIN last_raid_per_account lr ON lr.discord_user_id = p.discord_id
-            LEFT JOIN already_in_event ae ON ae.discord_user_id = p.discord_id
+            JOIN discord_users du           ON du.discord_id = p.discord_id
+            JOIN recent_raiders rr          ON rr.discord_user_id = p.discord_id
+            JOIN last_raid_per_account lr   ON lr.discord_user_id = p.discord_id
+            LEFT JOIN already_in_event ae   ON ae.discord_user_id = p.discord_id
             WHERE LOWER(p.class) = ANY($2)
               AND ae.discord_user_id IS NULL
               ${rhExcludeArr.length > 0 ? `AND p.discord_id <> ALL($3)` : ''}
-            ORDER BY lr.last_raid_date DESC, du.username
+            ORDER BY lr.last_raid_date DESC, du.username, LOWER(p.class), p.character_name
         `, rhExcludeArr.length > 0 ? [eventId, classes, rhExcludeArr] : [eventId, classes]);
 
-        res.json({ success: true, candidates: result.rows });
+        const candidates = result.rows;
+        if (candidates.length === 0) {
+            return res.json({ success: true, candidates: [] });
+        }
+
+        // Fetch last raid name for each unique last_raid_event_id from events_cache
+        const lastRaidEventIds = [...new Set(candidates.map(c => c.last_raid_event_id).filter(Boolean))];
+        const raidNameMap = {};
+        if (lastRaidEventIds.length > 0) {
+            try {
+                const cacheRow = await client.query(
+                    `SELECT data FROM events_cache WHERE cache_key = 'raid_helper_events' LIMIT 1`
+                );
+                if (cacheRow.rows.length > 0) {
+                    const events = JSON.parse(cacheRow.rows[0].data || '[]');
+                    for (const ev of events) {
+                        if (ev.id) raidNameMap[String(ev.id)] = ev.title || String(ev.id);
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // Enrich candidates with last raid name
+        for (const c of candidates) {
+            c.last_raid_name = raidNameMap[String(c.last_raid_event_id)] || null;
+        }
+
+        // Gold spent per account (last 12 months, published events only)
+        const discordIds = [...new Set(candidates.map(c => c.discord_id))];
+        const goldSpentRes = await client.query(`
+            SELECT p.discord_id, SUM(COALESCE(li.gold_amount, 0)) AS gold_spent
+            FROM players p
+            JOIN loot_items li ON LOWER(li.player_name) = LOWER(p.character_name)
+            JOIN rewards_snapshot_events rse
+                ON rse.event_id = li.event_id
+               AND rse.published = TRUE
+               AND rse.published_at >= NOW() - INTERVAL '12 months'
+            WHERE p.discord_id = ANY($1)
+            GROUP BY p.discord_id
+        `, [discordIds]);
+        const goldSpentByAccount = {};
+        for (const r of goldSpentRes.rows) {
+            goldSpentByAccount[r.discord_id] = parseInt(r.gold_spent) || 0;
+        }
+
+        // Gold earned per account (last 12 months) — mirrors computeTotalsFromSnapshot logic
+        // Helper functions (same as player admin page)
+        const normalizeSnapshotName = (name) => {
+            try {
+                let s = String(name || '').trim();
+                s = s.replace(/^[\s•\u2022\u00B7\-\u2013\u2014]+/, '');
+                s = s.replace(/\s*\((?:tank\s*)?gr(?:ou)?p\s*\d*\)\s*$/i, '');
+                return s.trim();
+            } catch { return String(name || '').trim(); }
+        };
+        const isValidWoWName = (name) => {
+            const s = String(name || '');
+            return !/\d/.test(s) && !/\s/.test(s);
+        };
+
+        // Get all character names per discord_id (all chars, not just matching class)
+        const allCharsRes = await client.query(
+            `SELECT discord_id, LOWER(character_name) AS character_name FROM players WHERE discord_id = ANY($1)`,
+            [discordIds]
+        );
+        const charsByAccount = {};
+        for (const r of allCharsRes.rows) {
+            if (!charsByAccount[r.discord_id]) charsByAccount[r.discord_id] = new Set();
+            charsByAccount[r.discord_id].add(r.character_name);
+        }
+
+        // Get published events in last 12 months where any candidate account participated
+        const attendedRes = await client.query(`
+            SELECT DISTINCT ro.discord_user_id, ro.event_id, rse.shared_gold_pot
+            FROM roster_overrides ro
+            JOIN rewards_snapshot_events rse
+                ON rse.event_id = ro.event_id
+               AND rse.published = TRUE
+               AND rse.shared_gold_pot IS NOT NULL AND rse.shared_gold_pot > 0
+               AND rse.published_at >= NOW() - INTERVAL '12 months'
+            WHERE ro.in_raid = true
+              AND ro.is_placeholder = false
+              AND ro.discord_user_id = ANY($1)
+        `, [discordIds]);
+
+        const eventIdsByAccount = {};
+        const sharedPotByEvent = {};
+        for (const r of attendedRes.rows) {
+            if (!eventIdsByAccount[r.discord_user_id]) eventIdsByAccount[r.discord_user_id] = [];
+            eventIdsByAccount[r.discord_user_id].push(r.event_id);
+            sharedPotByEvent[r.event_id] = Number(r.shared_gold_pot) || 0;
+        }
+
+        const allEventIds12mo = [...new Set(attendedRes.rows.map(r => r.event_id))];
+        const goldEarnedByAccount = {};
+        for (const discordId of discordIds) goldEarnedByAccount[discordId] = 0;
+
+        if (allEventIds12mo.length > 0) {
+            const [snapshotRes, confirmedRes] = await Promise.all([
+                client.query(
+                    `SELECT event_id, character_name, panel_key,
+                            COALESCE(point_value_edited, point_value_original) AS point_value,
+                            aux_json
+                     FROM rewards_and_deductions_points WHERE event_id = ANY($1)`,
+                    [allEventIds12mo]
+                ),
+                client.query(
+                    `SELECT DISTINCT raid_id AS event_id, LOWER(character_name) AS character_name
+                     FROM player_confirmed_logs WHERE raid_id = ANY($1)`,
+                    [allEventIds12mo]
+                )
+            ]);
+
+            const snapshotByEvent = new Map();
+            for (const r of snapshotRes.rows) {
+                if (!snapshotByEvent.has(r.event_id)) snapshotByEvent.set(r.event_id, []);
+                snapshotByEvent.get(r.event_id).push(r);
+            }
+            const confirmedByEvent = new Map();
+            for (const r of confirmedRes.rows) {
+                if (!confirmedByEvent.has(r.event_id)) confirmedByEvent.set(r.event_id, []);
+                confirmedByEvent.get(r.event_id).push(r);
+            }
+
+            const lower = s => String(s || '').toLowerCase();
+
+            // Per-event gold calculation for each event
+            const goldPerEvent = {};
+            for (const eid of allEventIds12mo) {
+                const sharedPot = sharedPotByEvent[eid] || 0;
+                const entries = snapshotByEvent.get(eid) || [];
+                const confirmed = confirmedByEvent.get(eid) || [];
+
+                const nameToPlayer = new Map();
+                for (const p of confirmed) {
+                    const normalized = normalizeSnapshotName(p.character_name);
+                    if (!isValidWoWName(normalized)) continue;
+                    const key = lower(normalized);
+                    if (!nameToPlayer.has(key)) nameToPlayer.set(key, { points: 0, gold: 0 });
+                }
+
+                for (const r of entries) {
+                    const normalized = normalizeSnapshotName(r.character_name || '');
+                    if (!isValidWoWName(normalized)) continue;
+                    const key = lower(normalized);
+                    const v = nameToPlayer.get(key);
+                    if (!v || String(r.panel_key) === 'manual_points') continue;
+                    v.points += (Number(r.point_value) || 0);
+                }
+
+                const hasBase = entries.some(r => String(r.panel_key) === 'base');
+                if (!hasBase) nameToPlayer.forEach(v => { v.points += 100; });
+
+                let manualGoldTotal = 0;
+                for (const r of entries) {
+                    if (String(r.panel_key) !== 'manual_points') continue;
+                    const normalized = normalizeSnapshotName(r.character_name || '');
+                    if (!isValidWoWName(normalized)) continue;
+                    const key = lower(normalized);
+                    const v = nameToPlayer.get(key);
+                    if (!v) continue;
+                    const aux = r.aux_json || {};
+                    const isGold = aux.is_gold === true || aux.is_gold === 'true';
+                    const amt = Number(r.point_value) || 0;
+                    if (isGold && amt > 0) { manualGoldTotal += amt; v.gold += amt; }
+                    else v.points += amt;
+                }
+
+                const adjustedPot = Math.max(0, sharedPot - manualGoldTotal);
+                let totalPts = 0;
+                nameToPlayer.forEach(v => { totalPts += Math.max(0, v.points); });
+                const gpp = (adjustedPot > 0 && totalPts > 0) ? adjustedPot / totalPts : 0;
+                nameToPlayer.forEach(v => {
+                    v.gold = Math.max(0, Math.floor(Math.max(0, v.points) * gpp) + v.gold);
+                });
+                goldPerEvent[eid] = nameToPlayer;
+            }
+
+            // Sum gold per candidate account
+            for (const discordId of discordIds) {
+                const myChars = charsByAccount[discordId] || new Set();
+                const myEvents = eventIdsByAccount[discordId] || [];
+                let total = 0;
+                for (const eid of myEvents) {
+                    const nameToPlayer = goldPerEvent[eid];
+                    if (!nameToPlayer) continue;
+                    for (const charName of myChars) {
+                        const v = nameToPlayer.get(charName);
+                        if (v) total += v.gold;
+                    }
+                }
+                goldEarnedByAccount[discordId] = total;
+            }
+        }
+
+        // Attach gold to each candidate row
+        for (const c of candidates) {
+            c.gold_spent_12mo  = goldSpentByAccount[c.discord_id]  || 0;
+            c.gold_earned_12mo = goldEarnedByAccount[c.discord_id] || 0;
+        }
+
+        res.json({ success: true, candidates });
     } catch (err) {
         console.error('[candidates] Error:', err.message || err);
         res.status(500).json({ success: false, message: 'Error fetching candidates' });

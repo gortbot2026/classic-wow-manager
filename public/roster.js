@@ -5455,30 +5455,51 @@ async function runCandidateSearch() {
             return;
         }
         const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+        const fmtGold = g => g > 0 ? Number(g).toLocaleString() + 'g' : '—';
         const escH = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         const classColor = cls => {
             const colors = { warrior:'#c79c6e', paladin:'#f58cba', hunter:'#abd473', rogue:'#fff569', priest:'#ffffff', shaman:'#0070de', mage:'#40c7eb', warlock:'#8787ed', druid:'#ff7d0a' };
             return colors[(cls||'').toLowerCase()] || '#d1d5db';
         };
-        let html = `<div style="margin-bottom:8px;font-size:13px;color:#9ca3af;">${rows.length} candidate${rows.length !== 1 ? 's' : ''} found</div>
+
+        // Group rows by discord_id so multi-char accounts appear together
+        const byAccount = [];
+        const seen = {};
+        rows.forEach(r => {
+            if (!seen[r.discord_id]) {
+                seen[r.discord_id] = { account: r, chars: [] };
+                byAccount.push(seen[r.discord_id]);
+            }
+            seen[r.discord_id].chars.push(r);
+        });
+
+        const uniqueAccounts = byAccount.length;
+        const totalChars = rows.length;
+        let html = `<div style="margin-bottom:8px;font-size:13px;color:#9ca3af;">${uniqueAccounts} account${uniqueAccounts !== 1 ? 's' : ''} / ${totalChars} character${totalChars !== 1 ? 's' : ''} found</div>
         <table>
             <thead><tr>
                 <th>Discord</th>
-                <th>${checked.map(c => c[0].toUpperCase()+c.slice(1)).join(' / ')} Character</th>
+                <th>${checked.map(c => c[0].toUpperCase()+c.slice(1)).join(' / ')} Character(s)</th>
                 <th>Last raided as</th>
                 <th>Last raid</th>
-                <th>Date</th>
+                <th style="text-align:right;">Gold Spent<br><span style="font-size:10px;font-weight:400;">12 months</span></th>
+                <th style="text-align:right;">Gold Earned<br><span style="font-size:10px;font-weight:400;">12 months</span></th>
             </tr></thead>
             <tbody>`;
-        rows.forEach(r => {
-            const candidateColor = classColor(r.candidate_class);
-            const lastColor = classColor(r.last_char_class);
+
+        byAccount.forEach(({ account: a, chars }) => {
+            const lastColor = classColor(a.last_char_class);
+            const charCells = chars.map(c => {
+                const col = classColor(c.candidate_class);
+                return `<span style="color:${col};font-weight:600;">${escH(c.candidate_char_name)}</span>`;
+            }).join(' &nbsp;·&nbsp; ');
             html += `<tr>
-                <td><strong>${escH(r.discord_username)}</strong></td>
-                <td style="color:${candidateColor};font-weight:600;">${escH(r.candidate_char_name)}</td>
-                <td><span style="color:${lastColor}">${escH(r.last_char_name)}</span> <span style="color:#6b7280;font-size:11px;">(${escH(r.last_char_class)})</span></td>
-                <td>${escH(r.last_raid_name || '—')}</td>
-                <td class="cand-date">${fmtDate(r.last_raid_date)}</td>
+                <td><strong>${escH(a.discord_username)}</strong></td>
+                <td>${charCells}</td>
+                <td><span style="color:${lastColor}">${escH(a.last_char_name)}</span> <span style="color:#6b7280;font-size:11px;">(${escH(a.last_char_class)})</span></td>
+                <td>${escH(a.last_raid_name || '—')}<br><span class="cand-date">${fmtDate(a.last_raid_date)}</span></td>
+                <td style="text-align:right;color:#f87171;">${fmtGold(a.gold_spent_12mo)}</td>
+                <td style="text-align:right;color:#34d399;">${fmtGold(a.gold_earned_12mo)}</td>
             </tr>`;
         });
         html += '</tbody></table>';
