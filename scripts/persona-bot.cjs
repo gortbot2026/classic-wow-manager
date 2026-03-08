@@ -1000,8 +1000,67 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     systemPrompt += `\n\nCurrent time: ${_cetTime} CET (${_cetDate}).`;
 
     // Inject candidate_outreach_context for outreach conversations (same pattern as gear_check_context)
-    if (conv && conv.trigger_type === 'candidate_outreach' && persona.candidate_outreach_context) {
-      systemPrompt += '\n\n' + persona.candidate_outreach_context;
+    if (conv && conv.trigger_type === 'candidate_outreach') {
+      if (persona.candidate_outreach_context) {
+        systemPrompt += '\n\n' + persona.candidate_outreach_context;
+      }
+
+      // === Fix 2: Raid timing context (pre-computed, front and center) ===
+      if (conv.event_id) {
+        try {
+          const rhRow = await pool.query(
+            `SELECT event_data FROM raid_helper_events_cache WHERE event_id = $1`,
+            [conv.event_id]
+          );
+          if (rhRow.rows.length > 0 && rhRow.rows[0].event_data && rhRow.rows[0].event_data.startTime) {
+            const raidStart = new Date(parseInt(rhRow.rows[0].event_data.startTime) * 1000);
+            const nowMs = Date.now();
+            const diffMs = raidStart.getTime() - nowMs;
+            const diffMin = Math.round(diffMs / 60000);
+            const raidTimeStr = raidStart.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
+            let timingBlurb;
+            if (diffMin > 120) {
+              timingBlurb = `The raid starts at ${raidTimeStr} — in about ${Math.round(diffMin / 60)} hours. Recruit normally, no urgency yet.`;
+            } else if (diffMin > 30) {
+              timingBlurb = `The raid starts at ${raidTimeStr} — in ${diffMin} minutes. Time is getting short, recruit with some urgency.`;
+            } else if (diffMin > 0) {
+              timingBlurb = `The raid starts at ${raidTimeStr} — in only ${diffMin} minutes! We are recruiting URGENTLY to fill this slot before the pull.`;
+            } else if (diffMin > -45) {
+              timingBlurb = `The raid was scheduled at ${raidTimeStr} and started ${Math.abs(diffMin)} minutes ago. We are having a late start — fill this slot AS SOON AS POSSIBLE so we can pull.`;
+            } else {
+              timingBlurb = `The raid started at ${raidTimeStr}, which was ${Math.abs(diffMin)} minutes ago. The raid is already underway. We urgently need to fill this slot mid-raid.`;
+            }
+            systemPrompt += `\n\n=== RAID TIMING (CRITICAL — read this first) ===\n${timingBlurb}`;
+          }
+        } catch (e) {
+          console.error('[persona-bot] Raid timing inject error:', e.message);
+        }
+      }
+
+      // === Fix 3: Roster summary ===
+      if (conv.event_id) {
+        try {
+          const rosterRes = await pool.query(
+            `SELECT COUNT(*) as total,
+              SUM(CASE WHEN role = 'tank' THEN 1 ELSE 0 END) as tanks,
+              SUM(CASE WHEN role = 'healer' THEN 1 ELSE 0 END) as healers,
+              SUM(CASE WHEN role = 'dps' THEN 1 ELSE 0 END) as dps
+             FROM roster_overrides
+             WHERE event_id = $1 AND in_raid = true AND is_placeholder = false`,
+            [conv.event_id]
+          );
+          if (rosterRes.rows.length > 0) {
+            const r = rosterRes.rows[0];
+            const total = parseInt(r.total) || 0;
+            const tanks = parseInt(r.tanks) || 0;
+            const healers = parseInt(r.healers) || 0;
+            const dps = parseInt(r.dps) || 0;
+            systemPrompt += `\n\n=== CURRENT RAID ROSTER ===\n${total}/40 players confirmed (${tanks} tanks, ${healers} healers, ${dps} DPS). If asked about roster size or composition, use these numbers.`;
+          }
+        } catch (e) {
+          console.error('[persona-bot] Roster summary inject error:', e.message);
+        }
+      }
     }
 
     // Add template-specific instructions if applicable (with variable resolution)
@@ -2106,7 +2165,7 @@ async function classifyOutreachStatus(pool, conversationId) {
     .map(m => `${m.role === 'user' ? 'Player' : 'Maya'}: ${m.content}`)
     .join('\n');
 
-  const systemPrompt = 'You are a conversation classifier. Given a Discord DM conversation between a guild recruiter bot (Maya) and a player, determine if the player has ACCEPTED (agreed to join the raid), DECLINED (said no/can\'t make it), or PENDING (unclear/still discussing). Respond with exactly one word: ACCEPTED, DECLINED, or PENDING.';
+  const systemPrompt = 'You are a conversation classifier for a World of Warcraft guild bot. Given a Discord DM where Maya is trying to recruit a player for a raid, determine the player\'s status.\n\nRules:\n- ACCEPTED = the player shows ANY positive signal: interest, willingness, affirmation, "could be", "sure", "might work", "probably", "yes", "ok", "sounds good", or anything clearly positive. If in doubt between ACCEPTED and PENDING, choose ACCEPTED.\n- DECLINED = the player clearly cannot or will not join: "no", "can\'t make it", "not tonight", "I\'m busy", etc.\n- PENDING = the player has not yet responded, or gave a completely neutral/ambiguous reply that could go either way.\n\nRespond with exactly one word: ACCEPTED, DECLINED, or PENDING.';
 
   const result = await generateResponse(
     systemPrompt,
