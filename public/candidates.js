@@ -11,6 +11,62 @@ const selectedIds = new Set();
 /** Cached candidate metadata by discord_id for outreach enrichment */
 const candidateMetaCache = new Map();
 
+/** Currently visible candidate discord IDs (for polling) */
+let currentCandidateIds = [];
+let convPollTimer = null;
+let presencePollTimer = null;
+
+function startPolling(discordIds) {
+    currentCandidateIds = discordIds.filter(Boolean);
+    stopPolling();
+    if (currentCandidateIds.length === 0) return;
+    pollConversations();
+    pollPresence();
+    convPollTimer = setInterval(pollConversations, 15000);
+    presencePollTimer = setInterval(pollPresence, 60000);
+}
+
+function stopPolling() {
+    if (convPollTimer) { clearInterval(convPollTimer); convPollTimer = null; }
+    if (presencePollTimer) { clearInterval(presencePollTimer); presencePollTimer = null; }
+}
+
+async function pollConversations() {
+    if (!currentCandidateIds.length || !eventId) return;
+    try {
+        const ids = currentCandidateIds.join(',');
+        const r = await fetch(`/api/roster/${eventId}/conversation-status?discordIds=${encodeURIComponent(ids)}`);
+        const data = await r.json();
+        document.querySelectorAll('.conv-cell[data-discord-id]').forEach(cell => {
+            const did = cell.dataset.discordId;
+            if (!did) return;
+            const conv = data[did];
+            if (conv && conv.active) {
+                cell.innerHTML = `<a href="/admin/player/${did}" target="_blank" title="Active conversation (${conv.messageCount} messages)" style="color:#818cf8;text-decoration:none;font-size:15px;display:flex;align-items:center;gap:4px;justify-content:center;">💬<span style="font-size:11px;background:#4f46e5;color:#fff;border-radius:9px;padding:1px 5px;">${conv.messageCount}</span></a>`;
+            } else {
+                cell.innerHTML = '';
+            }
+        });
+    } catch (_) {}
+}
+
+async function pollPresence() {
+    if (!currentCandidateIds.length || !eventId) return;
+    try {
+        const ids = currentCandidateIds.join(',');
+        const r = await fetch(`/api/discord/presence?discordIds=${encodeURIComponent(ids)}`);
+        const data = await r.json();
+        document.querySelectorAll('.presence-dot[data-discord-id]').forEach(dot => {
+            const did = dot.dataset.discordId;
+            const status = data[did] || 'offline';
+            const colors = { online: '#22c55e', idle: '#f59e0b', dnd: '#ef4444', offline: '#6b7280' };
+            const labels = { online: 'Online', idle: 'Idle', dnd: 'Do Not Disturb', offline: 'Offline' };
+            dot.style.background = colors[status] || colors.offline;
+            dot.title = labels[status] || 'Offline';
+        });
+    } catch (_) {}
+}
+
 // On load: set back link + fetch and show event title
 document.addEventListener('DOMContentLoaded', async () => {
     const backLink = document.getElementById('back-link');
@@ -151,10 +207,11 @@ async function runSearch() {
                     <th class="cb-col"><input type="checkbox" id="select-all-cb" title="Select all" onchange="toggleSelectAll(this)"></th>
                     <th>Discord</th>
                     <th>${classLabel} Character(s)</th>
-                    <th>Last raided as</th>
                     <th>Last raid</th>
+                    <th>Last raided as</th>
                     <th class="num">Gold Spent<br><span style="font-weight:400;font-size:10px;">12 months</span></th>
                     <th class="num">Gold Earned<br><span style="font-weight:400;font-size:10px;">12 months</span></th>
+                    <th style="width:40px;"></th>
                 </tr></thead>
                 <tbody>`;
 
@@ -170,20 +227,27 @@ async function runSearch() {
                     ? `<td class="cb-col"><input type="checkbox" class="cand-cb" data-discord-id="${escH(a.discord_id)}" onchange="toggleCandidate(this)"></td>`
                     : `<td class="cb-col"></td>`;
 
-                html += `<tr>
+                html += `<tr data-discord-id="${escH(a.discord_id || '')}">
                     ${cbCell}
-                    <td><strong>${a.discord_id ? `<a href="/admin/player/${escH(a.discord_id)}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #4b5563;" onmouseover="this.style.borderColor='#818cf8'" onmouseout="this.style.borderColor='#4b5563'">${escH(a.discord_username || a.discord_id)}</a>` : escH(a.discord_username || '—')}</strong></td>
-                    <td>${charCells}</td>
                     <td>
-                        <span style="color:${lastColor}">${escH(a.last_char_name || '—')}</span>
-                        ${a.last_char_class ? `<span style="color:#6b7280;font-size:11px;"> (${escH(a.last_char_class)})</span>` : ''}
+                        <strong>
+                            ${a.discord_id
+                                ? `<span class="presence-dot" data-discord-id="${escH(a.discord_id)}" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6b7280;margin-right:5px;vertical-align:middle;" title="Checking..."></span><a href="/admin/player/${escH(a.discord_id)}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #4b5563;" onmouseover="this.style.borderColor='#818cf8'" onmouseout="this.style.borderColor='#4b5563'">${escH(a.discord_username || a.discord_id)}</a>`
+                                : escH(a.discord_username || '—')}
+                        </strong>
                     </td>
+                    <td>${charCells}</td>
                     <td>
                         ${escH(a.last_raid_name || '—')}
                         <span class="date-sub">${fmtDate(a.last_raid_date)}</span>
                     </td>
-                    <td class="num gold-spent">${fmtGold(a.gold_spent_12mo)}</td>
-                    <td class="num gold-earned">${fmtGold(a.gold_earned_12mo)}</td>
+                    <td>
+                        <span style="color:${lastColor}">${escH(a.last_char_name || '—')}</span>
+                        ${a.last_char_class ? `<span style="color:#6b7280;font-size:11px;"> (${escH(a.last_char_class)})</span>` : ''}
+                    </td>
+                    <td class="num" style="text-align:right;">${fmtGold(a.gold_spent_12mo)}</td>
+                    <td class="num" style="text-align:right;">${fmtGold(a.gold_earned_12mo)}</td>
+                    <td class="conv-cell" data-discord-id="${escH(a.discord_id || '')}"></td>
                 </tr>`;
             });
             html += `</tbody></table>`;
@@ -234,6 +298,10 @@ async function runSearch() {
         }
 
         document.getElementById('results').innerHTML = html;
+
+        // Start real-time polling for conversation status + presence
+        const allIds = byAccount.map(({ account: a }) => a.discord_id).filter(Boolean);
+        startPolling(allIds);
 
     } catch (err) {
         btn.disabled = false; btn.textContent = 'Search';

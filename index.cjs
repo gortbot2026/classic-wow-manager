@@ -15131,6 +15131,62 @@ app.post('/api/roster/:eventId/revert', requireRosterManager, async (req, res) =
  * Returns candidates (compatible) and excluded (matched class/lookback but filtered out).
  * Includes save check (current WoW reset: Wed–Tue), gold spent/earned 12mo.
  */
+// Discord presence — returns status per discord_id from bot's guild member cache
+app.get('/api/discord/presence', requireRosterManager, async (req, res) => {
+    const { discordIds } = req.query;
+    if (!discordIds) return res.json({});
+    const ids = discordIds.split(',').map(s => s.trim()).filter(Boolean);
+    const result = {};
+    try {
+        if (personaBotInstance && personaBotInstance.client) {
+            const guild = personaBotInstance.client.guilds.cache.get(DISCORD_GUILD_ID);
+            if (guild) {
+                for (const id of ids) {
+                    const member = guild.members.cache.get(id);
+                    const status = member?.presence?.status || 'offline';
+                    result[id] = status;
+                }
+            }
+        }
+    } catch (_) {}
+    res.json(result);
+});
+
+// Conversation status for candidates — returns active convo + message count per discord_id
+app.get('/api/roster/:eventId/conversation-status', requireRosterManager, async (req, res) => {
+    const { discordIds } = req.query; // comma-separated
+    if (!discordIds) return res.json({});
+    const ids = discordIds.split(',').map(s => s.trim()).filter(Boolean);
+    if (ids.length === 0) return res.json({});
+    let client;
+    try {
+        client = await pool.connect();
+        const rows = await client.query(
+            `SELECT bc.discord_id, bc.id AS conv_id, bc.status,
+                    COUNT(bm.id) AS message_count
+             FROM bot_conversations bc
+             LEFT JOIN bot_messages bm ON bm.conversation_id = bc.id
+             WHERE bc.discord_id = ANY($1) AND bc.status = 'active'
+             GROUP BY bc.discord_id, bc.id, bc.status
+             ORDER BY bc.discord_id, bc.id`,
+            [ids]
+        );
+        const result = {};
+        for (const row of rows.rows) {
+            result[row.discord_id] = {
+                active: true,
+                convId: row.conv_id,
+                messageCount: parseInt(row.message_count, 10)
+            };
+        }
+        res.json(result);
+    } catch (err) {
+        res.json({});
+    } finally {
+        if (client) client.release();
+    }
+});
+
 // Lightweight endpoint: just the event title (for page load)
 app.get('/api/roster/:eventId/title', requireRosterManager, async (req, res) => {
     const { eventId } = req.params;
