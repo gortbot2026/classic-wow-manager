@@ -121,10 +121,10 @@
                 <i class="fas fa-bullhorn"></i>
                 <span>Announce invites</span>
             </button>
-            <button id="find-candidates-button" class="panel-button management-only" onclick="openFindCandidates()">
+            <a id="find-candidates-button" class="panel-button management-only" href="#" target="_blank" id="find-candidates-link">
                 <i class="fas fa-search"></i>
                 <span>Find Candidates</span>
-            </button>
+            </a>
             <button id="auto-assignments-button" class="panel-button">
                 <i class="fas fa-magic"></i>
                 <span>Auto assignments</span>
@@ -289,48 +289,6 @@
                     <button id="placeholder-cancel" class="panel-button" type="button"><i class="fas fa-times"></i><span>Cancel</span></button>
                     <button id="placeholder-add" class="panel-button" type="button"><i class="fas fa-plus"></i><span>Add Placeholder</span></button>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Find Candidates Overlay -->
-    <div id="find-candidates-overlay" class="player-search-overlay" style="display:none;">
-        <div class="player-search-modal" style="max-width:860px;width:95%;">
-            <button onclick="closeFindCandidates()" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#9ca3af;font-size:20px;cursor:pointer;">&times;</button>
-            <div class="player-search-header">🔍 Find Candidates</div>
-
-            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:flex-end;">
-                <div>
-                    <label style="display:block;font-size:13px;color:#9ca3af;margin-bottom:6px;">Class(es)</label>
-                    <div id="candidates-class-picker" style="display:flex;flex-wrap:wrap;gap:6px;">
-                        <label class="cand-class-opt"><input type="checkbox" value="warrior"> Warrior</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="hunter"> Hunter</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="rogue"> Rogue</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="priest"> Priest</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="shaman"> Shaman</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="mage"> Mage</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="warlock"> Warlock</label>
-                        <label class="cand-class-opt"><input type="checkbox" value="druid"> Druid</label>
-                    </div>
-                </div>
-                <div>
-                    <label style="display:block;font-size:13px;color:#9ca3af;margin-bottom:6px;">Last raided within</label>
-                    <select id="candidates-weeks" style="padding:8px 12px;background:#1f2937;color:#f3f4f6;border:1px solid #4b5563;border-radius:6px;font-size:14px;">
-                        <option value="1">1 week</option>
-                        <option value="2">2 weeks</option>
-                        <option value="3">3 weeks</option>
-                        <option value="4" selected>4 weeks</option>
-                        <option value="8">2 months</option>
-                        <option value="12">3 months</option>
-                        <option value="26">6 months</option>
-                        <option value="52">12 months</option>
-                    </select>
-                </div>
-                <button onclick="runCandidateSearch()" style="padding:8px 18px;background:#6366f1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;">Search</button>
-            </div>
-
-            <div id="candidates-results" style="min-height:60px;">
-                <p style="color:#6b7280;font-size:13px;">Select classes and click Search.</p>
             </div>
         </div>
     </div>

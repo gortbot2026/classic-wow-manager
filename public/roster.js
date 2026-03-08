@@ -1556,6 +1556,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const hostLiveBtn = document.getElementById('host-live-button');
                 if (hostLiveBtn) hostLiveBtn.style.display = '';
 
+                // Wire Find Candidates link to correct event URL
+                const findCandLink = document.getElementById('find-candidates-button');
+                if (findCandLink && eventId) findCandLink.href = `/event/${eventId}/candidates`;
+
                 // Create admin sidebar
                 createAdminSidebar();
             } catch {}
@@ -5422,15 +5426,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderRoster();
     // setupNameToggle(); // Now called from inside renderRoster
 });
-// ─── Find Candidates ─────────────────────────────────────────────────────────
-
-function openFindCandidates() {
-    document.getElementById('find-candidates-overlay').style.display = 'flex';
-}
-
-function closeFindCandidates() {
-    document.getElementById('find-candidates-overlay').style.display = 'none';
-}
+// ─── Find Candidates (now a separate page — see /event/:id/candidates) ───────
 
 async function runCandidateSearch() {
     // Resolve eventId from URL (function lives outside DOMContentLoaded scope)

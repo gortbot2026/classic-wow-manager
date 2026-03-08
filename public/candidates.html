@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Find Candidates – 1Principles</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body { background: #111827; color: #e5e7eb; font-family: 'Inter', sans-serif; min-height: 100vh; }
+
+        .cand-page { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
+
+        .cand-header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+        .cand-header h1 { font-size: 22px; font-weight: 700; color: #f9fafb; margin: 0; }
+        .cand-back { color: #6366f1; text-decoration: none; font-size: 13px; }
+        .cand-back:hover { text-decoration: underline; }
+
+        .cand-filters {
+            background: #1f2937; border: 1px solid #374151; border-radius: 10px;
+            padding: 20px; margin-bottom: 24px;
+            display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-end;
+        }
+        .cand-filter-group label.group-label {
+            display: block; font-size: 12px; color: #9ca3af; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .class-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+        .class-opt {
+            display: flex; align-items: center; gap: 5px;
+            background: #111827; border: 1px solid #374151;
+            padding: 5px 11px; border-radius: 5px;
+            font-size: 13px; color: #d1d5db; cursor: pointer; user-select: none;
+            transition: border-color 0.15s;
+        }
+        .class-opt:hover { border-color: #6366f1; }
+        .class-opt input { margin: 0; cursor: pointer; accent-color: #6366f1; }
+
+        .weeks-select {
+            padding: 9px 14px; background: #111827; color: #f3f4f6;
+            border: 1px solid #374151; border-radius: 6px; font-size: 14px;
+        }
+        .search-btn {
+            padding: 9px 22px; background: #6366f1; color: white;
+            border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;
+            transition: background 0.15s;
+        }
+        .search-btn:hover { background: #4f46e5; }
+        .search-btn:disabled { background: #374151; cursor: not-allowed; }
+
+        /* Results */
+        .cand-results { margin-top: 4px; }
+        .results-meta {
+            font-size: 13px; color: #9ca3af; margin-bottom: 12px;
+            display: flex; align-items: center; gap: 16px;
+        }
+        .results-meta strong { color: #e5e7eb; }
+
+        table.cand-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        table.cand-table th {
+            text-align: left; padding: 9px 12px;
+            border-bottom: 1px solid #374151; color: #9ca3af; font-weight: 600;
+            background: #1f2937; position: sticky; top: 0; z-index: 1;
+        }
+        table.cand-table th.num { text-align: right; }
+        table.cand-table td { padding: 9px 12px; border-bottom: 1px solid #1f2937; vertical-align: middle; }
+        table.cand-table tr:hover td { background: rgba(99,102,241,0.06); }
+
+        .gold-spent  { color: #f87171; }
+        .gold-earned { color: #34d399; }
+        .date-sub    { color: #6b7280; font-size: 11px; display: block; margin-top: 2px; }
+
+        /* Excluded section */
+        .excl-section { margin-top: 36px; }
+        .excl-heading {
+            font-size: 13px; color: #6b7280; padding: 12px 0 10px;
+            border-top: 1px solid #374151; margin-bottom: 8px;
+        }
+        .excl-heading strong { color: #9ca3af; }
+        table.cand-table.excl { opacity: 0.6; }
+
+        .reason-badge {
+            display: inline-block; padding: 2px 8px; border-radius: 4px;
+            font-size: 11px; font-weight: 600; white-space: nowrap;
+        }
+        .reason-saved      { background: rgba(239,68,68,0.15); color: #f87171; }
+        .reason-in-raid    { background: rgba(99,102,241,0.15); color: #818cf8; }
+        .reason-signup     { background: rgba(251,191,36,0.15); color: #fbbf24; }
+        .reason-no-discord { background: rgba(107,114,128,0.15); color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <div class="cand-page">
+        <div class="cand-header">
+            <a class="cand-back" id="back-link" href="#"><i class="fas fa-arrow-left"></i> Back to Roster</a>
+            <h1>🔍 Find Candidates</h1>
+        </div>
+
+        <div class="cand-filters">
+            <div class="cand-filter-group">
+                <label class="group-label">Class(es)</label>
+                <div class="class-picker" id="class-picker">
+                    <label class="class-opt"><input type="checkbox" value="warrior"> Warrior</label>
+                    <label class="class-opt"><input type="checkbox" value="hunter"> Hunter</label>
+                    <label class="class-opt"><input type="checkbox" value="rogue"> Rogue</label>
+                    <label class="class-opt"><input type="checkbox" value="priest"> Priest</label>
+                    <label class="class-opt"><input type="checkbox" value="shaman"> Shaman</label>
+                    <label class="class-opt"><input type="checkbox" value="mage"> Mage</label>
+                    <label class="class-opt"><input type="checkbox" value="warlock"> Warlock</label>
+                    <label class="class-opt"><input type="checkbox" value="druid"> Druid</label>
+                </div>
+            </div>
+            <div class="cand-filter-group">
+                <label class="group-label">Last raided within</label>
+                <select class="weeks-select" id="weeks-select">
+                    <option value="1">1 week</option>
+                    <option value="2">2 weeks</option>
+                    <option value="3">3 weeks</option>
+                    <option value="4" selected>4 weeks</option>
+                    <option value="8">2 months</option>
+                    <option value="12">3 months</option>
+                    <option value="26">6 months</option>
+                    <option value="52">12 months</option>
+                </select>
+            </div>
+            <div class="cand-filter-group">
+                <label class="group-label">&nbsp;</label>
+                <button class="search-btn" id="search-btn" onclick="runSearch()">Search</button>
+            </div>
+        </div>
+
+        <div class="cand-results" id="results">
+            <p style="color:#6b7280;font-size:14px;">Select classes and click Search.</p>
+        </div>
+    </div>
+
+    <script src="/candidates.js"></script>
+</body>
+</html>

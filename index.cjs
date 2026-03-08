@@ -2890,6 +2890,10 @@ app.get('/event/:eventId/roster', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'roster.html'));
 });
 
+app.get('/event/:eventId/candidates', requireRosterManager, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'candidates.html'));
+});
+
 // Serve Gold and Loot pages with event-scoped URLs
 
 app.get('/event/:eventId/gold', (req, res) => {
