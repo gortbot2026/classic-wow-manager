@@ -15142,14 +15142,9 @@ app.get('/api/discord/presence', requireRosterManager, async (req, res) => {
     const ids = discordIds.split(',').map(s => s.trim()).filter(Boolean);
     const result = {};
     try {
-        if (personaBotInstance && personaBotInstance.client) {
-            const guild = personaBotInstance.client.guilds.cache.get(DISCORD_GUILD_ID);
-            if (guild) {
-                for (const id of ids) {
-                    // guild.presences.cache is populated via GuildPresences intent (online members only)
-                    const presence = guild.presences.cache.get(id);
-                    result[id] = presence?.status || 'offline';
-                }
+        if (personaBotInstance) {
+            for (const id of ids) {
+                result[id] = personaBotInstance.getPresence(id);
             }
         }
     } catch (_) {}

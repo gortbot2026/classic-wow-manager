@@ -254,6 +254,7 @@ function createPersonaBot(options = {}) {
   });
 
   let ready = false;
+  const presenceMap = new Map(); // discordId -> 'online'|'idle'|'dnd'|'offline'
 
   /**
    * Emits a Socket.IO event to the /maya-admin namespace.
@@ -2003,6 +2004,26 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     });
 
     // Clear polling interval and briefing timeouts on disconnect
+    // Build a local presence map — guild.presences.cache isn't pre-populated for large guilds
+    client.on('presenceUpdate', (oldPresence, newPresence) => {
+      if (newPresence && newPresence.userId) {
+        presenceMap.set(newPresence.userId, newPresence.status || 'offline');
+      }
+    });
+
+    // Seed presenceMap from initial guild presences on ready
+    client.on('ready', () => {
+      try {
+        const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
+        if (guild) {
+          guild.presences.cache.forEach((p) => {
+            if (p.userId && p.status) presenceMap.set(p.userId, p.status);
+          });
+          console.log(`[persona-bot] Presence cache seeded: ${presenceMap.size} entries`);
+        }
+      } catch (e) { /* ignore */ }
+    });
+
     client.on('disconnect', () => {
       if (pendingSummaryPollInterval) {
         clearInterval(pendingSummaryPollInterval);
@@ -2028,7 +2049,9 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     sendDM,
     getClient: () => client,
     triggerTemplate,
-    sendSummaryToRaidleader
+    sendSummaryToRaidleader,
+    getPresence: (discordId) => presenceMap.get(discordId) || 'offline',
+    getPresenceMap: () => presenceMap
   };
 }
 
