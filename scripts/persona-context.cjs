@@ -652,7 +652,7 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
         ? pool.query(
             `SELECT player_name, trigger_type, candidate_char_name, candidate_class,
                     candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title,
-                    candidate_chars
+                    candidate_chars, event_id
              FROM bot_conversations WHERE id = $1`,
             [conversationId]
           )

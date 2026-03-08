@@ -59,11 +59,13 @@ try {
 let createPersonaBot = null;
 let generateConversationSummary = null;
 let generateOpeningMessage = null;
+let generateLlmResponse = null;
 try {
   const personaModule = require('./scripts/persona-bot.cjs');
   createPersonaBot = personaModule.createPersonaBot;
   generateConversationSummary = personaModule.generateConversationSummary || null;
   generateOpeningMessage = personaModule.generateOpeningMessage || null;
+  generateLlmResponse = personaModule.generateResponse || null;
   console.log('[init] Persona bot module loaded:', { hasCreatePersonaBot: !!createPersonaBot, hasSummaryGen: !!generateConversationSummary, hasOpeningGen: !!generateOpeningMessage });
 } catch (err) {
   console.error('[init] Failed to load persona bot module:', err?.message || err);
@@ -15748,23 +15750,38 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                      tonightRaidTitle, candidateCharsJson]
                 );
 
-                // Generate opening message via AI (template.opening_message is the prompt instruction)
+                // Generate opening message via Claude directly (avoids getPersona scope issue in generateOpeningMessage)
                 let message = null;
                 let modelUsed = null;
 
-                if (template && generateOpeningMessage) {
+                if (template && generateLlmResponse && resolveTemplateVariables && applyTemplateVariables) {
                     try {
-                        const { generated, fallback, modelUsed: usedModel } = await generateOpeningMessage(
-                            pool, template, discordId, null, convId
-                        );
-                        message = generated || fallback;
-                        modelUsed = generated ? usedModel : null;
+                        const tplVars = await resolveTemplateVariables(pool, discordId, null, convId);
+                        const resolvedInstruction = applyTemplateVariables(template.opening_message, tplVars);
+                        const llmModel = template.model_override || 'claude-haiku-4-5';
+                        const systemPrompt = 'You are Maya, a friendly Discord bot for a Classic WoW GDKP guild called 1Principles. ' +
+                            'Generate ONLY the opening DM message — nothing else, no preamble, no quotes. ' +
+                            'Short, casual, direct. No em-dashes or en-dashes.\n\n' +
+                            '=== Instructions ===\n' + resolvedInstruction;
+                        const rawMsg = await generateLlmResponse(systemPrompt, [{ role: 'user', content: 'Write the message.' }], llmModel);
+                        if (rawMsg && rawMsg.trim().length > 5) {
+                            message = rawMsg.trim().replace(/^["']|["']$/g, '');
+                            modelUsed = llmModel;
+                        }
                     } catch (genErr) {
-                        console.error(`[outreach] Error generating opening for ${discordId}:`, genErr.message || genErr);
+                        console.error(`[outreach] LLM generation failed for ${discordId}:`, genErr.message || genErr);
                     }
                 }
-                if (!message && template) {
-                    message = template.opening_message;
+
+                // Fallback: simple direct message built from resolved vars
+                if (!message && resolveTemplateVariables && applyTemplateVariables) {
+                    try {
+                        const tplVars = await resolveTemplateVariables(pool, discordId, null, convId);
+                        const charsList = tplVars.get('candidate_chars_list') || tplVars.get('character_name') || 'your character';
+                        const raid = tplVars.get('tonight_raid') || 'tonight\'s raid';
+                        const startTime = tplVars.get('raid_start_time') ? ` at ${tplVars.get('raid_start_time')}` : '';
+                        message = `Hey, would you be able to join ${raid}${startTime} on ${charsList}?`;
+                    } catch (_) {}
                 }
 
                 // Apply template variables (resolveTemplateVariables handles outreach-specific columns)

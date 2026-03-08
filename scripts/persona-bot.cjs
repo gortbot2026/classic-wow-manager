@@ -2271,4 +2271,4 @@ async function generateOpeningMessage(pool, template, discordId, eventId, conver
   return { generated, fallback, modelUsed: model };
 }
 
-module.exports = { createPersonaBot, generateConversationSummary, generateRaidleaderSummary, generateOpeningMessage };
+module.exports = { createPersonaBot, generateConversationSummary, generateRaidleaderSummary, generateOpeningMessage, generateResponse };
