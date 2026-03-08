@@ -5442,12 +5442,13 @@ async function runCandidateSearch() {
     const resultsEl = document.getElementById('candidates-results');
     resultsEl.innerHTML = '<p style="color:#9ca3af;font-size:13px;">Searching...</p>';
 
-    const REASON_LABELS = {
-        saved_this_reset: '⚔️ Saved this reset',
+    const DUNGEON_LABELS = { naxx: 'Naxx', aq_bwl_mc: 'AQ/BWL/MC', other: 'this instance' };
+    const REASON_LABELS = (dungeonType) => ({
+        saved_this_reset: `⚔️ Saved to ${DUNGEON_LABELS[dungeonType] || 'this instance'}`,
         already_in_raid:  '✅ Already in raid',
         raid_signup:      '📋 Signed up / absent',
         not_on_discord:   '❌ Not on Discord'
-    };
+    });
 
     try {
         const resp = await fetch(`/api/roster/${eventId}/candidates?classes=${checked.join(',')}&weeks=${weeks}`);
@@ -5480,6 +5481,7 @@ async function runCandidateSearch() {
         // ── Candidates table ──────────────────────────────────────────────────
         const rows = data.candidates || [];
         const resetDate = data.reset_start ? fmtDate(data.reset_start) : '?';
+        const reasonLabels = REASON_LABELS(data.dungeon_type || 'other');
 
         if (rows.length === 0) {
             html += `<p style="color:#9ca3af;font-size:13px;">No available candidates found.</p>`;
@@ -5539,7 +5541,7 @@ async function runCandidateSearch() {
                     <td>${charCells}</td>
                     <td><span style="color:${lastColor}">${escH(a.last_char_name)}</span> <span style="color:#4b5563;font-size:11px;">(${escH(a.last_char_class)})</span></td>
                     <td>${escH(a.last_raid_name||'—')}<br><span class="cand-date">${fmtDate(a.last_raid_date)}</span></td>
-                    <td style="font-size:12px;color:#9ca3af;">${REASON_LABELS[a.reason] || a.reason}</td>
+                    <td style="font-size:12px;color:#9ca3af;">${reasonLabels[a.reason] || a.reason}</td>
                 </tr>`;
             });
             html += `</tbody></table>`;

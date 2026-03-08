@@ -15042,8 +15042,45 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             : weeks >= 12 ? `${Math.round(weeks / 4)} months`
             : `${weeks} weeks`;
 
+        // ── Dungeon type classification ────────────────────────────────────────
+        // Determines which events are "same instance" as the current event,
+        // so save checks only flag characters saved to the correct dungeon.
+        const getDungeonType = (title) => {
+            const t = String(title || '').toLowerCase();
+            if (t.includes('naxx') || t.includes('naxxramas')) return 'naxx';
+            if (t.includes('aq') || t.includes('ahn') || t.includes('blackwing') || t.includes('bwl') || t.includes('molten') || t.includes(' mc ') || t.match(/\bmc\b/)) return 'aq_bwl_mc';
+            return 'other';
+        };
+
+        // Load events_cache to find same-dungeon event IDs
+        let sameDungeonEventIds = [];
+        let currentDungeonType = 'other';
+        try {
+            const cacheRow = await client.query(
+                `SELECT data FROM events_cache WHERE cache_key = 'raid_helper_events' LIMIT 1`
+            );
+            if (cacheRow.rows.length > 0) {
+                const allEvents = JSON.parse(cacheRow.rows[0].data || '[]');
+                const currentEvent = allEvents.find(e => String(e.id) === String(eventId));
+                currentDungeonType = currentEvent ? getDungeonType(currentEvent.title) : 'other';
+                sameDungeonEventIds = allEvents
+                    .filter(e => getDungeonType(e.title) === currentDungeonType)
+                    .map(e => String(e.id));
+            }
+        } catch (cacheErr) {
+            console.warn('[candidates] events_cache fetch for dungeon type failed:', cacheErr.message);
+        }
+        // Fallback: if we couldn't determine dungeon type, save check covers all events
+        const sameDungeonFilter = sameDungeonEventIds.length > 0
+            ? `AND ro.event_id = ANY($4)`
+            : '';
+
         // ── Broad query: all players with matching class + raided in lookback ──
         // We fetch everyone first, then split into candidates vs excluded
+        const queryParams = sameDungeonEventIds.length > 0
+            ? [eventId, classes, resetStart, sameDungeonEventIds]
+            : [eventId, classes, resetStart];
+
         const broadResult = await client.query(`
             WITH recent_raiders AS (
                 SELECT DISTINCT ro.discord_user_id
@@ -15066,13 +15103,14 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
                 ORDER BY ro.discord_user_id, rse.published_at DESC
             ),
             saved_chars AS (
-                -- Characters in a published raid since this reset started
+                -- Characters in a published raid of the same dungeon type since reset start
                 SELECT DISTINCT LOWER(ro.assigned_char_name) AS char_name, ro.discord_user_id
                 FROM roster_overrides ro
                 JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
                 WHERE ro.in_raid = true
                   AND ro.is_placeholder = false
                   AND rse.published_at >= $3
+                  ${sameDungeonFilter}
             ),
             already_in_event AS (
                 SELECT DISTINCT discord_user_id FROM roster_overrides WHERE event_id = $1
@@ -15099,7 +15137,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
                AND sc.char_name = LOWER(p.character_name)
             WHERE LOWER(p.class) = ANY($2)
             ORDER BY lr.last_raid_date DESC, COALESCE(du.username, p.discord_id), LOWER(p.class), p.character_name
-        `, [eventId, classes, resetStart]);
+        `, queryParams);
 
         // ── Split into candidates vs excluded ─────────────────────────────────
         const rhExcludeSet = new Set(rhExcludeArr);
@@ -15312,6 +15350,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
         res.json({
             success: true,
             reset_start: resetStart.toISOString(),
+            dungeon_type: currentDungeonType,
             candidates: candidateRows,
             excluded: excludedRows
         });
