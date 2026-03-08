@@ -651,7 +651,8 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       conversationId
         ? pool.query(
             `SELECT player_name, trigger_type, candidate_char_name, candidate_class,
-                    candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title
+                    candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title,
+                    candidate_chars
              FROM bot_conversations WHERE id = $1`,
             [conversationId]
           )
@@ -1047,6 +1048,63 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       }
       if (convRowForOutreach.tonight_raid_title) {
         vars.set('tonight_raid', convRowForOutreach.tonight_raid_title);
+      }
+
+      // candidate_chars_list: "Dreaktwo and Naldi (both Druids)" or "Dreaktwo (Druid)"
+      try {
+        let chars = convRowForOutreach.candidate_chars;
+        if (typeof chars === 'string') chars = JSON.parse(chars);
+        if (Array.isArray(chars) && chars.length > 0) {
+          // Group by class
+          const byClass = {};
+          for (const c of chars) {
+            const cls = c.class ? (c.class.charAt(0).toUpperCase() + c.class.slice(1)) : 'Unknown';
+            if (!byClass[cls]) byClass[cls] = [];
+            byClass[cls].push(c.name);
+          }
+          const parts = Object.entries(byClass).map(([cls, names]) => {
+            if (names.length === 1) return `${names[0]} (${cls})`;
+            return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} (both ${cls}s)`;
+          });
+          vars.set('candidate_chars_list', parts.join(', or '));
+          // Also keep single-char vars for simpler templates
+          vars.set('character_name', chars[0].name || vars.get('character_name'));
+          vars.set('class_name', chars[0].class ? (chars[0].class.charAt(0).toUpperCase() + chars[0].class.slice(1)) : vars.get('class_name'));
+        }
+      } catch (_) {}
+
+      // last_raid_relative: "3 weeks ago" / "last week" / "2 weeks ago" (only if >21 days)
+      if (convRowForOutreach.candidate_last_raid_date) {
+        const daysSince = (Date.now() - new Date(convRowForOutreach.candidate_last_raid_date).getTime()) / (1000 * 60 * 60 * 24);
+        if (daysSince > 21) {
+          const weeksAgo = Math.floor(daysSince / 7);
+          const d = new Date(convRowForOutreach.candidate_last_raid_date);
+          const dayName = d.toLocaleDateString('en-GB', { weekday: 'long' });
+          const relStr = weeksAgo === 1 ? 'last week' : `${weeksAgo} weeks ago`;
+          vars.set('last_raid_relative', `${dayName}, ${relStr}`);
+          vars.set('mention_last_raid', 'yes');
+        } else {
+          vars.set('last_raid_relative', '');
+          vars.set('mention_last_raid', 'no');
+        }
+      }
+
+      // raid_start_time: fetch from raid_helper_events_cache for this event
+      if (convRowForOutreach.event_id || (conversationId && convRowForOutreach)) {
+        try {
+          const evId = convRowForOutreach.event_id;
+          if (evId) {
+            const rhRow = await pool.query(
+              `SELECT event_data FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
+              [String(evId)]
+            );
+            if (rhRow.rows.length > 0 && rhRow.rows[0].event_data && rhRow.rows[0].event_data.startTime) {
+              const st = new Date(parseInt(rhRow.rows[0].event_data.startTime));
+              const formatted = st.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
+              vars.set('raid_start_time', formatted + ' CET');
+            }
+          }
+        } catch (_) {}
       }
 
       // Discord username from discord_users table (not players — players has no discord_username col)

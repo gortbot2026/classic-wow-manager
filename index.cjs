@@ -1131,6 +1131,7 @@ async function initializeMayaTables() {
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_last_raid_name TEXT`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_last_raid_date TEXT`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS tonight_raid_title TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_chars JSONB`);
 
     // bot_messages — Individual messages in a conversation
     await pool.query(`
@@ -1305,8 +1306,8 @@ Important guidelines:
 
     // Migration: ensure candidate_outreach template is up to date.
     // UPDATE always runs so admin edits are preserved only when opening_message matches a known old value.
-    const newOutreachOpening = 'Hey, would you be able to join {{tonight_raid}} tonight on your {{class_name}} {{character_name}}?';
-    const newOutreachInstructions = 'You are reaching out to recruit a guild member to tonight\'s raid. Keep it short and friendly.\n\nFor regulars (is_regular = yes, raided within last 14 days): one sentence is enough — just ask if they can join tonight on their specific character and class.\n\nFor returning players (is_regular = no): you may briefly mention the last time they raided with us ({{last_raid_date_formatted}}, {{last_raid_name}}) to jog their memory, but keep it to two sentences max.\n\nAlways ask for the specific character: {{character_name}} ({{class_name}}). Never mention the wrong class or character. Do not be pushy. If they decline, thank them and close gracefully.';
+    const newOutreachOpening = 'Write a short, direct Discord DM to recruit this player for tonight\'s raid ({{tonight_raid}}, starting {{raid_start_time}}). We need them to fill a slot. Ask if they would join with their character(s): {{candidate_chars_list}}. Name every character option explicitly. If mention_last_raid is yes, briefly mention when they last raided with us: "you were with us in {{last_raid_name}} on {{last_raid_relative}}". If mention_last_raid is no, skip the history. Keep it to 1-2 sentences max. Casual and direct. No corporate tone. No em-dashes or en-dashes.';
+    const newOutreachInstructions = 'You are Maya, reaching out to recruit a guild member to tonight\'s raid. The opening_message field is your writing instruction — follow it exactly. Keep replies short, friendly, and direct. If the player is interested, tell them to sign up on the Raid Helper event or ask an officer. If they decline, thank them and close gracefully. Never mention the wrong character or class. Available variables: {{tonight_raid}}, {{raid_start_time}}, {{candidate_chars_list}}, {{character_name}}, {{class_name}}, {{last_raid_name}}, {{last_raid_relative}}, {{mention_last_raid}}.';
     const oldOutreachOpening1 = 'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?';
     const oldOutreachOpening2 = 'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!';
     await pool.query(`
@@ -15637,6 +15638,7 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                     candidateMetaMap.set(c.discordId, {
                         charName: c.charName || null,
                         className: c.className || null,
+                        candidateChars: Array.isArray(c.candidateChars) ? c.candidateChars : null,
                         lastRaidName: c.lastRaidName || null,
                         lastRaidDate: c.lastRaidDate || null
                     });
@@ -15644,9 +15646,27 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
             }
         }
 
-        // Resolve tonight's raid title from raid_helper_events_cache
+        // Resolve tonight's raid title + start time from raid_helper_events_cache
         let tonightRaidTitle = null;
+        let raidStartTime = null; // formatted "20:00" (event local time)
         try {
+            // First try raid_helper_events_cache for this specific event
+            const rhCacheRow = await pool.query(
+                `SELECT event_data FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
+                [String(eventId)]
+            );
+            if (rhCacheRow.rows.length > 0) {
+                const evData = rhCacheRow.rows[0].event_data;
+                if (evData && evData.title) tonightRaidTitle = evData.title.replace(/\s*\|\s*/g, ' ').trim();
+                // startTime is epoch ms in Raid Helper API
+                if (evData && evData.startTime) {
+                    const st = new Date(typeof evData.startTime === 'number' ? evData.startTime : parseInt(evData.startTime));
+                    raidStartTime = st.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' }) + ' CET';
+                }
+            }
+        } catch (_) {}
+
+        if (!tonightRaidTitle) try {
             const cacheRes = await pool.query(
                 `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
             );
@@ -15702,6 +15722,8 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                 const meta = candidateMetaMap.get(discordId) || {};
                 const candidateCharName = meta.charName || null;
                 const candidateClass = meta.className || null;
+                const candidateCharsJson = meta.candidateChars && meta.candidateChars.length > 0
+                    ? JSON.stringify(meta.candidateChars) : null;
                 const candidateLastRaidName = meta.lastRaidName || null;
                 const candidateLastRaidDate = meta.lastRaidDate || null;
 
@@ -15716,20 +15738,30 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                 await pool.query(
                     `INSERT INTO bot_conversations
                      (id, discord_id, player_name, status, started_by, template_id, event_id, trigger_type,
-                      candidate_char_name, candidate_class, candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title)
-                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6, $7, $8, $9, $10, $11)`,
+                      candidate_char_name, candidate_class, candidate_last_raid_name, candidate_last_raid_date,
+                      tonight_raid_title, candidate_chars)
+                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
                     [convId, discordId, playerName, templateId, eventId, 'candidate_outreach',
-                     candidateCharName, candidateClass, candidateLastRaidName, candidateLastRaidDate, tonightRaidTitle]
+                     candidateCharName, candidateClass, candidateLastRaidName, candidateLastRaidDate,
+                     tonightRaidTitle, candidateCharsJson]
                 );
 
-                // Generate opening message
-                // For candidate_outreach: skip AI generation entirely — use direct template
-                // variable substitution. AI generation uses raw DB character data (last-raided
-                // character) and ignores the candidate context overrides, producing wrong output.
+                // Generate opening message via AI (template.opening_message is the prompt instruction)
                 let message = null;
                 let modelUsed = null;
 
-                if (template) {
+                if (template && generateOpeningMessage) {
+                    try {
+                        const { generated, fallback, modelUsed: usedModel } = await generateOpeningMessage(
+                            pool, template, discordId, null, convId
+                        );
+                        message = generated || fallback;
+                        modelUsed = generated ? usedModel : null;
+                    } catch (genErr) {
+                        console.error(`[outreach] Error generating opening for ${discordId}:`, genErr.message || genErr);
+                    }
+                }
+                if (!message && template) {
                     message = template.opening_message;
                 }
 
