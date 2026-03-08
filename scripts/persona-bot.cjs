@@ -1041,21 +1041,17 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       if (conv.event_id) {
         try {
           const rosterRes = await pool.query(
-            `SELECT COUNT(*) as total,
-              SUM(CASE WHEN role = 'tank' THEN 1 ELSE 0 END) as tanks,
-              SUM(CASE WHEN role = 'healer' THEN 1 ELSE 0 END) as healers,
-              SUM(CASE WHEN role = 'dps' THEN 1 ELSE 0 END) as dps
-             FROM roster_overrides
+            `SELECT COUNT(*) as total FROM roster_overrides
              WHERE event_id = $1 AND in_raid = true AND is_placeholder = false`,
             [conv.event_id]
           );
-          if (rosterRes.rows.length > 0) {
-            const r = rosterRes.rows[0];
-            const total = parseInt(r.total) || 0;
-            const tanks = parseInt(r.tanks) || 0;
-            const healers = parseInt(r.healers) || 0;
-            const dps = parseInt(r.dps) || 0;
-            systemPrompt += `\n\n=== CURRENT RAID ROSTER ===\n${total}/40 players confirmed (${tanks} tanks, ${healers} healers, ${dps} DPS). If asked about roster size or composition, use these numbers.`;
+          const total = parseInt(rosterRes.rows[0]?.total) || 0;
+          if (total > 0) {
+            const needed = Math.max(0, 40 - total);
+            const summary = needed > 0
+              ? `${total}/40 players confirmed — we still need ${needed} more to fill the raid.`
+              : `${total}/40 players confirmed — the raid is full.`;
+            systemPrompt += `\n\n=== CURRENT RAID ROSTER ===\n${summary} Use this number if anyone asks how many people are in the raid.`;
           }
         } catch (e) {
           console.error('[persona-bot] Roster summary inject error:', e.message);
