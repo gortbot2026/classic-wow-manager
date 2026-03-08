@@ -1320,3 +1320,28 @@ i.spec-icon.placeholder-icon {
     color: #9ca3af;
     font-style: italic;
 }
+
+/* Find Candidates */
+.cand-class-opt {
+    display: flex; align-items: center; gap: 5px;
+    background: #1f2937; border: 1px solid #374151;
+    padding: 5px 10px; border-radius: 4px;
+    font-size: 13px; color: #d1d5db; cursor: pointer;
+    user-select: none;
+}
+.cand-class-opt input { margin: 0; cursor: pointer; }
+.cand-class-opt:hover { border-color: #6366f1; }
+
+#candidates-results table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+}
+#candidates-results th {
+    text-align: left; padding: 8px 10px;
+    border-bottom: 1px solid #374151; color: #9ca3af; font-weight: 600;
+}
+#candidates-results td {
+    padding: 8px 10px; border-bottom: 1px solid #1f2937;
+    color: #e5e7eb;
+}
+#candidates-results tr:hover td { background: rgba(99,102,241,0.08); }
+.cand-date { color: #9ca3af; font-size: 12px; }

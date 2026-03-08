@@ -14994,6 +14994,111 @@ app.post('/api/roster/:eventId/revert', requireRosterManager, async (req, res) =
     }
 });
 
+/**
+ * Find raid candidates — players who raided within a lookback period,
+ * have a character of the requested class(es), but are not already in this event.
+ */
+app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res) => {
+    const { eventId } = req.params;
+    const classesParam = req.query.classes || '';
+    const weeks = parseInt(req.query.weeks) || 4;
+    const classes = classesParam.split(',').map(c => c.trim().toLowerCase()).filter(Boolean);
+
+    if (classes.length === 0) {
+        return res.status(400).json({ success: false, message: 'At least one class required' });
+    }
+
+    let client;
+    try {
+        client = await pool.connect();
+
+        // Get Raid Helper signups for this event (to exclude)
+        const raidHelperExclude = new Set();
+        try {
+            const rhRes = await fetch(`https://raid-helper.dev/api/raidplan/${eventId}`, {
+                headers: { Authorization: process.env.RAID_HELPER_API_KEY || 'CkvppyW6ZWfuYv2GdpTSTOQpdn6PSMV4iJjlrWo6' }
+            });
+            if (rhRes.ok) {
+                const rhData = await rhRes.json();
+                (rhData.slots || []).forEach(s => { if (s.id) raidHelperExclude.add(s.id); });
+                // Also check absence list if present
+                (rhData.absences || []).forEach(a => { if (a.id) raidHelperExclude.add(a.id); });
+            }
+        } catch (rhErr) {
+            console.warn('[candidates] Raid Helper fetch failed, skipping exclusion:', rhErr.message);
+        }
+
+        const rhExcludeArr = Array.from(raidHelperExclude);
+
+        // Build interval string from weeks param
+        const intervalSql = weeks >= 52 ? '1 year'
+            : weeks >= 12 ? `${Math.round(weeks / 4)} months`
+            : `${weeks} weeks`;
+
+        // Find candidates:
+        // 1. Have a character of the requested class(es) in players table
+        // 2. Their discord_id has been in a raid (any character) within lookback period
+        // 3. Not already in roster_overrides for this event (any character)
+        // 4. In discord_users (on Discord)
+        // 5. Not in Raid Helper signups for this event
+        const result = await client.query(`
+            WITH recent_raiders AS (
+                -- All discord_ids that raided (any character) within lookback
+                SELECT DISTINCT ro.discord_user_id
+                FROM roster_overrides ro
+                JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+                WHERE ro.in_raid = true
+                  AND ro.is_placeholder = false
+                  AND rse.published_at >= NOW() - INTERVAL '${intervalSql}'
+            ),
+            last_raid_per_account AS (
+                -- Most recent raid per discord_id (for last raided as / raid name)
+                SELECT DISTINCT ON (ro.discord_user_id)
+                    ro.discord_user_id,
+                    ro.assigned_char_name  AS last_char_name,
+                    ro.assigned_char_class AS last_char_class,
+                    ec.title               AS last_raid_name,
+                    rse.published_at       AS last_raid_date
+                FROM roster_overrides ro
+                JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+                LEFT JOIN events_cache ec ON ec.cache_key = 'raid_helper_events'
+                WHERE ro.in_raid = true
+                  AND ro.is_placeholder = false
+                ORDER BY ro.discord_user_id, rse.published_at DESC
+            ),
+            already_in_event AS (
+                -- discord_ids already in this event's roster
+                SELECT DISTINCT discord_user_id FROM roster_overrides WHERE event_id = $1
+            )
+            SELECT
+                p.discord_id,
+                du.username         AS discord_username,
+                p.character_name    AS candidate_char_name,
+                p.class             AS candidate_class,
+                lr.last_char_name,
+                lr.last_char_class,
+                lr.last_raid_name,
+                lr.last_raid_date
+            FROM players p
+            JOIN discord_users du       ON du.discord_id = p.discord_id
+            JOIN recent_raiders rr      ON rr.discord_user_id = p.discord_id
+            JOIN last_raid_per_account lr ON lr.discord_user_id = p.discord_id
+            LEFT JOIN already_in_event ae ON ae.discord_user_id = p.discord_id
+            WHERE LOWER(p.class) = ANY($2)
+              AND ae.discord_user_id IS NULL
+              ${rhExcludeArr.length > 0 ? `AND p.discord_id <> ALL($3)` : ''}
+            ORDER BY lr.last_raid_date DESC, du.username
+        `, rhExcludeArr.length > 0 ? [eventId, classes, rhExcludeArr] : [eventId, classes]);
+
+        res.json({ success: true, candidates: result.rows });
+    } catch (err) {
+        console.error('[candidates] Error:', err.message || err);
+        res.status(500).json({ success: false, message: 'Error fetching candidates' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
 // --- Database Migration Endpoints ---
 app.post('/api/admin/setup-database', async (req, res) => {
     let client;

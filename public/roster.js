@@ -5422,3 +5422,68 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderRoster();
     // setupNameToggle(); // Now called from inside renderRoster
 });
+// ─── Find Candidates ─────────────────────────────────────────────────────────
+
+function openFindCandidates() {
+    document.getElementById('find-candidates-overlay').style.display = 'flex';
+}
+
+function closeFindCandidates() {
+    document.getElementById('find-candidates-overlay').style.display = 'none';
+}
+
+async function runCandidateSearch() {
+    const checked = Array.from(document.querySelectorAll('#candidates-class-picker input:checked')).map(i => i.value);
+    if (checked.length === 0) {
+        document.getElementById('candidates-results').innerHTML = '<p style="color:#f87171;font-size:13px;">Please select at least one class.</p>';
+        return;
+    }
+    const weeks = document.getElementById('candidates-weeks').value;
+    const resultsEl = document.getElementById('candidates-results');
+    resultsEl.innerHTML = '<p style="color:#9ca3af;font-size:13px;">Searching...</p>';
+
+    try {
+        const resp = await fetch(`/api/roster/${eventId}/candidates?classes=${checked.join(',')}&weeks=${weeks}`);
+        const data = await resp.json();
+        if (!data.success) {
+            resultsEl.innerHTML = `<p style="color:#f87171;font-size:13px;">Error: ${data.message}</p>`;
+            return;
+        }
+        const rows = data.candidates;
+        if (rows.length === 0) {
+            resultsEl.innerHTML = '<p style="color:#9ca3af;font-size:13px;">No candidates found matching these criteria.</p>';
+            return;
+        }
+        const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+        const escH = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const classColor = cls => {
+            const colors = { warrior:'#c79c6e', paladin:'#f58cba', hunter:'#abd473', rogue:'#fff569', priest:'#ffffff', shaman:'#0070de', mage:'#40c7eb', warlock:'#8787ed', druid:'#ff7d0a' };
+            return colors[(cls||'').toLowerCase()] || '#d1d5db';
+        };
+        let html = `<div style="margin-bottom:8px;font-size:13px;color:#9ca3af;">${rows.length} candidate${rows.length !== 1 ? 's' : ''} found</div>
+        <table>
+            <thead><tr>
+                <th>Discord</th>
+                <th>${checked.map(c => c[0].toUpperCase()+c.slice(1)).join(' / ')} Character</th>
+                <th>Last raided as</th>
+                <th>Last raid</th>
+                <th>Date</th>
+            </tr></thead>
+            <tbody>`;
+        rows.forEach(r => {
+            const candidateColor = classColor(r.candidate_class);
+            const lastColor = classColor(r.last_char_class);
+            html += `<tr>
+                <td><strong>${escH(r.discord_username)}</strong></td>
+                <td style="color:${candidateColor};font-weight:600;">${escH(r.candidate_char_name)}</td>
+                <td><span style="color:${lastColor}">${escH(r.last_char_name)}</span> <span style="color:#6b7280;font-size:11px;">(${escH(r.last_char_class)})</span></td>
+                <td>${escH(r.last_raid_name || '—')}</td>
+                <td class="cand-date">${fmtDate(r.last_raid_date)}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        resultsEl.innerHTML = html;
+    } catch (err) {
+        resultsEl.innerHTML = `<p style="color:#f87171;font-size:13px;">Request failed: ${err.message}</p>`;
+    }
+}
