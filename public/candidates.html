@@ -93,6 +93,7 @@
         <div class="cand-header">
             <a class="cand-back" id="back-link" href="#"><i class="fas fa-arrow-left"></i> Back to Roster</a>
             <h1>🔍 Find Candidates</h1>
+            <span id="event-title-badge" style="display:none;background:#1f2937;border:1px solid #374151;border-radius:6px;padding:4px 12px;font-size:13px;color:#9ca3af;"></span>
         </div>
 
         <div class="cand-filters">
@@ -120,6 +121,15 @@
                     <option value="12">3 months</option>
                     <option value="26">6 months</option>
                     <option value="52">12 months</option>
+                </select>
+            </div>
+            <div class="cand-filter-group">
+                <label class="group-label">Exclude saved to</label>
+                <select class="weeks-select" id="save-zone-select">
+                    <option value="auto">Auto-detect</option>
+                    <option value="Naxxramas">Naxxramas</option>
+                    <option value="Temple of Ahn'Qiraj">Temple of Ahn'Qiraj</option>
+                    <option value="none">No save filter</option>
                 </select>
             </div>
             <div class="cand-filter-group">

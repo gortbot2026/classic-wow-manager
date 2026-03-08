@@ -15078,6 +15078,8 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
     const classesParam = req.query.classes || '';
     const weeks = parseInt(req.query.weeks) || 4;
     const classes = classesParam.split(',').map(c => c.trim().toLowerCase()).filter(Boolean);
+    // Optional manual override for save filter zone ('none' = skip save check)
+    const saveZoneOverride = req.query.save_zone || null;
 
     if (classes.length === 0) {
         return res.status(400).json({ success: false, message: 'At least one class required' });
@@ -15116,49 +15118,87 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             : `${weeks} weeks`;
 
         // ── Dungeon type classification ────────────────────────────────────────
-                // ── Determine current event's WCL zone (primary) for instance-specific save check ─
-        // Uses wcl_zone cached in rewards_snapshot_events; fetches from WCL API if missing.
-        // Falls back to skip save check if zone cannot be determined.
-        let currentWclZone = null;
-        let currentDungeonType = 'other'; // kept for UI label
+                // ── Determine event title + zone for save check ──────────────────────────
+        // Priority: manual override > WCL zone (published events) > RH title guess (upcoming events)
+        // Zone is a WCL zone name string: "Naxxramas", "Temple of Ahn'Qiraj", etc.
+
+        // Guess zone from Raid Helper title (for upcoming events without logs yet)
+        const getRhZoneGuess = (title) => {
+            const t = String(title || '').toLowerCase();
+            if (t.includes('naxx') || t.includes('naxxramas')) return 'Naxxramas';
+            if (t.includes('aq') || t.includes("ahn") || t.includes('temple')) return "Temple of Ahn'Qiraj";
+            return null;
+        };
+
+        let currentWclZone = null;   // resolved zone name
+        let currentDungeonType = 'other';
+        let eventTitle = null;
         let sameDungeonEventIds = [];
+
         try {
-            // Get wow_logs_url for this event (needed for WCL lookup)
-            const rseRow = await client.query(
-                `SELECT wow_logs_url, wcl_zone FROM rewards_snapshot_events WHERE event_id = $1 LIMIT 1`,
+            // 1. Fetch event title from raid_helper_events_cache
+            let rhTitle = null;
+            const rhRow = await client.query(
+                `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
                 [String(eventId)]
             );
-            if (rseRow.rows.length > 0) {
-                if (rseRow.rows[0].wcl_zone) {
-                    // Already cached
-                    currentWclZone = rseRow.rows[0].wcl_zone;
-                } else {
-                    // Fetch from WCL API and cache
+            if (rhRow.rows.length > 0) rhTitle = rhRow.rows[0].title;
+            if (rhTitle && rhTitle !== 'unnamed') eventTitle = rhTitle;
+
+            if (saveZoneOverride && saveZoneOverride !== 'none') {
+                // Manual override from query param
+                currentWclZone = saveZoneOverride;
+            } else if (saveZoneOverride === 'none') {
+                currentWclZone = null; // explicit "no save filter"
+            } else {
+                // Auto: try WCL zone first (published events), then RH title guess
+                const rseRow = await client.query(
+                    `SELECT wow_logs_url, wcl_zone FROM rewards_snapshot_events WHERE event_id = $1 LIMIT 1`,
+                    [String(eventId)]
+                );
+                if (rseRow.rows.length > 0 && rseRow.rows[0].wcl_zone) {
+                    currentWclZone = rseRow.rows[0].wcl_zone; // cached WCL zone
+                } else if (rseRow.rows.length > 0 && rseRow.rows[0].wow_logs_url) {
                     currentWclZone = await getWclZoneForEvent(client, eventId, rseRow.rows[0].wow_logs_url);
+                }
+                // Fallback: Raid Helper title guess (works for upcoming/current events)
+                if (!currentWclZone && rhTitle) {
+                    currentWclZone = getRhZoneGuess(rhTitle);
                 }
             }
 
             if (currentWclZone) {
-                // Map zone name to UI label
                 const zl = currentWclZone.toLowerCase();
                 if (zl.includes('naxx')) currentDungeonType = 'naxx';
-                else if (zl.includes('ahn') || zl.includes('temple')) currentDungeonType = 'aq40';
+                else if (zl.includes('ahn') || zl.includes('temple') || zl.includes('qiraj')) currentDungeonType = 'aq40';
                 else currentDungeonType = 'other';
 
-                // Find all event IDs in DB with the same zone (from wcl_zone cache)
-                const sameZoneRows = await client.query(
+                // Collect same-zone event IDs:
+                // a) Published events with matching wcl_zone
+                const wclZoneRows = await client.query(
                     `SELECT event_id FROM rewards_snapshot_events WHERE wcl_zone = $1`,
                     [currentWclZone]
                 );
-                sameDungeonEventIds = sameZoneRows.rows.map(r => String(r.event_id));
-                // Include current event (may not be in DB yet if not published)
-                if (!sameDungeonEventIds.includes(String(eventId))) sameDungeonEventIds.push(String(eventId));
+                const wclIds = new Set(wclZoneRows.rows.map(r => String(r.event_id)));
+
+                // b) All events in raid_helper_events_cache matching same zone (covers upcoming)
+                const allRhRows = await client.query(
+                    `SELECT event_id, event_data->>'title' AS title FROM raid_helper_events_cache`
+                );
+                for (const r of allRhRows.rows) {
+                    const guess = getRhZoneGuess(r.title);
+                    if (guess === currentWclZone) wclIds.add(String(r.event_id));
+                }
+
+                sameDungeonEventIds = Array.from(wclIds);
+                if (!wclIds.has(String(eventId))) sameDungeonEventIds.push(String(eventId));
             }
         } catch (zoneErr) {
-            console.warn('[candidates] WCL zone lookup failed:', zoneErr.message);
+            console.warn('[candidates] zone lookup failed:', zoneErr.message);
         }
-        // If zone unknown, skip save filter entirely — safer than false positives
-        const sameDungeonFilter = (currentWclZone && sameDungeonEventIds.length > 0)
+
+        // Skip save filter if zone unknown (avoids false positives)
+        const sameDungeonFilter = (currentWclZone && saveZoneOverride !== 'none' && sameDungeonEventIds.length > 0)
             ? `AND ro.event_id = ANY($4)`
             : 'AND FALSE';
 
@@ -15455,6 +15495,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             reset_start: resetStart.toISOString(),
             dungeon_type: currentDungeonType,
             wcl_zone: currentWclZone,
+            event_title: eventTitle,
             candidates: candidateRows,
             excluded: excludedRows
         });

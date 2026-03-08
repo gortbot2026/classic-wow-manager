@@ -62,8 +62,11 @@ async function runSearch() {
     btn.disabled = true; btn.textContent = 'Searching…';
     document.getElementById('results').innerHTML = '<p style="color:#9ca3af;">Searching…</p>';
 
+    const saveZone = document.getElementById('save-zone-select').value;
+    const saveZoneParam = saveZone === 'auto' ? '' : `&save_zone=${encodeURIComponent(saveZone)}`;
+
     try {
-        const resp = await fetch(`/api/roster/${eventId}/candidates?classes=${checked.join(',')}&weeks=${weeks}`);
+        const resp = await fetch(`/api/roster/${eventId}/candidates?classes=${checked.join(',')}&weeks=${weeks}${saveZoneParam}`);
         const data = await resp.json();
         btn.disabled = false; btn.textContent = 'Search';
 
@@ -72,9 +75,23 @@ async function runSearch() {
             return;
         }
 
-        const dungeonLabel = data.wcl_zone || DUNGEON_LABELS[data.dungeon_type] || 'this instance';
+        const dungeonLabel = data.wcl_zone || DUNGEON_LABELS[data.dungeon_type] || null;
         const classLabel = checked.map(c => c[0].toUpperCase() + c.slice(1)).join(' / ');
         const resetDate = fmtDate(data.reset_start);
+
+        // Show event title badge
+        const badge = document.getElementById('event-title-badge');
+        if (data.event_title && badge) {
+            badge.textContent = data.event_title;
+            badge.style.display = '';
+        }
+
+        // Update save-zone dropdown to reflect what was auto-detected
+        if (saveZone === 'auto' && data.wcl_zone) {
+            const sel = document.getElementById('save-zone-select');
+            // Just update the auto label to show what was detected
+            sel.options[0].text = `Auto (${data.wcl_zone})`;
+        }
 
         let html = '';
 
@@ -88,7 +105,7 @@ async function runSearch() {
             html += `<div class="results-meta">
                 <span><strong>${byAccount.length}</strong> account${byAccount.length !== 1 ? 's' : ''} available</span>
                 <span style="color:#6b7280;">Reset started ${resetDate}</span>
-                ${data.dungeon_type !== 'other' ? `<span style="color:#6b7280;">Instance: ${dungeonLabel}</span>` : ''}
+                ${dungeonLabel ? `<span style="color:#6b7280;">Save filter: ${dungeonLabel}</span>` : `<span style="color:#f59e0b;">⚠️ Save filter off (unknown instance)</span>`}
             </div>
             <table class="cand-table">
                 <thead><tr>
