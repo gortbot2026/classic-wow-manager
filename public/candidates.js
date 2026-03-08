@@ -1,8 +1,12 @@
 // candidates.js — Find Candidates page
+// Handles class filtering, candidate search, checkbox selection, and Maya outreach.
 
 const pathParts = window.location.pathname.split('/');
 const evIdx = pathParts.indexOf('event');
 const eventId = evIdx !== -1 && pathParts.length > evIdx + 1 ? pathParts[evIdx + 1] : null;
+
+/** Set of selected discord_id strings for outreach */
+const selectedIds = new Set();
 
 // On load: set back link + fetch and show event title
 document.addEventListener('DOMContentLoaded', async () => {
@@ -68,6 +72,10 @@ async function runSearch() {
         return;
     }
     const weeks = document.getElementById('weeks-select').value;
+    // Reset selection state on new search
+    selectedIds.clear();
+    updateSelectionUI();
+
     const btn = document.getElementById('search-btn');
     btn.disabled = true; btn.textContent = 'Searching…';
     document.getElementById('results').innerHTML = '<p style="color:#9ca3af;">Searching…</p>';
@@ -114,8 +122,9 @@ async function runSearch() {
                 <span style="color:#6b7280;">Reset started ${resetDate}</span>
                 ${dungeonLabel ? `<span style="color:#6b7280;">Save filter: ${dungeonLabel}</span>` : `<span style="color:#f59e0b;">⚠️ Save filter off (unknown instance)</span>`}
             </div>
-            <table class="cand-table">
+            <table class="cand-table" id="cand-table">
                 <thead><tr>
+                    <th class="cb-col"><input type="checkbox" id="select-all-cb" title="Select all" onchange="toggleSelectAll(this)"></th>
                     <th>Discord</th>
                     <th>${classLabel} Character(s)</th>
                     <th>Last raided as</th>
@@ -131,7 +140,14 @@ async function runSearch() {
                     `<span style="color:${classColor(c.candidate_class)};font-weight:600;">${escH(c.candidate_char_name)}</span>`
                 ).join(' <span style="color:#4b5563;">&middot;</span> ');
 
+                // Only candidates with a discord_id get a checkbox
+                const hasDiscord = a.discord_id && a.discord_id.length > 0;
+                const cbCell = hasDiscord
+                    ? `<td class="cb-col"><input type="checkbox" class="cand-cb" data-discord-id="${escH(a.discord_id)}" onchange="toggleCandidate(this)"></td>`
+                    : `<td class="cb-col"></td>`;
+
                 html += `<tr>
+                    ${cbCell}
                     <td><strong>${escH(a.discord_username || a.discord_id)}</strong></td>
                     <td>${charCells}</td>
                     <td>
@@ -199,4 +215,160 @@ async function runSearch() {
         btn.disabled = false; btn.textContent = 'Search';
         document.getElementById('results').innerHTML = `<p style="color:#f87171;">Request failed: ${escH(err.message)}</p>`;
     }
+}
+
+// ── Selection state management ────────────────────────────────────────────────
+
+/**
+ * Toggles an individual candidate checkbox and updates selection state.
+ * @param {HTMLInputElement} cb - The checkbox element with data-discord-id attribute
+ */
+function toggleCandidate(cb) {
+    const id = cb.dataset.discordId;
+    if (!id) return;
+    if (cb.checked) {
+        selectedIds.add(id);
+    } else {
+        selectedIds.delete(id);
+    }
+    updateSelectionUI();
+}
+
+/**
+ * Toggles all visible candidate checkboxes via the header select-all checkbox.
+ * @param {HTMLInputElement} headerCb - The select-all checkbox element
+ */
+function toggleSelectAll(headerCb) {
+    const checkboxes = document.querySelectorAll('.cand-cb');
+    checkboxes.forEach(cb => {
+        const id = cb.dataset.discordId;
+        if (!id) return;
+        cb.checked = headerCb.checked;
+        if (headerCb.checked) {
+            selectedIds.add(id);
+        } else {
+            selectedIds.delete(id);
+        }
+    });
+    updateSelectionUI();
+}
+
+/**
+ * Syncs the bottom action bar, count label, and header checkbox state
+ * with the current selectedIds set.
+ */
+function updateSelectionUI() {
+    const count = selectedIds.size;
+    const bar = document.getElementById('outreach-bar');
+    const countEl = document.getElementById('ob-count-num');
+
+    // Update bottom bar visibility and count
+    if (bar) {
+        if (count > 0) {
+            bar.classList.add('visible');
+        } else {
+            bar.classList.remove('visible');
+        }
+    }
+    if (countEl) countEl.textContent = count;
+
+    // Sync header checkbox state (checked / indeterminate / unchecked)
+    const headerCb = document.getElementById('select-all-cb');
+    if (headerCb) {
+        const allCbs = document.querySelectorAll('.cand-cb');
+        const totalCheckable = allCbs.length;
+        if (totalCheckable === 0) {
+            headerCb.checked = false;
+            headerCb.indeterminate = false;
+        } else if (count === 0) {
+            headerCb.checked = false;
+            headerCb.indeterminate = false;
+        } else if (count >= totalCheckable) {
+            headerCb.checked = true;
+            headerCb.indeterminate = false;
+        } else {
+            headerCb.checked = false;
+            headerCb.indeterminate = true;
+        }
+    }
+}
+
+// ── Outreach confirmation and execution ───────────────────────────────────────
+
+/** Shows the confirmation overlay with the current selection count */
+function showOutreachConfirm() {
+    if (selectedIds.size === 0) return;
+    const overlay = document.getElementById('confirm-overlay');
+    const msg = document.getElementById('confirm-msg');
+    if (msg) msg.innerHTML = `Send Maya outreach to <strong>${selectedIds.size}</strong> player${selectedIds.size !== 1 ? 's' : ''}?`;
+    if (overlay) overlay.classList.add('visible');
+}
+
+/** Hides the confirmation overlay without changing selection */
+function hideOutreachConfirm() {
+    const overlay = document.getElementById('confirm-overlay');
+    if (overlay) overlay.classList.remove('visible');
+}
+
+/**
+ * Executes the outreach by POSTing selected discord IDs to the backend.
+ * Handles loading state, success toast, and error display.
+ */
+async function executeOutreach() {
+    hideOutreachConfirm();
+    if (selectedIds.size === 0 || !eventId) return;
+
+    const btn = document.getElementById('ob-btn');
+    btn.classList.add('loading');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch(`/api/roster/${eventId}/outreach`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ discordIds: Array.from(selectedIds) })
+        });
+        const data = await resp.json();
+
+        btn.classList.remove('loading');
+        btn.disabled = false;
+
+        if (!resp.ok || !data.success) {
+            showToast(data.message || 'Outreach failed', 'error');
+            return; // Keep selection intact for retry
+        }
+
+        // Build result message
+        const parts = [];
+        if (data.sent > 0) parts.push(`Sent ${data.sent}`);
+        if (data.skipped > 0) parts.push(`${data.skipped} already had active conversations`);
+        if (data.failed > 0) parts.push(`${data.failed} failed`);
+        showToast(parts.join(' · ') || 'Done', 'success');
+
+        // Clear selection after successful send
+        selectedIds.clear();
+        document.querySelectorAll('.cand-cb').forEach(cb => { cb.checked = false; });
+        updateSelectionUI();
+
+    } catch (err) {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        showToast('Request failed: ' + (err.message || 'Network error'), 'error');
+    }
+}
+
+/**
+ * Displays a toast notification that auto-dismisses after 5 seconds.
+ * @param {string} message - Toast message text
+ * @param {'success'|'error'} type - Visual style
+ */
+function showToast(message, type) {
+    const toast = document.getElementById('outreach-toast');
+    if (!toast) return;
+    toast.textContent = message;
+    toast.className = 'outreach-toast visible ' + type;
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => {
+        toast.classList.remove('visible');
+    }, 5000);
 }

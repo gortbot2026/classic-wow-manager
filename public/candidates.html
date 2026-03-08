@@ -86,6 +86,71 @@
         .reason-in-raid    { background: rgba(99,102,241,0.15); color: #818cf8; }
         .reason-signup     { background: rgba(251,191,36,0.15); color: #fbbf24; }
         .reason-no-discord { background: rgba(107,114,128,0.15); color: #9ca3af; }
+
+        /* Checkbox column */
+        table.cand-table th.cb-col,
+        table.cand-table td.cb-col { width: 36px; text-align: center; padding: 9px 6px; }
+        table.cand-table input[type="checkbox"] { cursor: pointer; accent-color: #6366f1; width: 16px; height: 16px; }
+
+        /* Bottom action bar */
+        .outreach-bar {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: #1f2937; border-top: 1px solid #374151;
+            padding: 14px 24px; z-index: 50;
+            display: none; align-items: center; justify-content: center; gap: 16px;
+        }
+        .outreach-bar.visible { display: flex; }
+        .outreach-bar .ob-count { font-size: 14px; color: #d1d5db; }
+        .outreach-bar .ob-count strong { color: #f9fafb; }
+        .outreach-bar .ob-btn {
+            padding: 9px 22px; background: #6366f1; color: white;
+            border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;
+            display: flex; align-items: center; gap: 8px; transition: background 0.15s;
+        }
+        .outreach-bar .ob-btn:hover { background: #4f46e5; }
+        .outreach-bar .ob-btn:disabled { background: #374151; cursor: not-allowed; }
+        .outreach-bar .ob-btn .spinner {
+            display: none; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite;
+        }
+        .outreach-bar .ob-btn.loading .spinner { display: inline-block; }
+        .outreach-bar .ob-btn.loading .btn-label { display: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Confirmation overlay */
+        .confirm-overlay {
+            display: none; position: fixed; inset: 0; z-index: 100;
+            background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
+        }
+        .confirm-overlay.visible { display: flex; }
+        .confirm-box {
+            background: #1f2937; border: 1px solid #374151; border-radius: 10px;
+            padding: 28px 32px; max-width: 420px; width: 90%; text-align: center;
+        }
+        .confirm-box p { color: #e5e7eb; font-size: 15px; margin: 0 0 20px; line-height: 1.5; }
+        .confirm-box .confirm-actions { display: flex; gap: 12px; justify-content: center; }
+        .confirm-box .btn-cancel {
+            padding: 9px 20px; background: transparent; color: #9ca3af;
+            border: 1px solid #374151; border-radius: 6px; cursor: pointer; font-size: 14px;
+        }
+        .confirm-box .btn-cancel:hover { border-color: #6b7280; color: #d1d5db; }
+        .confirm-box .btn-confirm {
+            padding: 9px 20px; background: #6366f1; color: white;
+            border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;
+        }
+        .confirm-box .btn-confirm:hover { background: #4f46e5; }
+
+        /* Toast notification */
+        .outreach-toast {
+            position: fixed; top: 20px; right: 20px; z-index: 200;
+            background: #1f2937; border: 1px solid #374151; border-radius: 8px;
+            padding: 14px 20px; max-width: 400px; font-size: 13px; color: #d1d5db;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            transform: translateX(120%); transition: transform 0.3s ease;
+        }
+        .outreach-toast.visible { transform: translateX(0); }
+        .outreach-toast.success { border-left: 3px solid #34d399; }
+        .outreach-toast.error { border-left: 3px solid #f87171; }
     </style>
 </head>
 <body>
@@ -144,6 +209,29 @@
             <p style="color:#6b7280;font-size:14px;">Select classes and click Search.</p>
         </div>
     </div>
+
+    <!-- Bottom action bar for Maya outreach -->
+    <div class="outreach-bar" id="outreach-bar">
+        <span class="ob-count"><strong id="ob-count-num">0</strong> accounts selected</span>
+        <button class="ob-btn" id="ob-btn" onclick="showOutreachConfirm()">
+            <span class="btn-label"><i class="fas fa-paper-plane"></i> Have Maya reach out</span>
+            <span class="spinner"></span>
+        </button>
+    </div>
+
+    <!-- Confirmation overlay -->
+    <div class="confirm-overlay" id="confirm-overlay">
+        <div class="confirm-box">
+            <p id="confirm-msg">Send Maya outreach to <strong>0</strong> players?</p>
+            <div class="confirm-actions">
+                <button class="btn-cancel" onclick="hideOutreachConfirm()">Cancel</button>
+                <button class="btn-confirm" onclick="executeOutreach()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="outreach-toast" id="outreach-toast"></div>
 
     <script src="/candidates.js"></script>
 </body>

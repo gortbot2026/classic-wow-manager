@@ -1278,6 +1278,19 @@ Important guidelines:
         null,
         false
       ]);
+      await pool.query(`
+        INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        'tpl-candidate-outreach-default',
+        'Candidate Outreach',
+        'candidate_outreach',
+        'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!',
+        'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.',
+        null,
+        false
+      ]);
       console.log('✅ Seeded default Maya templates');
     }
 
@@ -15550,6 +15563,144 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
         res.status(500).json({ success: false, message: 'Error fetching candidates' });
     } finally {
         if (client) client.release();
+    }
+});
+
+/**
+ * POST /api/roster/:eventId/outreach
+ * Trigger Maya outreach DMs to selected candidate players.
+ * Processes sequentially with a 500ms delay between sends to respect Discord rate limits.
+ * Skips players who already have active bot conversations.
+ *
+ * @body {string[]} discordIds - Array of Discord user IDs to reach out to
+ * @returns {{ success: boolean, sent: number, skipped: number, failed: number, details: Array }}
+ */
+app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { discordIds } = req.body;
+
+        // Validate discordIds
+        if (!Array.isArray(discordIds) || discordIds.length === 0 || !discordIds.every(id => typeof id === 'string' && id.length > 0)) {
+            return res.status(400).json({ success: false, message: 'discordIds must be a non-empty array of strings' });
+        }
+
+        // Validate eventId exists
+        const eventCheck = await pool.query(
+            `SELECT id FROM events_cache WHERE cache_key = 'raid_helper_events' LIMIT 1`
+        );
+        // We don't strictly validate the eventId against a table — it's a Raid Helper event ID used for context
+
+        // Check Maya bot is connected
+        if (!personaBotInstance) {
+            return res.status(503).json({ success: false, message: 'Maya bot is not connected' });
+        }
+
+        // Find the candidate_outreach template
+        const tplRes = await pool.query(
+            `SELECT id, opening_message, model_override FROM bot_templates WHERE trigger_type = $1 LIMIT 1`,
+            ['candidate_outreach']
+        );
+        const template = tplRes.rows.length > 0 ? tplRes.rows[0] : null;
+        const templateId = template ? template.id : null;
+
+        const results = { sent: 0, skipped: 0, failed: 0, details: [] };
+
+        for (let i = 0; i < discordIds.length; i++) {
+            const discordId = discordIds[i];
+
+            // Rate limit delay between sends (skip delay for the first one)
+            if (i > 0) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
+            try {
+                // Check for existing active conversation
+                const existingRes = await pool.query(
+                    `SELECT id FROM bot_conversations WHERE discord_id = $1 AND status = 'active' LIMIT 1`,
+                    [discordId]
+                );
+                if (existingRes.rows.length > 0) {
+                    results.skipped++;
+                    results.details.push({ discordId, status: 'skipped', reason: 'active conversation exists' });
+                    continue;
+                }
+
+                // Look up player name
+                const playerRes = await pool.query(
+                    `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`, [discordId]
+                );
+                const playerName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : null;
+
+                // Create conversation
+                const convId = require('crypto').randomUUID();
+                await pool.query(
+                    `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, event_id, trigger_type)
+                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6)`,
+                    [convId, discordId, playerName, templateId, eventId, 'candidate_outreach']
+                );
+
+                // Generate opening message
+                let message = null;
+                let modelUsed = null;
+
+                if (template && generateOpeningMessage) {
+                    try {
+                        const { generated, fallback, modelUsed: usedModel } = await generateOpeningMessage(
+                            pool, template, discordId, null, convId
+                        );
+                        message = generated || fallback;
+                        modelUsed = generated ? usedModel : null;
+                    } catch (genErr) {
+                        console.error(`[outreach] Error generating opening for ${discordId}:`, genErr.message || genErr);
+                    }
+                }
+
+                // Fallback: use template opening message with variable substitution
+                if (!message && template) {
+                    message = template.opening_message;
+                }
+
+                // Apply template variables
+                if (message && resolveTemplateVariables && applyTemplateVariables) {
+                    try {
+                        const templateVars = await resolveTemplateVariables(pool, discordId, null, convId);
+                        if (playerName) {
+                            templateVars.set('player_name', playerName);
+                        }
+                        message = applyTemplateVariables(message, templateVars);
+                    } catch (varErr) {
+                        console.error(`[outreach] Error resolving vars for ${discordId}:`, varErr.message || varErr);
+                        if (message && playerName) {
+                            message = message.replace(/\{\{player_name\}\}/g, playerName);
+                        }
+                    }
+                } else if (message && playerName) {
+                    message = message.replace(/\{\{player_name\}\}/g, playerName);
+                }
+
+                // Send the opening message
+                if (message) {
+                    await pool.query(
+                        `INSERT INTO bot_messages (conversation_id, role, content, model_used) VALUES ($1, 'maya', $2, $3)`,
+                        [convId, message, modelUsed]
+                    );
+                    await personaBotInstance.sendDM(discordId, message);
+                }
+
+                results.sent++;
+                results.details.push({ discordId, status: 'sent', conversationId: convId });
+            } catch (playerErr) {
+                console.error(`[outreach] Error processing ${discordId}:`, playerErr.message || playerErr);
+                results.failed++;
+                results.details.push({ discordId, status: 'failed', reason: playerErr.message || 'Unknown error' });
+            }
+        }
+
+        res.json({ success: true, ...results });
+    } catch (err) {
+        console.error('[outreach] Error:', err.message || err);
+        res.status(500).json({ success: false, message: 'Error processing outreach' });
     }
 });
 
