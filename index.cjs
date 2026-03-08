@@ -1308,18 +1308,19 @@ Important guidelines:
 
     // Migration: ensure candidate_outreach template is up to date.
     // UPDATE always runs so admin edits are preserved only when opening_message matches a known old value.
-    const newOutreachOpening = 'Write a short, direct Discord DM to recruit this player for tonight\'s raid ({{tonight_raid}}, starting {{raid_start_time}}). We need them to fill a slot. {{last_raid_blurb}} Ask if they would join with their character(s): {{candidate_chars_list}}. Name every character option explicitly. Keep it to 1-2 sentences max. Casual and direct. No corporate tone. No em-dashes or en-dashes.';
+    const newOutreachOpening = 'Write a short, direct Discord DM to recruit this player for tonight\'s raid ({{tonight_raid}}, starting {{raid_start_time}}). We need them to fill a slot. Ask if they would join with their character(s): {{candidate_chars_list}}. Name every character option explicitly.{{last_raid_blurb}} Keep it casual and direct. No corporate tone. No em-dashes or en-dashes. IMPORTANT: If the text above contains a sentence about a past raid (starting with "You were with us"), you MUST include that sentence verbatim in your message.';
     const newOutreachInstructions = 'You are Maya, reaching out to recruit a guild member to tonight\'s raid. The opening_message field is your writing instruction — follow it exactly. Keep replies short, friendly, and direct. If the player is interested, tell them to sign up on the Raid Helper event or ask an officer. If they decline, thank them and close gracefully. Never mention the wrong character or class. Available variables: {{tonight_raid}}, {{raid_start_time}}, {{candidate_chars_list}}, {{character_name}}, {{class_name}}, {{last_raid_name}}, {{last_raid_relative}}, {{mention_last_raid}}.';
     const oldOutreachOpening1 = 'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?';
     const oldOutreachOpening2 = 'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!';
     const oldOutreachOpening3 = 'Hey, would you be able to join {{tonight_raid}} tonight on your {{class_name}} {{character_name}}?';
     const oldOutreachOpening4 = 'Write a short, direct Discord DM to recruit this player for tonight\'s raid ({{tonight_raid}}, starting {{raid_start_time}}). We need them to fill a slot. Ask if they would join with their character(s): {{candidate_chars_list}}. Name every character option explicitly. If mention_last_raid is yes, briefly mention when they last raided with us: "you were with us in {{last_raid_name}} on {{last_raid_relative}}". If mention_last_raid is no, skip the history. Keep it to 1-2 sentences max. Casual and direct. No corporate tone. No em-dashes or en-dashes.';
+    const oldOutreachOpening5 = 'Write a short, direct Discord DM to recruit this player for tonight\'s raid ({{tonight_raid}}, starting {{raid_start_time}}). We need them to fill a slot. {{last_raid_blurb}} Ask if they would join with their character(s): {{candidate_chars_list}}. Name every character option explicitly. Keep it to 1-2 sentences max. Casual and direct. No corporate tone. No em-dashes or en-dashes.';
     await pool.query(`
       INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
       VALUES ($1, $2, $3, $4, $5, NULL, false)
       ON CONFLICT (id) DO UPDATE
         SET opening_message = CASE
-              WHEN bot_templates.opening_message IN ($6, $7, $8, $9) THEN $4
+              WHEN bot_templates.opening_message IN ($6, $7, $8, $9, $10) THEN $4
               ELSE bot_templates.opening_message
             END,
             agent_instructions = $5,
@@ -1333,7 +1334,8 @@ Important guidelines:
       oldOutreachOpening1,
       oldOutreachOpening2,
       oldOutreachOpening3,
-      oldOutreachOpening4
+      oldOutreachOpening4,
+      oldOutreachOpening5
     ]);
 
     console.log('✅ Maya persona bot tables initialized');
@@ -15866,7 +15868,7 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                     // TEST MODE: redirect all outreach DMs to the test Discord ID
                     const testRecipient = process.env.MAYA_OUTREACH_TEST_DISCORD_ID || null;
                     const dmTarget = testRecipient || discordId;
-                    const dmContent = testRecipient ? `[TEST — intended for <@${discordId}>]\n${message}` : message;
+                    const dmContent = testRecipient ? `[TEST — intended for ${discordId}]\n${message}` : message;
                     await personaBotInstance.sendDM(dmTarget, dmContent);
                 }
 
