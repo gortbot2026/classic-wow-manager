@@ -1073,7 +1073,7 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
         }
       } catch (_) {}
 
-      // last_raid_relative: "3 weeks ago" / "last week" / "2 weeks ago" (only if >21 days)
+      // last_raid_relative + last_raid_blurb (only populated if >21 days since last raid)
       if (convRowForOutreach.candidate_last_raid_date) {
         const daysSince = (Date.now() - new Date(convRowForOutreach.candidate_last_raid_date).getTime()) / (1000 * 60 * 60 * 24);
         if (daysSince > 21) {
@@ -1081,11 +1081,17 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
           const d = new Date(convRowForOutreach.candidate_last_raid_date);
           const dayName = d.toLocaleDateString('en-GB', { weekday: 'long' });
           const relStr = weeksAgo === 1 ? 'last week' : `${weeksAgo} weeks ago`;
+          const raidName = convRowForOutreach.candidate_last_raid_name || 'a raid';
+          // Strip Raid Helper title formatting for cleaner display
+          const cleanRaidName = raidName.replace(/\s*\|\s*.*/g, '').trim() || raidName;
           vars.set('last_raid_relative', `${dayName}, ${relStr}`);
           vars.set('mention_last_raid', 'yes');
+          // Pre-built sentence — just drop into the message, no conditional needed
+          vars.set('last_raid_blurb', `You were with us in ${cleanRaidName} back on ${dayName}, ${relStr}.`);
         } else {
           vars.set('last_raid_relative', '');
           vars.set('mention_last_raid', 'no');
+          vars.set('last_raid_blurb', '');  // empty — Claude omits it naturally
         }
       }
 
