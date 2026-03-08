@@ -2014,14 +2014,19 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     // Seed presenceMap from initial guild presences on ready
     client.on('ready', () => {
       try {
-        const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
+        const gId = process.env.DISCORD_GUILD_ID;
+        const guild = gId ? client.guilds.cache.get(gId) : client.guilds.cache.first();
         if (guild) {
           guild.presences.cache.forEach((p) => {
             if (p.userId && p.status) presenceMap.set(p.userId, p.status);
           });
           console.log(`[persona-bot] Presence cache seeded: ${presenceMap.size} entries`);
+        } else {
+          console.log('[persona-bot] Presence seed: guild not found');
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        console.error('[persona-bot] Presence seed error:', e.message);
+      }
     });
 
     client.on('disconnect', () => {
