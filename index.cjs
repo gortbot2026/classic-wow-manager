@@ -1091,6 +1091,7 @@ async function initializeMayaTables() {
     await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS management_context TEXT`);
     await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS channel_context TEXT`);
     await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS gear_check_context TEXT`);
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS candidate_outreach_context TEXT`);
 
     // bot_conversations — One row per player conversation thread
     await pool.query(`
@@ -1122,6 +1123,14 @@ async function initializeMayaTables() {
     // Migration: add trigger_type column for gear-check and future trigger distinction
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS trigger_type TEXT`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_conversations_trigger_type ON bot_conversations(trigger_type)`);
+
+    // Migration: add candidate outreach context columns for personalized outreach DMs
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_char_name TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_class TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_last_raid_event_id TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_last_raid_name TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_last_raid_date TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS tonight_raid_title TEXT`);
 
     // bot_messages — Individual messages in a conversation
     await pool.query(`
@@ -1293,6 +1302,27 @@ Important guidelines:
       ]);
       console.log('✅ Seeded default Maya templates');
     }
+
+    // Migration: update candidate_outreach template opening message and agent_instructions
+    // Only updates if the opening_message still matches the original seed value (preserves admin customizations)
+    await pool.query(`
+      UPDATE bot_templates
+      SET opening_message = $1, updated_at = NOW()
+      WHERE id = 'tpl-candidate-outreach-default'
+        AND opening_message = $2
+    `, [
+      'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?',
+      'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!'
+    ]);
+    await pool.query(`
+      UPDATE bot_templates
+      SET agent_instructions = $1, updated_at = NOW()
+      WHERE id = 'tpl-candidate-outreach-default'
+        AND agent_instructions = $2
+    `, [
+      'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.\n\nYou have access to the player\'s specific character name, class, last raid details, and tonight\'s raid info. Use these naturally in conversation. If the player asks about raid times or details, provide what you know from the event context.',
+      'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.'
+    ]);
 
     console.log('✅ Maya persona bot tables initialized');
   } catch (error) {
@@ -3541,6 +3571,11 @@ app.patch('/api/admin/maya/persona', requireManagement, express.json(), async (r
     if (gear_check_context !== undefined) {
       updates.push(`gear_check_context = $${paramIdx++}`);
       params.push(gear_check_context || null);
+    }
+    const { candidate_outreach_context } = req.body;
+    if (candidate_outreach_context !== undefined) {
+      updates.push(`candidate_outreach_context = $${paramIdx++}`);
+      params.push(candidate_outreach_context || null);
     }
     if (updates.length === 0) {
       return res.status(400).json({ success: false, message: 'No fields to update' });
@@ -15572,24 +15607,56 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
  * Processes sequentially with a 500ms delay between sends to respect Discord rate limits.
  * Skips players who already have active bot conversations.
  *
- * @body {string[]} discordIds - Array of Discord user IDs to reach out to
+ * Accepts either:
+ *   - { discordIds: string[] } — backward-compatible bare IDs (re-queries candidate data)
+ *   - { discordIds: string[], candidates: [{ discordId, charName, className, lastRaidName, lastRaidDate }] }
+ *     — enriched metadata from the candidates page (avoids re-querying)
+ *
  * @returns {{ success: boolean, sent: number, skipped: number, failed: number, details: Array }}
  */
 app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), async (req, res) => {
     try {
         const { eventId } = req.params;
-        const { discordIds } = req.body;
+        const { discordIds, candidates } = req.body;
 
         // Validate discordIds
         if (!Array.isArray(discordIds) || discordIds.length === 0 || !discordIds.every(id => typeof id === 'string' && id.length > 0)) {
             return res.status(400).json({ success: false, message: 'discordIds must be a non-empty array of strings' });
         }
 
-        // Validate eventId exists
-        const eventCheck = await pool.query(
-            `SELECT id FROM events_cache WHERE cache_key = 'raid_helper_events' LIMIT 1`
-        );
-        // We don't strictly validate the eventId against a table — it's a Raid Helper event ID used for context
+        // Build candidate metadata lookup from the optional candidates array
+        const candidateMetaMap = new Map();
+        if (Array.isArray(candidates)) {
+            for (const c of candidates) {
+                if (c && typeof c.discordId === 'string') {
+                    candidateMetaMap.set(c.discordId, {
+                        charName: c.charName || null,
+                        className: c.className || null,
+                        lastRaidName: c.lastRaidName || null,
+                        lastRaidDate: c.lastRaidDate || null
+                    });
+                }
+            }
+        }
+
+        // Resolve tonight's raid title from raid_helper_events_cache
+        let tonightRaidTitle = null;
+        try {
+            const cacheRes = await pool.query(
+                `SELECT events_data FROM events_cache WHERE cache_key = 'raid_helper_events'`
+            );
+            if (cacheRes.rows.length > 0 && cacheRes.rows[0].events_data) {
+                const eventsData = cacheRes.rows[0].events_data;
+                const postedEvents = Array.isArray(eventsData) ? eventsData : (eventsData.postedEvents || []);
+                const targetEvent = postedEvents.find(e => String(e.id) === String(eventId));
+                if (targetEvent && targetEvent.title) {
+                    // Strip " | " separators for cleaner display (same pattern as next_upcoming_raid)
+                    tonightRaidTitle = targetEvent.title.replace(/\s*\|\s*/g, ' ').trim();
+                }
+            }
+        } catch (cacheErr) {
+            console.error('[outreach] Error resolving tonight raid title:', cacheErr.message || cacheErr);
+        }
 
         // Check Maya bot is connected
         if (!personaBotInstance) {
@@ -15626,18 +15693,28 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                     continue;
                 }
 
-                // Look up player name
+                // Resolve candidate metadata: prefer passed-in metadata, fall back to DB lookup
+                const meta = candidateMetaMap.get(discordId) || {};
+                const candidateCharName = meta.charName || null;
+                const candidateClass = meta.className || null;
+                const candidateLastRaidName = meta.lastRaidName || null;
+                const candidateLastRaidDate = meta.lastRaidDate || null;
+
+                // Look up player name (character_name from players table for conversation row)
                 const playerRes = await pool.query(
                     `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`, [discordId]
                 );
                 const playerName = playerRes.rows.length > 0 ? playerRes.rows[0].character_name : null;
 
-                // Create conversation
+                // Create conversation with candidate context columns
                 const convId = require('crypto').randomUUID();
                 await pool.query(
-                    `INSERT INTO bot_conversations (id, discord_id, player_name, status, started_by, template_id, event_id, trigger_type)
-                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6)`,
-                    [convId, discordId, playerName, templateId, eventId, 'candidate_outreach']
+                    `INSERT INTO bot_conversations
+                     (id, discord_id, player_name, status, started_by, template_id, event_id, trigger_type,
+                      candidate_char_name, candidate_class, candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title)
+                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6, $7, $8, $9, $10, $11)`,
+                    [convId, discordId, playerName, templateId, eventId, 'candidate_outreach',
+                     candidateCharName, candidateClass, candidateLastRaidName, candidateLastRaidDate, tonightRaidTitle]
                 );
 
                 // Generate opening message
@@ -15661,13 +15738,10 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                     message = template.opening_message;
                 }
 
-                // Apply template variables
+                // Apply template variables (resolveTemplateVariables now handles outreach-specific columns)
                 if (message && resolveTemplateVariables && applyTemplateVariables) {
                     try {
                         const templateVars = await resolveTemplateVariables(pool, discordId, null, convId);
-                        if (playerName) {
-                            templateVars.set('player_name', playerName);
-                        }
                         message = applyTemplateVariables(message, templateVars);
                     } catch (varErr) {
                         console.error(`[outreach] Error resolving vars for ${discordId}:`, varErr.message || varErr);

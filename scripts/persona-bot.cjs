@@ -976,9 +976,9 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
    * @returns {Promise<{systemPrompt: string, messages: Array<{role: string, content: string}>}>}
    */
   async function buildContext(conversationId, discordId, persona) {
-    // Get conversation details (for template instructions and event_id)
+    // Get conversation details (for template instructions, event_id, and trigger_type)
     const convRes = await pool.query(
-      `SELECT template_id, event_id FROM bot_conversations WHERE id = $1`,
+      `SELECT template_id, event_id, trigger_type FROM bot_conversations WHERE id = $1`,
       [conversationId]
     );
     const conv = convRes.rows[0];
@@ -990,6 +990,11 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
 
     // Start with persona system prompt
     let systemPrompt = persona.system_prompt;
+
+    // Inject candidate_outreach_context for outreach conversations (same pattern as gear_check_context)
+    if (conv && conv.trigger_type === 'candidate_outreach' && persona.candidate_outreach_context) {
+      systemPrompt += '\n\n' + persona.candidate_outreach_context;
+    }
 
     // Add template-specific instructions if applicable (with variable resolution)
     if (conv && conv.template_id) {

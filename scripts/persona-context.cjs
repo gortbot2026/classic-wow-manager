@@ -647,9 +647,14 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
         `SELECT character_name FROM players WHERE discord_id = $1 LIMIT 1`,
         [discordId]
       ),
-      // Discord display name from bot_conversations
+      // Discord display name + candidate outreach columns from bot_conversations
       conversationId
-        ? pool.query(`SELECT player_name FROM bot_conversations WHERE id = $1`, [conversationId])
+        ? pool.query(
+            `SELECT player_name, trigger_type, candidate_char_name, candidate_class,
+                    candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title
+             FROM bot_conversations WHERE id = $1`,
+            [conversationId]
+          )
         : Promise.resolve({ rows: [] }),
       // Total raids attended — use roster_overrides (truth of who was in raid, not just who confirmed)
       pool.query(
@@ -694,8 +699,14 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     }
 
     vars.set('discord_name', discordName || 'unknown');
+    // player_name alias — resolves to same value as discord_name (player's display name)
+    vars.set('player_name', discordName || 'unknown');
 
     vars.set('guild_name', '1Principles');
+
+    // Track outreach conversation data for later override
+    const convRowForOutreach = discordNameRes.rows.length > 0 ? discordNameRes.rows[0] : null;
+    const isOutreach = convRowForOutreach && convRowForOutreach.trigger_type === 'candidate_outreach';
 
     const totalRaids = String(raidsAttendedRes.rows[0]?.count || '0');
     vars.set('total_raids_attended', totalRaids);
@@ -984,6 +995,47 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     }
     vars.set('next_upcoming_raid', nextRaid);
 
+    // --- New variables: class_name and tonight_raid ---
+    // class_name: for non-outreach, try players.class; for outreach, overridden below
+    if (!vars.has('class_name')) {
+      try {
+        const classRes = await pool.query(
+          `SELECT class FROM players WHERE discord_id = $1 LIMIT 1`, [discordId]
+        );
+        vars.set('class_name', classRes.rows.length > 0 && classRes.rows[0].class
+          ? classRes.rows[0].class : 'unknown');
+      } catch (_) {
+        vars.set('class_name', 'unknown');
+      }
+    }
+    // tonight_raid: default to next_upcoming_raid; outreach overrides below
+    if (!vars.has('tonight_raid')) {
+      vars.set('tonight_raid', nextRaid);
+    }
+
+    // --- Outreach-specific overrides ---
+    // When the conversation is a candidate_outreach, prefer the stored candidate context columns
+    // over the generic resolved values. This ensures outreach DMs reference the specific character
+    // being recruited rather than a generic "last raid" lookup.
+    if (isOutreach && convRowForOutreach) {
+      if (convRowForOutreach.candidate_char_name) {
+        vars.set('character_name', convRowForOutreach.candidate_char_name);
+      }
+      if (convRowForOutreach.candidate_class) {
+        vars.set('class_name', convRowForOutreach.candidate_class);
+      }
+      if (convRowForOutreach.candidate_last_raid_name) {
+        vars.set('last_raid_name', convRowForOutreach.candidate_last_raid_name);
+        vars.set('raid_name', convRowForOutreach.candidate_last_raid_name);
+      }
+      if (convRowForOutreach.candidate_last_raid_date) {
+        vars.set('last_raid_date', convRowForOutreach.candidate_last_raid_date);
+      }
+      if (convRowForOutreach.tonight_raid_title) {
+        vars.set('tonight_raid', convRowForOutreach.tonight_raid_title);
+      }
+    }
+
     // Pre-raid briefing character data from bot_conversations
     if (conversationId) {
       try {
@@ -1013,14 +1065,16 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
     console.error('[persona-context] Error resolving template variables:', err.message || err);
     // Set safe defaults for any missing variables
     const defaults = {
-      character_name: 'unknown', discord_name: 'unknown', guild_name: '1Principles',
+      character_name: 'unknown', discord_name: 'unknown', player_name: 'unknown',
+      guild_name: '1Principles',
       total_gold_earned: '0', gold_earned_last_raid: '0', gold_spent_last_raid: '0',
       manual_rewards_last_raid: '0', manual_deductions_last_raid: '0',
       last_raid_name: 'unknown', total_raids_attended: '0', items_won_last_raid: '0',
       guild_join_date: 'Not in 1Principles Guild', last_raid_date: 'unknown',
       raid_name: 'unknown', gold_earned: '0', items_won: '0', raids_attended: '0',
       raidleader_name: 'TBD', next_upcoming_raid: 'No upcoming raids scheduled',
-      pre_raid_character_name: 'unknown', pre_raid_character_class: 'unknown'
+      pre_raid_character_name: 'unknown', pre_raid_character_class: 'unknown',
+      class_name: 'unknown', tonight_raid: 'No upcoming raids scheduled'
     };
     for (const [key, val] of Object.entries(defaults)) {
       if (!vars.has(key)) vars.set(key, val);

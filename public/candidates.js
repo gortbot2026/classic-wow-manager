@@ -8,6 +8,9 @@ const eventId = evIdx !== -1 && pathParts.length > evIdx + 1 ? pathParts[evIdx +
 /** Set of selected discord_id strings for outreach */
 const selectedIds = new Set();
 
+/** Cached candidate metadata by discord_id for outreach enrichment */
+const candidateMetaCache = new Map();
+
 // On load: set back link + fetch and show event title
 document.addEventListener('DOMContentLoaded', async () => {
     const backLink = document.getElementById('back-link');
@@ -113,6 +116,20 @@ async function runSearch() {
         // ── Candidates ────────────────────────────────────────────────────────
         const cands = data.candidates || [];
         const byAccount = groupByAccount(cands);
+
+        // Cache candidate metadata for outreach enrichment
+        candidateMetaCache.clear();
+        byAccount.forEach(({ account: a, chars }) => {
+            if (a.discord_id) {
+                candidateMetaCache.set(a.discord_id, {
+                    discordId: a.discord_id,
+                    charName: a.last_char_name || (chars.length > 0 ? chars[0].candidate_char_name : null),
+                    className: a.last_char_class || (chars.length > 0 ? chars[0].candidate_class : null),
+                    lastRaidName: a.last_raid_name || null,
+                    lastRaidDate: a.last_raid_date || null
+                });
+            }
+        });
 
         if (byAccount.length === 0) {
             html += `<p style="color:#9ca3af;">No available candidates found.</p>`;
@@ -323,10 +340,18 @@ async function executeOutreach() {
     btn.disabled = true;
 
     try {
+        // Build candidates metadata from cache for enriched outreach
+        const candidatesPayload = Array.from(selectedIds)
+            .map(id => candidateMetaCache.get(id))
+            .filter(Boolean);
+
         const resp = await fetch(`/api/roster/${eventId}/outreach`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ discordIds: Array.from(selectedIds) })
+            body: JSON.stringify({
+                discordIds: Array.from(selectedIds),
+                candidates: candidatesPayload.length > 0 ? candidatesPayload : undefined
+            })
         });
         const data = await resp.json();
 

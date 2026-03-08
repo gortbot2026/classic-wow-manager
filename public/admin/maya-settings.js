@@ -35,6 +35,7 @@ async function loadPersona() {
   document.getElementById('management-context').value = p.management_context || '';
   document.getElementById('channel-context').value = p.channel_context || '';
   document.getElementById('gear-check-context').value = p.gear_check_context || '';
+  document.getElementById('candidate-outreach-context').value = p.candidate_outreach_context || '';
 }
 
 async function savePersona() {
@@ -44,7 +45,8 @@ async function savePersona() {
     max_context_messages: parseInt(document.getElementById('max-context').value) || 20,
     management_context: document.getElementById('management-context').value.trim() || null,
     channel_context: document.getElementById('channel-context').value.trim() || null,
-    gear_check_context: document.getElementById('gear-check-context').value.trim() || null
+    gear_check_context: document.getElementById('gear-check-context').value.trim() || null,
+    candidate_outreach_context: document.getElementById('candidate-outreach-context').value.trim() || null
   };
   const data = await apiFetch('/api/admin/maya/persona', {
     method: 'PATCH',

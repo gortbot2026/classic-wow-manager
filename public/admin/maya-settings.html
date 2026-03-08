@@ -121,7 +121,7 @@
         .maya-contexts-label i { color: #60a5fa; }
         .maya-contexts-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr);
             gap: 16px;
         }
         .maya-context-col {
@@ -348,6 +348,15 @@
                     </div>
                     <div class="maya-ctx-desc">Responds to new applicants posting in the gear-check channel. Warm, welcoming tone. Can DM players directly.</div>
                     <textarea id="gear-check-context" placeholder="Override gear-check context..."></textarea>
+                </div>
+
+                <div class="maya-context-col">
+                    <div class="maya-ctx-header">
+                        <i class="fas fa-bullhorn" style="color:#f59e0b;"></i>
+                        <span>Candidate Outreach</span>
+                    </div>
+                    <div class="maya-ctx-desc">Used when Maya reaches out to candidate players for upcoming raids. Friendly, recruiting tone. Has access to player raid history and tonight's event info.</div>
+                    <textarea id="candidate-outreach-context" placeholder="Override candidate outreach context..."></textarea>
                 </div>
 
             </div>
