@@ -15060,14 +15060,41 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
         let sameDungeonEventIds = [];
         let currentDungeonType = 'other';
         try {
-            // Use raid_helper_events_cache (per-event, 142+ historical events) for dungeon type
+            // 1. Try raid_helper_events_cache (per-event, 142+ historical events)
+            let currentTitle = null;
             const currentEventRow = await client.query(
                 `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
                 [String(eventId)]
             );
             if (currentEventRow.rows.length > 0) {
-                currentDungeonType = getDungeonType(currentEventRow.rows[0].title);
+                currentTitle = currentEventRow.rows[0].title;
+            } else {
+                // 2. Not cached — fetch from Raid Helper API and cache it
+                try {
+                    const rhApiRes = await fetch(`https://raid-helper.dev/api/v2/events/${eventId}`, {
+                        headers: { Authorization: process.env.RAID_HELPER_API_KEY || 'CkvppyW6ZWfuYv2GdpTSTOQpdn6PSMV4iJjlrWo6' }
+                    });
+                    if (rhApiRes.ok) {
+                        const rhEventData = await rhApiRes.json();
+                        currentTitle = rhEventData.title || null;
+                        if (currentTitle) {
+                            // Cache for future lookups
+                            await client.query(
+                                `INSERT INTO raid_helper_events_cache (event_id, event_data) VALUES ($1, $2)
+                                 ON CONFLICT (event_id) DO UPDATE SET event_data = $2, cached_at = NOW()`,
+                                [String(eventId), JSON.stringify(rhEventData)]
+                            );
+                        }
+                    }
+                } catch (rhErr) {
+                    console.warn('[candidates] Raid Helper API fetch for dungeon type failed:', rhErr.message);
+                }
             }
+
+            if (currentTitle) {
+                currentDungeonType = getDungeonType(currentTitle);
+            }
+
             if (currentDungeonType !== 'other') {
                 const allCacheRows = await client.query(
                     `SELECT event_id, event_data->>'title' AS title FROM raid_helper_events_cache`
@@ -15079,10 +15106,10 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
         } catch (cacheErr) {
             console.warn('[candidates] dungeon type lookup failed:', cacheErr.message);
         }
-        // Fallback: if we couldn't determine dungeon type, save check covers all events
-        const sameDungeonFilter = sameDungeonEventIds.length > 0
+        // If dungeon type is unknown ('other'), skip save filter entirely — can't make a reliable check
+        const sameDungeonFilter = (currentDungeonType !== 'other' && sameDungeonEventIds.length > 0)
             ? `AND ro.event_id = ANY($4)`
-            : '';
+            : 'AND FALSE'; // exclude nobody from saves when dungeon unknown
 
         // ── Broad query: all players with matching class + raided in lookback ──
         // We fetch everyone first, then split into candidates vs excluded
