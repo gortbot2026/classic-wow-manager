@@ -15137,6 +15137,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
                 lr.last_char_class,
                 lr.last_raid_event_id,
                 lr.last_raid_date,
+                lr.last_raid_name,
                 (ae.discord_user_id IS NOT NULL)                                            AS excluded_in_event,
                 (sc.char_name IS NOT NULL)                                                  AS excluded_saved,
                 (du.discord_id IS NULL)                                                     AS excluded_no_discord
