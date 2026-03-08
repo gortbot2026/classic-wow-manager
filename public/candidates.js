@@ -121,10 +121,12 @@ async function runSearch() {
         candidateMetaCache.clear();
         byAccount.forEach(({ account: a, chars }) => {
             if (a.discord_id) {
+                // Use candidate_char_name/class (the searched class we need), NOT last_char (last raid)
+                const firstChar = chars.length > 0 ? chars[0] : null;
                 candidateMetaCache.set(a.discord_id, {
                     discordId: a.discord_id,
-                    charName: a.last_char_name || (chars.length > 0 ? chars[0].candidate_char_name : null),
-                    className: a.last_char_class || (chars.length > 0 ? chars[0].candidate_class : null),
+                    charName: (firstChar ? firstChar.candidate_char_name : null) || a.last_char_name || null,
+                    className: (firstChar ? firstChar.candidate_class : null) || a.last_char_class || null,
                     lastRaidName: a.last_raid_name || null,
                     lastRaidDate: a.last_raid_date || null
                 });
