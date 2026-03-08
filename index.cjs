@@ -15073,6 +15073,25 @@ app.post('/api/roster/:eventId/revert', requireRosterManager, async (req, res) =
  * Returns candidates (compatible) and excluded (matched class/lookback but filtered out).
  * Includes save check (current WoW reset: Wed–Tue), gold spent/earned 12mo.
  */
+// Lightweight endpoint: just the event title (for page load)
+app.get('/api/roster/:eventId/title', requireRosterManager, async (req, res) => {
+    const { eventId } = req.params;
+    let client;
+    try {
+        client = await pool.connect();
+        const row = await client.query(
+            `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
+            [String(eventId)]
+        );
+        const title = row.rows.length > 0 ? row.rows[0].title : null;
+        res.json({ success: true, title });
+    } catch (err) {
+        res.json({ success: false, title: null });
+    } finally {
+        if (client) client.release();
+    }
+});
+
 app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res) => {
     const { eventId } = req.params;
     const classesParam = req.query.classes || '';

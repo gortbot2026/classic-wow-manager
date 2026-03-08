@@ -4,10 +4,20 @@ const pathParts = window.location.pathname.split('/');
 const evIdx = pathParts.indexOf('event');
 const eventId = evIdx !== -1 && pathParts.length > evIdx + 1 ? pathParts[evIdx + 1] : null;
 
-// Set back link
-document.addEventListener('DOMContentLoaded', () => {
+// On load: set back link + fetch and show event title
+document.addEventListener('DOMContentLoaded', async () => {
     const backLink = document.getElementById('back-link');
     if (eventId && backLink) backLink.href = `/event/${eventId}/roster`;
+
+    if (eventId) {
+        try {
+            const r = await fetch(`/api/roster/${eventId}/title`);
+            const d = await r.json();
+            const sub = document.getElementById('event-title-sub');
+            if (d.title && sub) sub.textContent = d.title;
+            document.title = d.title ? `${d.title} — Find Candidates` : 'Find Candidates';
+        } catch (_) {}
+    }
 });
 
 const CLASS_COLORS = {
@@ -79,12 +89,9 @@ async function runSearch() {
         const classLabel = checked.map(c => c[0].toUpperCase() + c.slice(1)).join(' / ');
         const resetDate = fmtDate(data.reset_start);
 
-        // Show event title badge
-        const badge = document.getElementById('event-title-badge');
-        if (data.event_title && badge) {
-            badge.textContent = data.event_title;
-            badge.style.display = '';
-        }
+        // Update event title subtitle if not already set (fallback from search response)
+        const sub = document.getElementById('event-title-sub');
+        if (data.event_title && sub && !sub.textContent) sub.textContent = data.event_title;
 
         // Update save-zone dropdown to reflect what was auto-detected
         if (saveZone === 'auto' && data.wcl_zone) {
