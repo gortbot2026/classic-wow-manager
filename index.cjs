@@ -15146,9 +15146,9 @@ app.get('/api/discord/presence', requireRosterManager, async (req, res) => {
             const guild = personaBotInstance.client.guilds.cache.get(DISCORD_GUILD_ID);
             if (guild) {
                 for (const id of ids) {
-                    const member = guild.members.cache.get(id);
-                    const status = member?.presence?.status || 'offline';
-                    result[id] = status;
+                    // guild.presences.cache is populated via GuildPresences intent (online members only)
+                    const presence = guild.presences.cache.get(id);
+                    result[id] = presence?.status || 'offline';
                 }
             }
         }
