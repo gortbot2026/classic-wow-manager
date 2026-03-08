@@ -1049,14 +1049,14 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
         vars.set('tonight_raid', convRowForOutreach.tonight_raid_title);
       }
 
-      // Discord username (prefer over character name for greeting)
+      // Discord username from discord_users table (not players — players has no discord_username col)
       try {
         const duRow = await pool.query(
-          `SELECT discord_username FROM players WHERE discord_id = $1 LIMIT 1`,
+          `SELECT username FROM discord_users WHERE discord_id = $1 LIMIT 1`,
           [discordId]
         );
-        if (duRow.rows.length > 0 && duRow.rows[0].discord_username) {
-          vars.set('discord_username', duRow.rows[0].discord_username);
+        if (duRow.rows.length > 0 && duRow.rows[0].username) {
+          vars.set('discord_username', duRow.rows[0].username);
         }
       } catch (_) {}
     }
