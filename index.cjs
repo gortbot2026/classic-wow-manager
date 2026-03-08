@@ -15768,7 +15768,11 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                         `INSERT INTO bot_messages (conversation_id, role, content, model_used) VALUES ($1, 'maya', $2, $3)`,
                         [convId, message, modelUsed]
                     );
-                    await personaBotInstance.sendDM(discordId, message);
+                    // TEST MODE: redirect all outreach DMs to the test Discord ID
+                    const testRecipient = process.env.MAYA_OUTREACH_TEST_DISCORD_ID || null;
+                    const dmTarget = testRecipient || discordId;
+                    const dmContent = testRecipient ? `[TEST — intended for <@${discordId}>]\n${message}` : message;
+                    await personaBotInstance.sendDM(dmTarget, dmContent);
                 }
 
                 results.sent++;
