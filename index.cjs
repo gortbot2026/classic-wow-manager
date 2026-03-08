@@ -3627,7 +3627,7 @@ app.post('/api/admin/maya/templates', requireManagement, express.json(), async (
     if (!name || !trigger_type || !opening_message || !agent_instructions) {
       return res.status(400).json({ success: false, message: 'name, trigger_type, opening_message, and agent_instructions are required' });
     }
-    if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing', 'gear_check'].includes(trigger_type)) {
+    if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing', 'gear_check', 'candidate_outreach'].includes(trigger_type)) {
       return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
     }
     const id = require('crypto').randomUUID();
@@ -3654,7 +3654,7 @@ app.patch('/api/admin/maya/templates/:templateId', requireManagement, express.js
 
     if (name !== undefined) { updates.push(`name = $${paramIdx++}`); params.push(name); }
     if (trigger_type !== undefined) {
-      if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing', 'gear_check'].includes(trigger_type)) {
+      if (!['post_raid', 'welcome', 'item_won', 'manual', 'pre_raid_briefing', 'gear_check', 'candidate_outreach'].includes(trigger_type)) {
         return res.status(400).json({ success: false, message: 'Invalid trigger_type' });
       }
       updates.push(`trigger_type = $${paramIdx++}`); params.push(trigger_type);
