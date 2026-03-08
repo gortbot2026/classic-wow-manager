@@ -15060,19 +15060,24 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
         let sameDungeonEventIds = [];
         let currentDungeonType = 'other';
         try {
-            const cacheRow = await client.query(
-                `SELECT data FROM events_cache WHERE cache_key = 'raid_helper_events' LIMIT 1`
+            // Use raid_helper_events_cache (per-event, 142+ historical events) for dungeon type
+            const currentEventRow = await client.query(
+                `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
+                [String(eventId)]
             );
-            if (cacheRow.rows.length > 0) {
-                const allEvents = JSON.parse(cacheRow.rows[0].data || '[]');
-                const currentEvent = allEvents.find(e => String(e.id) === String(eventId));
-                currentDungeonType = currentEvent ? getDungeonType(currentEvent.title) : 'other';
-                sameDungeonEventIds = allEvents
-                    .filter(e => getDungeonType(e.title) === currentDungeonType)
-                    .map(e => String(e.id));
+            if (currentEventRow.rows.length > 0) {
+                currentDungeonType = getDungeonType(currentEventRow.rows[0].title);
+            }
+            if (currentDungeonType !== 'other') {
+                const allCacheRows = await client.query(
+                    `SELECT event_id, event_data->>'title' AS title FROM raid_helper_events_cache`
+                );
+                sameDungeonEventIds = allCacheRows.rows
+                    .filter(r => getDungeonType(r.title) === currentDungeonType)
+                    .map(r => String(r.event_id));
             }
         } catch (cacheErr) {
-            console.warn('[candidates] events_cache fetch for dungeon type failed:', cacheErr.message);
+            console.warn('[candidates] dungeon type lookup failed:', cacheErr.message);
         }
         // Fallback: if we couldn't determine dungeon type, save check covers all events
         const sameDungeonFilter = sameDungeonEventIds.length > 0
@@ -15100,11 +15105,15 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
                     ro.assigned_char_name  AS last_char_name,
                     ro.assigned_char_class AS last_char_class,
                     rse.published_at       AS last_raid_date,
-                    rse.event_id           AS last_raid_event_id
+                    rse.event_id           AS last_raid_event_id,
+                    COALESCE(rhc.event_data->>'title', '') AS last_raid_name
                 FROM roster_overrides ro
                 JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
-                WHERE ro.in_raid = true AND ro.is_placeholder = false
-                ORDER BY ro.discord_user_id, rse.published_at DESC
+                LEFT JOIN raid_helper_events_cache rhc ON rhc.event_id = rse.event_id
+                WHERE ro.in_raid = true
+                  AND ro.is_placeholder = false
+                  AND rse.published_at IS NOT NULL
+                ORDER BY ro.discord_user_id, rse.published_at DESC NULLS LAST
             ),
             saved_chars AS (
                 -- Characters in a published raid of the same dungeon type since reset start
@@ -15193,25 +15202,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             }
         }
 
-        // ── Resolve last raid names from events_cache ─────────────────────────
-        const lastRaidEventIds = [...new Set(allRows.map(c => c.last_raid_event_id).filter(Boolean))];
-        const raidNameMap = {};
-        if (lastRaidEventIds.length > 0) {
-            try {
-                const cacheRow = await client.query(
-                    `SELECT data FROM events_cache WHERE cache_key = 'raid_helper_events' LIMIT 1`
-                );
-                if (cacheRow.rows.length > 0) {
-                    const events = JSON.parse(cacheRow.rows[0].data || '[]');
-                    for (const ev of events) {
-                        if (ev.id) raidNameMap[String(ev.id)] = ev.title || String(ev.id);
-                    }
-                }
-            } catch (_) {}
-        }
-        for (const r of allRows) {
-            r.last_raid_name = raidNameMap[String(r.last_raid_event_id)] || null;
-        }
+        // last_raid_name is now resolved inline via raid_helper_events_cache JOIN in the SQL
 
         // ── Gold data (candidates only — no point computing for excluded) ──────
         const candidateDiscordIds = [...new Set(candidateRows.map(c => c.discord_id))];
