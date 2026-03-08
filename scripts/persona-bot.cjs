@@ -991,6 +991,12 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
     // Start with persona system prompt
     let systemPrompt = persona.system_prompt;
 
+    // Inject current date/time so Maya can answer "what time is it?" correctly
+    const _now = new Date();
+    const _cetTime = _now.toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
+    const _cetDate = _now.toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Copenhagen' });
+    systemPrompt += `\n\nCurrent time: ${_cetTime} CET (${_cetDate}).`;
+
     // Inject candidate_outreach_context for outreach conversations (same pattern as gear_check_context)
     if (conv && conv.trigger_type === 'candidate_outreach' && persona.candidate_outreach_context) {
       systemPrompt += '\n\n' + persona.candidate_outreach_context;
