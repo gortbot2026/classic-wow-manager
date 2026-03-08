@@ -15720,7 +15720,7 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                 if (evData && evData.title) tonightRaidTitle = evData.title.replace(/\s*\|\s*/g, ' ').trim();
                 // startTime is epoch ms in Raid Helper API
                 if (evData && evData.startTime) {
-                    const st = new Date(typeof evData.startTime === 'number' ? evData.startTime : parseInt(evData.startTime));
+                    const st = new Date((typeof evData.startTime === 'number' ? evData.startTime : parseInt(evData.startTime)) * 1000);
                     raidStartTime = st.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' }) + ' CET';
                 }
             }
