@@ -15,6 +15,7 @@ const candidateMetaCache = new Map();
 let currentCandidateIds = [];
 let convPollTimer = null;
 let presencePollTimer = null;
+const presenceStatusMap = {}; // discordId -> 'online'|'idle'|'dnd'|'offline'
 
 function startPolling(discordIds) {
     currentCandidateIds = discordIds.filter(Boolean);
@@ -59,12 +60,30 @@ async function pollPresence() {
         document.querySelectorAll('.presence-dot[data-discord-id]').forEach(dot => {
             const did = dot.dataset.discordId;
             const status = data[did] || 'offline';
+            presenceStatusMap[did] = status;
             const colors = { online: '#22c55e', idle: '#f59e0b', dnd: '#ef4444', offline: '#6b7280' };
             const labels = { online: 'Online', idle: 'Idle', dnd: 'Do Not Disturb', offline: 'Offline' };
             dot.style.background = colors[status] || colors.offline;
             dot.title = labels[status] || 'Offline';
         });
+        applyPresenceFilter();
     } catch (_) {}
+}
+
+function togglePresenceChip(el) {
+    el.classList.toggle('active');
+    applyPresenceFilter();
+}
+
+function applyPresenceFilter() {
+    const active = Array.from(document.querySelectorAll('.pf-chip.active')).map(c => c.dataset.status);
+    // No chips selected = show all
+    document.querySelectorAll('tr[data-discord-id]').forEach(row => {
+        if (!active.length) { row.style.display = ''; return; }
+        const did = row.dataset.discordId;
+        const status = presenceStatusMap[did] || 'offline';
+        row.style.display = active.includes(status) ? '' : 'none';
+    });
 }
 
 // On load: set back link + fetch and show event title
