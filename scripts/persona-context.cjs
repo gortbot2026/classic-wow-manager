@@ -1029,11 +1029,36 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
         vars.set('raid_name', convRowForOutreach.candidate_last_raid_name);
       }
       if (convRowForOutreach.candidate_last_raid_date) {
+        // Raw ISO date
         vars.set('last_raid_date', convRowForOutreach.candidate_last_raid_date);
+        // Human-readable: "7 Mar 2026"
+        try {
+          const d = new Date(convRowForOutreach.candidate_last_raid_date);
+          const formatted = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          vars.set('last_raid_date_formatted', formatted);
+        } catch (_) {
+          vars.set('last_raid_date_formatted', convRowForOutreach.candidate_last_raid_date);
+        }
+        // is_regular: raided within last 14 days
+        const daysSince = (Date.now() - new Date(convRowForOutreach.candidate_last_raid_date).getTime()) / (1000 * 60 * 60 * 24);
+        vars.set('is_regular', daysSince <= 14 ? 'yes' : 'no');
+      } else {
+        vars.set('is_regular', 'no');
       }
       if (convRowForOutreach.tonight_raid_title) {
         vars.set('tonight_raid', convRowForOutreach.tonight_raid_title);
       }
+
+      // Discord username (prefer over character name for greeting)
+      try {
+        const duRow = await pool.query(
+          `SELECT discord_username FROM players WHERE discord_id = $1 LIMIT 1`,
+          [discordId]
+        );
+        if (duRow.rows.length > 0 && duRow.rows[0].discord_username) {
+          vars.set('discord_username', duRow.rows[0].discord_username);
+        }
+      } catch (_) {}
     }
 
     // Pre-raid briefing character data from bot_conversations

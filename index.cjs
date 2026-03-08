@@ -1303,25 +1303,21 @@ Important guidelines:
       console.log('✅ Seeded default Maya templates');
     }
 
-    // Migration: ensure candidate_outreach template exists (INSERT if missing, UPDATE if still default)
-    // Uses ON CONFLICT to handle both cases: template never seeded (staging had existing templates)
-    // and template exists but still has the original generic opening message.
-    const newOutreachOpening = 'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?';
-    const newOutreachInstructions = 'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.\n\nYou have access to the player\'s specific character name, class, last raid details, and tonight\'s raid info. Use these naturally in conversation. If the player asks about raid times or details, provide what you know from the event context.';
-    const oldOutreachOpening = 'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!';
-    const oldOutreachInstructions = 'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.';
+    // Migration: ensure candidate_outreach template is up to date.
+    // UPDATE always runs so admin edits are preserved only when opening_message matches a known old value.
+    const newOutreachOpening = 'Hey, would you be able to join {{tonight_raid}} tonight on your {{class_name}} {{character_name}}?';
+    const newOutreachInstructions = 'You are reaching out to recruit a guild member to tonight\'s raid. Keep it short and friendly.\n\nFor regulars (is_regular = yes, raided within last 14 days): one sentence is enough — just ask if they can join tonight on their specific character and class.\n\nFor returning players (is_regular = no): you may briefly mention the last time they raided with us ({{last_raid_date_formatted}}, {{last_raid_name}}) to jog their memory, but keep it to two sentences max.\n\nAlways ask for the specific character: {{character_name}} ({{class_name}}). Never mention the wrong class or character. Do not be pushy. If they decline, thank them and close gracefully.';
+    const oldOutreachOpening1 = 'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?';
+    const oldOutreachOpening2 = 'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!';
     await pool.query(`
       INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
       VALUES ($1, $2, $3, $4, $5, NULL, false)
       ON CONFLICT (id) DO UPDATE
         SET opening_message = CASE
-              WHEN bot_templates.opening_message = $6 THEN $4
+              WHEN bot_templates.opening_message IN ($6, $7) THEN $4
               ELSE bot_templates.opening_message
             END,
-            agent_instructions = CASE
-              WHEN bot_templates.agent_instructions = $7 THEN $5
-              ELSE bot_templates.agent_instructions
-            END,
+            agent_instructions = $5,
             updated_at = NOW()
     `, [
       'tpl-candidate-outreach-default',
@@ -1329,8 +1325,8 @@ Important guidelines:
       'candidate_outreach',
       newOutreachOpening,
       newOutreachInstructions,
-      oldOutreachOpening,
-      oldOutreachInstructions
+      oldOutreachOpening1,
+      oldOutreachOpening2
     ]);
 
     console.log('✅ Maya persona bot tables initialized');
@@ -15727,27 +15723,17 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                 );
 
                 // Generate opening message
+                // For candidate_outreach: skip AI generation entirely — use direct template
+                // variable substitution. AI generation uses raw DB character data (last-raided
+                // character) and ignores the candidate context overrides, producing wrong output.
                 let message = null;
                 let modelUsed = null;
 
-                if (template && generateOpeningMessage) {
-                    try {
-                        const { generated, fallback, modelUsed: usedModel } = await generateOpeningMessage(
-                            pool, template, discordId, null, convId
-                        );
-                        message = generated || fallback;
-                        modelUsed = generated ? usedModel : null;
-                    } catch (genErr) {
-                        console.error(`[outreach] Error generating opening for ${discordId}:`, genErr.message || genErr);
-                    }
-                }
-
-                // Fallback: use template opening message with variable substitution
-                if (!message && template) {
+                if (template) {
                     message = template.opening_message;
                 }
 
-                // Apply template variables (resolveTemplateVariables now handles outreach-specific columns)
+                // Apply template variables (resolveTemplateVariables handles outreach-specific columns)
                 if (message && resolveTemplateVariables && applyTemplateVariables) {
                     try {
                         const templateVars = await resolveTemplateVariables(pool, discordId, null, convId);
