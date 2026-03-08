@@ -491,3 +491,80 @@ function showToast(message, type) {
         toast.classList.remove('visible');
     }, 5000);
 }
+
+// ─── Outreach Monitor ──────────────────────────────────────────────────────────
+
+/** Timer for the outreach monitor polling interval */
+let omPollTimer = null;
+
+/**
+ * Fetches outreach monitor data for the current event and renders the panel.
+ * Called every 10 seconds independently of search results.
+ */
+async function pollOutreachMonitor() {
+    if (!eventId) return;
+    try {
+        const resp = await fetch(`/api/roster/${eventId}/outreach-monitor`, { credentials: 'same-origin' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderOutreachMonitor(data.conversations || []);
+    } catch (err) {
+        // Silently ignore — monitor is non-critical
+    }
+}
+
+/**
+ * Renders the outreach monitor strip with color-coded conversation cards.
+ * Shows the panel if conversations exist, hides it otherwise.
+ *
+ * @param {Array<{discord_id: string, candidate_char_name: string, candidate_class: string, status_flag: string|null, msg_count: number, last_message_text: string, last_message_sender: string}>} conversations
+ */
+function renderOutreachMonitor(conversations) {
+    const panel = document.getElementById('outreach-monitor');
+    const strip = document.getElementById('om-strip');
+    const countEl = document.getElementById('om-count');
+    if (!panel || !strip) return;
+
+    if (!conversations.length) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = '';
+    countEl.textContent = conversations.length;
+
+    strip.innerHTML = conversations.map(c => {
+        const status = c.status_flag || 'none';
+        const className = c.candidate_class
+            ? `${c.candidate_char_name || 'Unknown'} (${c.candidate_class})`
+            : (c.candidate_char_name || 'Unknown');
+        const preview = c.last_message_text || 'No messages yet';
+        const previewClass = c.last_message_sender === 'player' ? 'om-card-preview from-player' : 'om-card-preview';
+        return `<a class="om-card" data-status="${status}" href="/admin/player/${c.discord_id}" target="_blank" title="${className}">
+            <div class="om-card-top">
+                <span class="om-card-name">${escapeHtml(className)}</span>
+                <span class="om-card-msgs"><i class="fas fa-comment"></i> ${c.msg_count}</span>
+            </div>
+            <div class="${previewClass}">${escapeHtml(preview)}</div>
+        </a>`;
+    }).join('');
+}
+
+/**
+ * Escapes HTML entities in a string to prevent XSS.
+ * @param {string} str - Raw string
+ * @returns {string} Escaped string safe for innerHTML
+ */
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// Start outreach monitor polling on page load (independent of search)
+document.addEventListener('DOMContentLoaded', () => {
+    if (eventId) {
+        pollOutreachMonitor();
+        omPollTimer = setInterval(pollOutreachMonitor, 10000);
+    }
+});

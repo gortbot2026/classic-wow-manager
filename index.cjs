@@ -1134,6 +1134,7 @@ async function initializeMayaTables() {
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_last_raid_date TEXT`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS tonight_raid_title TEXT`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_chars JSONB`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS status_flag TEXT DEFAULT NULL`);
 
     // bot_messages — Individual messages in a conversation
     await pool.query(`
@@ -15181,6 +15182,60 @@ app.get('/api/roster/:eventId/conversation-status', requireRosterManager, async 
         res.json(result);
     } catch (err) {
         res.json({});
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * GET /api/roster/:eventId/outreach-monitor
+ * Returns live status of all active candidate_outreach conversations for an event.
+ * Each conversation includes message count, last message preview, and status flag.
+ */
+app.get('/api/roster/:eventId/outreach-monitor', requireRosterManager, async (req, res) => {
+    const { eventId } = req.params;
+    let client;
+    try {
+        client = await pool.connect();
+        const result = await client.query(
+            `SELECT
+                bc.discord_id,
+                bc.candidate_char_name,
+                bc.candidate_class,
+                bc.status_flag,
+                msg_agg.msg_count,
+                msg_agg.last_message_text,
+                msg_agg.last_message_role
+             FROM bot_conversations bc
+             LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*)::int AS msg_count,
+                    (SELECT LEFT(bm2.content, 40) FROM bot_messages bm2
+                     WHERE bm2.conversation_id = bc.id ORDER BY bm2.sent_at DESC LIMIT 1) AS last_message_text,
+                    (SELECT bm3.role FROM bot_messages bm3
+                     WHERE bm3.conversation_id = bc.id ORDER BY bm3.sent_at DESC LIMIT 1) AS last_message_role
+                FROM bot_messages bm
+                WHERE bm.conversation_id = bc.id
+             ) msg_agg ON TRUE
+             WHERE bc.event_id = $1
+               AND bc.trigger_type = 'candidate_outreach'
+               AND bc.status = 'active'
+             ORDER BY bc.candidate_char_name ASC`,
+            [String(eventId)]
+        );
+        const conversations = result.rows.map(row => ({
+            discord_id: row.discord_id,
+            candidate_char_name: row.candidate_char_name,
+            candidate_class: row.candidate_class,
+            status_flag: row.status_flag || null,
+            msg_count: row.msg_count || 0,
+            last_message_text: row.last_message_text || '',
+            last_message_sender: row.last_message_role === 'user' ? 'player' : 'maya'
+        }));
+        res.json({ conversations });
+    } catch (err) {
+        console.error('[outreach-monitor] Error fetching monitor data:', err.message);
+        res.json({ conversations: [] });
     } finally {
         if (client) client.release();
     }

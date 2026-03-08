@@ -168,6 +168,53 @@
         .outreach-toast.visible { transform: translateX(0); }
         .outreach-toast.success { border-left: 3px solid #34d399; }
         .outreach-toast.error { border-left: 3px solid #f87171; }
+
+        /* Outreach Monitor Panel */
+        .outreach-monitor {
+            background: #1f2937; border: 1px solid #374151; border-radius: 10px;
+            padding: 14px 16px; margin-bottom: 20px;
+        }
+        .om-header {
+            display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+            font-size: 14px; font-weight: 600; color: #d1d5db;
+        }
+        .om-header .om-count {
+            background: #374151; color: #9ca3af; border-radius: 10px;
+            padding: 1px 8px; font-size: 12px; font-weight: 500;
+        }
+        .om-strip {
+            display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px;
+        }
+        .om-strip::-webkit-scrollbar { height: 4px; }
+        .om-strip::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
+        .om-card {
+            flex: 0 0 200px; background: #111827; border: 1px solid #374151;
+            border-radius: 8px; padding: 10px 12px; cursor: pointer;
+            border-left: 3px solid #6b7280; text-decoration: none;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .om-card:hover { background: #1a2332; }
+        .om-card[data-status="pending"]  { border-left-color: #f59e0b; }
+        .om-card[data-status="accepted"] { border-left-color: #22c55e; }
+        .om-card[data-status="declined"] { border-left-color: #ef4444; }
+        .om-card-top {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .om-card-name {
+            font-size: 13px; font-weight: 600; color: #e5e7eb;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px;
+        }
+        .om-card-msgs {
+            display: flex; align-items: center; gap: 3px;
+            font-size: 11px; color: #9ca3af;
+        }
+        .om-card-msgs i { font-size: 10px; }
+        .om-card-preview {
+            font-size: 11px; color: #6b7280; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .om-card-preview.from-player { color: #9ca3af; }
     </style>
 </head>
 <body>
@@ -237,6 +284,15 @@
                 <label class="group-label">&nbsp;</label>
                 <button class="search-btn" id="search-btn" onclick="runSearch()">Search</button>
             </div>
+        </div>
+
+        <div class="outreach-monitor" id="outreach-monitor" style="display:none;">
+            <div class="om-header">
+                <i class="fas fa-satellite-dish" style="color:#6366f1;"></i>
+                Maya Outreach
+                <span class="om-count" id="om-count">0</span>
+            </div>
+            <div class="om-strip" id="om-strip"></div>
         </div>
 
         <div class="cand-results" id="results">

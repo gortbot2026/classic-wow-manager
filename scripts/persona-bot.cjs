@@ -1104,6 +1104,10 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       // Store the incoming message
       await storeMessage(conversation.id, 'user', message.content);
 
+      // Fire-and-forget: classify outreach status after each player reply
+      classifyOutreachStatus(pool, conversation.id)
+        .catch(err => console.error('[persona-bot] Outreach status classification failed (non-blocking):', err.message || err));
+
       // Check if we should auto-respond
       if (conversation.status !== 'active') {
         // Conversation is paused or closed — don't respond
@@ -2071,6 +2075,61 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
  * @param {string} playerMessage - The player's message text
  * @param {string} mayaReply - Maya's reply text
  */
+
+/**
+ * Async classifier for candidate_outreach conversations.
+ * Determines if the player has ACCEPTED, DECLINED, or is PENDING based on
+ * the full conversation history. Updates bot_conversations.status_flag.
+ *
+ * Fire-and-forget — errors are logged and swallowed, never blocks the reply flow.
+ *
+ * @param {import('pg').Pool} pool - Database connection pool
+ * @param {string} conversationId - The conversation to classify
+ */
+async function classifyOutreachStatus(pool, conversationId) {
+  // Verify this is a candidate_outreach conversation
+  const convRes = await pool.query(
+    `SELECT trigger_type FROM bot_conversations WHERE id = $1`,
+    [conversationId]
+  );
+  if (!convRes.rows.length || convRes.rows[0].trigger_type !== 'candidate_outreach') return;
+
+  // Fetch full conversation history
+  const msgRes = await pool.query(
+    `SELECT role, content FROM bot_messages WHERE conversation_id = $1 ORDER BY sent_at ASC`,
+    [conversationId]
+  );
+  if (msgRes.rows.length === 0) return;
+
+  // Format conversation for the classifier
+  const transcript = msgRes.rows
+    .map(m => `${m.role === 'user' ? 'Player' : 'Maya'}: ${m.content}`)
+    .join('\n');
+
+  const systemPrompt = 'You are a conversation classifier. Given a Discord DM conversation between a guild recruiter bot (Maya) and a player, determine if the player has ACCEPTED (agreed to join the raid), DECLINED (said no/can\'t make it), or PENDING (unclear/still discussing). Respond with exactly one word: ACCEPTED, DECLINED, or PENDING.';
+
+  const result = await generateResponse(
+    systemPrompt,
+    [{ role: 'user', content: transcript }],
+    'claude-haiku-4-5'
+  );
+
+  // Normalize the classifier output
+  const raw = (result || '').trim().toUpperCase();
+  const validFlags = ['ACCEPTED', 'DECLINED', 'PENDING'];
+  let flag = 'pending';
+  if (validFlags.includes(raw)) {
+    flag = raw.toLowerCase();
+  } else {
+    console.warn(`[persona-bot] Outreach classifier returned unexpected value "${raw}" for conversation ${conversationId} — defaulting to pending`);
+  }
+
+  await pool.query(
+    `UPDATE bot_conversations SET status_flag = $1 WHERE id = $2`,
+    [flag, conversationId]
+  );
+}
+
 async function extractPlayerNotes(pool, io, discordId, conversationId, playerMessage, mayaReply) {
   // Fetch existing notes for deduplication context (20 most recent)
   const existingRes = await pool.query(
