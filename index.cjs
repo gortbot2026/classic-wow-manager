@@ -15079,12 +15079,39 @@ app.get('/api/roster/:eventId/title', requireRosterManager, async (req, res) => 
     let client;
     try {
         client = await pool.connect();
+
+        // 1. Check local cache
         const row = await client.query(
             `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
             [String(eventId)]
         );
-        const title = row.rows.length > 0 ? row.rows[0].title : null;
-        res.json({ success: true, title });
+        if (row.rows.length > 0 && row.rows[0].title) {
+            return res.json({ success: true, title: row.rows[0].title });
+        }
+
+        // 2. Fetch from Raid Helper API and cache
+        try {
+            const rhRes = await fetch(`https://raid-helper.dev/api/v2/events/${eventId}`, {
+                headers: { Authorization: process.env.RAID_HELPER_API_KEY || 'CkvppyW6ZWfuYv2GdpTSTOQpdn6PSMV4iJjlrWo6' }
+            });
+            if (rhRes.ok) {
+                const rhData = await rhRes.json();
+                const title = rhData.title || null;
+                if (title) {
+                    await client.query(
+                        `INSERT INTO raid_helper_events_cache (event_id, event_data)
+                         VALUES ($1, $2)
+                         ON CONFLICT (event_id) DO UPDATE SET event_data = $2, cached_at = NOW()`,
+                        [String(eventId), JSON.stringify(rhData)]
+                    );
+                }
+                return res.json({ success: true, title });
+            }
+        } catch (rhErr) {
+            console.warn('[title] RH API fetch failed:', rhErr.message);
+        }
+
+        res.json({ success: true, title: null });
     } catch (err) {
         res.json({ success: false, title: null });
     } finally {
