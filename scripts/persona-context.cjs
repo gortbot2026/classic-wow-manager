@@ -1107,7 +1107,7 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
             if (rhRow.rows.length > 0 && rhRow.rows[0].event_data && rhRow.rows[0].event_data.startTime) {
               const st = new Date(parseInt(rhRow.rows[0].event_data.startTime) * 1000);
               const formatted = st.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
-              vars.set('raid_start_time', formatted + ' CET');
+              vars.set('raid_start_time', formatted);
             }
           }
         } catch (_) {}
