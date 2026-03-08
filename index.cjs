@@ -15145,6 +15145,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
 
         const candidateRows = [];
         const excludedRows = [];
+        const seenExcludedDiscordIds = new Set();
 
         for (const r of allRows) {
             let reason = null;
@@ -15155,8 +15156,36 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
 
             if (reason) {
                 excludedRows.push({ ...r, reason });
+                seenExcludedDiscordIds.add(r.discord_id);
             } else {
                 candidateRows.push(r);
+            }
+        }
+
+        // ── Supplementary: people in current event who weren't in recent_raiders ──
+        // (e.g. their last published raid was before the lookback window)
+        // They must still appear in the excluded list as "already_in_raid".
+        const seenCandidateDiscordIds = new Set(candidateRows.map(r => r.discord_id));
+        const alreadyInEventExtra = await client.query(`
+            SELECT DISTINCT
+                p.discord_id,
+                du.username  AS discord_username,
+                p.character_name AS candidate_char_name,
+                p.class      AS candidate_class,
+                NULL::text   AS last_char_name,
+                NULL::text   AS last_char_class,
+                NULL::text   AS last_raid_event_id,
+                NULL::timestamptz AS last_raid_date
+            FROM roster_overrides ro
+            JOIN players p      ON p.discord_id = ro.discord_user_id
+            LEFT JOIN discord_users du ON du.discord_id = p.discord_id
+            WHERE ro.event_id = $1
+              AND LOWER(p.class) = ANY($2)
+        `, [eventId, classes]);
+        for (const r of alreadyInEventExtra.rows) {
+            if (!seenExcludedDiscordIds.has(r.discord_id) && !seenCandidateDiscordIds.has(r.discord_id)) {
+                excludedRows.push({ ...r, reason: 'already_in_raid' });
+                seenExcludedDiscordIds.add(r.discord_id);
             }
         }
 
