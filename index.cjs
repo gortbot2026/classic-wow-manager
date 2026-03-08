@@ -1310,12 +1310,13 @@ Important guidelines:
     const newOutreachInstructions = 'You are Maya, reaching out to recruit a guild member to tonight\'s raid. The opening_message field is your writing instruction — follow it exactly. Keep replies short, friendly, and direct. If the player is interested, tell them to sign up on the Raid Helper event or ask an officer. If they decline, thank them and close gracefully. Never mention the wrong character or class. Available variables: {{tonight_raid}}, {{raid_start_time}}, {{candidate_chars_list}}, {{character_name}}, {{class_name}}, {{last_raid_name}}, {{last_raid_relative}}, {{mention_last_raid}}.';
     const oldOutreachOpening1 = 'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?';
     const oldOutreachOpening2 = 'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!';
+    const oldOutreachOpening3 = 'Hey, would you be able to join {{tonight_raid}} tonight on your {{class_name}} {{character_name}}?';
     await pool.query(`
       INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
       VALUES ($1, $2, $3, $4, $5, NULL, false)
       ON CONFLICT (id) DO UPDATE
         SET opening_message = CASE
-              WHEN bot_templates.opening_message IN ($6, $7) THEN $4
+              WHEN bot_templates.opening_message IN ($6, $7, $8) THEN $4
               ELSE bot_templates.opening_message
             END,
             agent_instructions = $5,
@@ -1327,7 +1328,8 @@ Important guidelines:
       newOutreachOpening,
       newOutreachInstructions,
       oldOutreachOpening1,
-      oldOutreachOpening2
+      oldOutreachOpening2,
+      oldOutreachOpening3
     ]);
 
     console.log('✅ Maya persona bot tables initialized');
