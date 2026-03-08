@@ -167,7 +167,7 @@ async function runSearch() {
 
                 html += `<tr>
                     ${cbCell}
-                    <td><strong>${escH(a.discord_username || a.discord_id)}</strong></td>
+                    <td><strong>${a.discord_id ? `<a href="/admin/player/${escH(a.discord_id)}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #4b5563;" onmouseover="this.style.borderColor='#818cf8'" onmouseout="this.style.borderColor='#4b5563'">${escH(a.discord_username || a.discord_id)}</a>` : escH(a.discord_username || '—')}</strong></td>
                     <td>${charCells}</td>
                     <td>
                         <span style="color:${lastColor}">${escH(a.last_char_name || '—')}</span>
@@ -212,7 +212,7 @@ async function runSearch() {
                     : rc.label();
 
                 html += `<tr>
-                    <td style="color:#9ca3af;">${escH(a.discord_username || a.discord_id || '—')}</td>
+                    <td style="color:#9ca3af;">${a.discord_id ? `<a href="/admin/player/${escH(a.discord_id)}" target="_blank" style="color:#9ca3af;text-decoration:none;border-bottom:1px dotted #374151;">${escH(a.discord_username || a.discord_id)}</a>` : escH(a.discord_username || '—')}</td>
                     <td>${charCells}</td>
                     <td>
                         <span style="color:${lastColor}">${escH(a.last_char_name || '—')}</span>
