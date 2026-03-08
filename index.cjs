@@ -2864,6 +2864,75 @@ async function requireRosterManager(req, res, next) {
     next();
 }
 
+// ── WoW Logs API helpers ──────────────────────────────────────────────────────
+// Module-level token cache (~24h validity, auto-refreshes)
+let _wclTokenCache = { token: null, expiresAt: 0 };
+async function getWclToken() {
+    if (_wclTokenCache.token && Date.now() < _wclTokenCache.expiresAt - 60000) {
+        return _wclTokenCache.token;
+    }
+    const resp = await fetch('https://www.warcraftlogs.com/oauth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            grant_type: 'client_credentials',
+            client_id: process.env.WCL_CLIENT_ID || '',
+            client_secret: process.env.WCL_CLIENT_SECRET || ''
+        })
+    });
+    const data = await resp.json();
+    if (!data.access_token) throw new Error(`WCL token error: ${JSON.stringify(data)}`);
+    _wclTokenCache.token = data.access_token;
+    _wclTokenCache.expiresAt = Date.now() + ((data.expires_in || 86400) * 1000);
+    return _wclTokenCache.token;
+}
+
+/**
+ * Returns the WoW Logs zone name for an event (e.g. "Naxxramas", "Temple of Ahn'Qiraj").
+ * Checks DB cache first; fetches from WCL API if missing; saves result to DB.
+ * Returns null if wow_logs_url is not set or API call fails.
+ */
+async function getWclZoneForEvent(dbClient, eventId, wowLogsUrl) {
+    // 1. DB cache check
+    try {
+        const cached = await dbClient.query(
+            `SELECT wcl_zone FROM rewards_snapshot_events WHERE event_id = $1 AND wcl_zone IS NOT NULL LIMIT 1`,
+            [String(eventId)]
+        );
+        if (cached.rows.length > 0) return cached.rows[0].wcl_zone;
+    } catch (_) {}
+
+    if (!wowLogsUrl) return null;
+
+    // 2. Extract report code from URL
+    const match = wowLogsUrl.match(/\/reports\/([A-Za-z0-9]+)/);
+    if (!match) return null;
+    const reportCode = match[1];
+
+    // 3. Fetch zone from WCL GraphQL API
+    try {
+        const token = await getWclToken();
+        const resp = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: `{ reportData { report(code: "${reportCode}") { zone { name } } } }` })
+        });
+        const data = await resp.json();
+        const zoneName = data?.data?.reportData?.report?.zone?.name;
+        if (zoneName) {
+            // 4. Cache in DB — this data never changes
+            await dbClient.query(
+                `UPDATE rewards_snapshot_events SET wcl_zone = $1 WHERE event_id = $2`,
+                [zoneName, String(eventId)]
+            ).catch(() => {}); // non-critical, ignore errors
+            return zoneName;
+        }
+    } catch (err) {
+        console.warn(`[wcl-zone] Failed for event ${eventId}:`, err.message);
+    }
+    return null;
+}
+
 // --- Express Routes ---
 
 // Add the JSON middleware to parse request bodies (raise limit for large JSON blobs)
@@ -15047,69 +15116,51 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             : `${weeks} weeks`;
 
         // ── Dungeon type classification ────────────────────────────────────────
-        // Determines which events are "same instance" as the current event,
-        // so save checks only flag characters saved to the correct dungeon.
-        const getDungeonType = (title) => {
-            const t = String(title || '').toLowerCase();
-            if (t.includes('naxx') || t.includes('naxxramas')) return 'naxx';
-            if (t.includes('aq') || t.includes('ahn') || t.includes('blackwing') || t.includes('bwl') || t.includes('molten') || t.includes(' mc ') || t.match(/\bmc\b/)) return 'aq_bwl_mc';
-            return 'other';
-        };
-
-        // Load events_cache to find same-dungeon event IDs
+                // ── Determine current event's WCL zone (primary) for instance-specific save check ─
+        // Uses wcl_zone cached in rewards_snapshot_events; fetches from WCL API if missing.
+        // Falls back to skip save check if zone cannot be determined.
+        let currentWclZone = null;
+        let currentDungeonType = 'other'; // kept for UI label
         let sameDungeonEventIds = [];
-        let currentDungeonType = 'other';
         try {
-            // 1. Try raid_helper_events_cache (per-event, 142+ historical events)
-            let currentTitle = null;
-            const currentEventRow = await client.query(
-                `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
+            // Get wow_logs_url for this event (needed for WCL lookup)
+            const rseRow = await client.query(
+                `SELECT wow_logs_url, wcl_zone FROM rewards_snapshot_events WHERE event_id = $1 LIMIT 1`,
                 [String(eventId)]
             );
-            if (currentEventRow.rows.length > 0) {
-                currentTitle = currentEventRow.rows[0].title;
-            } else {
-                // 2. Not cached — fetch from Raid Helper API and cache it
-                try {
-                    const rhApiRes = await fetch(`https://raid-helper.dev/api/v2/events/${eventId}`, {
-                        headers: { Authorization: process.env.RAID_HELPER_API_KEY || 'CkvppyW6ZWfuYv2GdpTSTOQpdn6PSMV4iJjlrWo6' }
-                    });
-                    if (rhApiRes.ok) {
-                        const rhEventData = await rhApiRes.json();
-                        currentTitle = rhEventData.title || null;
-                        if (currentTitle) {
-                            // Cache for future lookups
-                            await client.query(
-                                `INSERT INTO raid_helper_events_cache (event_id, event_data) VALUES ($1, $2)
-                                 ON CONFLICT (event_id) DO UPDATE SET event_data = $2, cached_at = NOW()`,
-                                [String(eventId), JSON.stringify(rhEventData)]
-                            );
-                        }
-                    }
-                } catch (rhErr) {
-                    console.warn('[candidates] Raid Helper API fetch for dungeon type failed:', rhErr.message);
+            if (rseRow.rows.length > 0) {
+                if (rseRow.rows[0].wcl_zone) {
+                    // Already cached
+                    currentWclZone = rseRow.rows[0].wcl_zone;
+                } else {
+                    // Fetch from WCL API and cache
+                    currentWclZone = await getWclZoneForEvent(client, eventId, rseRow.rows[0].wow_logs_url);
                 }
             }
 
-            if (currentTitle) {
-                currentDungeonType = getDungeonType(currentTitle);
-            }
+            if (currentWclZone) {
+                // Map zone name to UI label
+                const zl = currentWclZone.toLowerCase();
+                if (zl.includes('naxx')) currentDungeonType = 'naxx';
+                else if (zl.includes('ahn') || zl.includes('temple')) currentDungeonType = 'aq40';
+                else currentDungeonType = 'other';
 
-            if (currentDungeonType !== 'other') {
-                const allCacheRows = await client.query(
-                    `SELECT event_id, event_data->>'title' AS title FROM raid_helper_events_cache`
+                // Find all event IDs in DB with the same zone (from wcl_zone cache)
+                const sameZoneRows = await client.query(
+                    `SELECT event_id FROM rewards_snapshot_events WHERE wcl_zone = $1`,
+                    [currentWclZone]
                 );
-                sameDungeonEventIds = allCacheRows.rows
-                    .filter(r => getDungeonType(r.title) === currentDungeonType)
-                    .map(r => String(r.event_id));
+                sameDungeonEventIds = sameZoneRows.rows.map(r => String(r.event_id));
+                // Include current event (may not be in DB yet if not published)
+                if (!sameDungeonEventIds.includes(String(eventId))) sameDungeonEventIds.push(String(eventId));
             }
-        } catch (cacheErr) {
-            console.warn('[candidates] dungeon type lookup failed:', cacheErr.message);
+        } catch (zoneErr) {
+            console.warn('[candidates] WCL zone lookup failed:', zoneErr.message);
         }
-        // If dungeon type is unknown ('other'), skip save filter entirely — can't make a reliable check
-        const sameDungeonFilter = (currentDungeonType !== 'other' && sameDungeonEventIds.length > 0)
+        // If zone unknown, skip save filter entirely — safer than false positives
+        const sameDungeonFilter = (currentWclZone && sameDungeonEventIds.length > 0)
             ? `AND ro.event_id = ANY($4)`
-            : 'AND FALSE'; // exclude nobody from saves when dungeon unknown
+            : 'AND FALSE';
 
         // ── Broad query: all players with matching class + raided in lookback ──
         // We fetch everyone first, then split into candidates vs excluded
@@ -15403,6 +15454,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
             success: true,
             reset_start: resetStart.toISOString(),
             dungeon_type: currentDungeonType,
+            wcl_zone: currentWclZone,
             candidates: candidateRows,
             excluded: excludedRows
         });

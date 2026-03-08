@@ -72,7 +72,7 @@ async function runSearch() {
             return;
         }
 
-        const dungeonLabel = DUNGEON_LABELS[data.dungeon_type] || 'this instance';
+        const dungeonLabel = data.wcl_zone || DUNGEON_LABELS[data.dungeon_type] || 'this instance';
         const classLabel = checked.map(c => c[0].toUpperCase() + c.slice(1)).join(' / ');
         const resetDate = fmtDate(data.reset_start);
 
