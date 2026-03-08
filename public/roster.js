@@ -5433,6 +5433,15 @@ function closeFindCandidates() {
 }
 
 async function runCandidateSearch() {
+    // Resolve eventId from URL (function lives outside DOMContentLoaded scope)
+    const _pathParts = window.location.pathname.split('/');
+    const _evIdx = _pathParts.indexOf('event');
+    const eventId = (_evIdx !== -1 && _pathParts.length > _evIdx + 1) ? _pathParts[_evIdx + 1] : null;
+    if (!eventId) {
+        document.getElementById('candidates-results').innerHTML = '<p style="color:#f87171;font-size:13px;">No event ID in URL.</p>';
+        return;
+    }
+
     const checked = Array.from(document.querySelectorAll('#candidates-class-picker input:checked')).map(i => i.value);
     if (checked.length === 0) {
         document.getElementById('candidates-results').innerHTML = '<p style="color:#f87171;font-size:13px;">Please select at least one class.</p>';
