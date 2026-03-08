@@ -1303,25 +1303,34 @@ Important guidelines:
       console.log('✅ Seeded default Maya templates');
     }
 
-    // Migration: update candidate_outreach template opening message and agent_instructions
-    // Only updates if the opening_message still matches the original seed value (preserves admin customizations)
+    // Migration: ensure candidate_outreach template exists (INSERT if missing, UPDATE if still default)
+    // Uses ON CONFLICT to handle both cases: template never seeded (staging had existing templates)
+    // and template exists but still has the original generic opening message.
+    const newOutreachOpening = 'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?';
+    const newOutreachInstructions = 'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.\n\nYou have access to the player\'s specific character name, class, last raid details, and tonight\'s raid info. Use these naturally in conversation. If the player asks about raid times or details, provide what you know from the event context.';
+    const oldOutreachOpening = 'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!';
+    const oldOutreachInstructions = 'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.';
     await pool.query(`
-      UPDATE bot_templates
-      SET opening_message = $1, updated_at = NOW()
-      WHERE id = 'tpl-candidate-outreach-default'
-        AND opening_message = $2
+      INSERT INTO bot_templates (id, name, trigger_type, opening_message, agent_instructions, model_override, auto_trigger)
+      VALUES ($1, $2, $3, $4, $5, NULL, false)
+      ON CONFLICT (id) DO UPDATE
+        SET opening_message = CASE
+              WHEN bot_templates.opening_message = $6 THEN $4
+              ELSE bot_templates.opening_message
+            END,
+            agent_instructions = CASE
+              WHEN bot_templates.agent_instructions = $7 THEN $5
+              ELSE bot_templates.agent_instructions
+            END,
+            updated_at = NOW()
     `, [
-      'Hey {{player_name}}! We\'re running {{tonight_raid}} tonight and we\'re short on {{class_name}} players. You were with us in {{last_raid_name}} back on {{last_raid_date}} — would {{character_name}} be free to join us again?',
-      'Hey {{player_name}}! 👋 We have an upcoming raid and noticed you\'ve been active lately. Would you be interested in joining us? Let me know if you have any questions!'
-    ]);
-    await pool.query(`
-      UPDATE bot_templates
-      SET agent_instructions = $1, updated_at = NOW()
-      WHERE id = 'tpl-candidate-outreach-default'
-        AND agent_instructions = $2
-    `, [
-      'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.\n\nYou have access to the player\'s specific character name, class, last raid details, and tonight\'s raid info. Use these naturally in conversation. If the player asks about raid times or details, provide what you know from the event context.',
-      'This is an outreach conversation for recruiting a candidate player to an upcoming raid. Be friendly and welcoming. Mention that you noticed their recent raid activity and that the guild is looking for players like them. Provide brief info about the raid if available. If they are interested, guide them on how to sign up. If not interested, thank them and close gracefully. Do not be pushy.'
+      'tpl-candidate-outreach-default',
+      'Candidate Outreach',
+      'candidate_outreach',
+      newOutreachOpening,
+      newOutreachInstructions,
+      oldOutreachOpening,
+      oldOutreachInstructions
     ]);
 
     console.log('✅ Maya persona bot tables initialized');
