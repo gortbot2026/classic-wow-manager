@@ -504,7 +504,7 @@ function createPersonaBot(options = {}) {
 
       const classRoleRef = `Classic Era WoW class roles (HARD RULES):\n- Warrior: Tank or DPS\n- Druid/Priest/Shaman/Paladin: Healer only\n- Mage/Rogue/Hunter: DPS only\n- Warlock: DPS + utility (curses, healthstones, soul stone)\n- Hunter: DPS + serves as raid puller`;
 
-      const systemPrompt = `${soulText}\n\n--- MANAGEMENT DM ---\nYou are in a private DM with a guild management member. You have full access to all guild data and can execute actions. Be direct and efficient.\n\nCurrent date/time: ${currentDateTime}\n${rosterStatusLine ? rosterStatusLine + '\n' : ''}\n--- RECENT RAID EVENTS ---\n${eventList}\n\n--- CLASS ROLES ---\n${classRoleRef}\n\n--- OUTREACH WORKFLOW ---\nIf asked to find or recruit a player:\n1. EVENT: Look at the UPCOMING EVENTS section. Pick the event with the EARLIEST start time (next upcoming raid). Confirm by naming it ("I am assuming you mean [title] at [time] CET -- is that right?") -- never ask "which event?".\n2. ROLE: Infer from class. Druid/Priest/Shaman = Healer. Mage/Rogue/Hunter/Warlock = DPS. Warrior = ask. Never ask role for single-role classes.\n3. PRIEST SPECIAL: Ask Razuvious MC instead of role.\n4. ONLINE-ONLY: Compute exact hours until raid start. If more than 1 hour away: SKIP this question. Default to DMing everyone (online and offline on Discord) -- they will see it in time. Only ask if raid starts in less than 1 hour. If asked, say "online on Discord" (never just "online") and state the EXACT hours remaining.\n5. LAST SPOT: If raid starts more than 1 hour from now: SKIP, default last_spot=false. Only ask if <1 hour away.\n6. Once event+class+role known: call find_candidates (default 12 weeks). Summarize results as "X players who have a [class] character, not already in roster, not saved for this reset, who raided in the last 3 months (12 weeks)." State actual date range (oldest to newest last raid), not vague terms. Ask "Want me to reach out to all X, or look further back first?". Confirm before send_outreach.\n7. After sending: report count + candidates page link.\n\nFormatting: No em-dashes or en-dashes. Natural conversational language. Concise.`;
+      const systemPrompt = `${soulText}\n\n--- MANAGEMENT DM ---\nYou are in a private DM with a guild management member. You have full access to all guild data and can execute actions. Be direct and efficient.\n\nCurrent date/time: ${currentDateTime}\n${rosterStatusLine ? rosterStatusLine + '\n' : ''}\n--- RECENT RAID EVENTS ---\n${eventList}\n\n--- CLASS ROLES ---\n${classRoleRef}\n\n--- OUTREACH WORKFLOW ---\nIf asked to find or recruit a player:\n1. EVENT: Look at the UPCOMING EVENTS section. Pick the event with the EARLIEST start time (next upcoming raid). Confirm by naming it ("I am assuming you mean [title] at [time] CET -- is that right?") -- never ask "which event?".\n2. ROLE: Infer from class. Druid/Priest/Shaman = Healer. Mage/Rogue/Hunter/Warlock = DPS. Warrior = ask. Never ask role for single-role classes.\n3. PRIEST SPECIAL: Ask Razuvious MC instead of role.\n4. ONLINE-ONLY: Compute exact hours until raid start. If more than 1 hour away: SKIP this question. Default to DMing everyone (online and offline on Discord) -- they will see it in time. Only ask if raid starts in less than 1 hour. If asked, say "online on Discord" (never just "online") and state the EXACT hours remaining.\n5. LAST SPOT: If raid starts more than 1 hour from now: SKIP, default last_spot=false. Only ask if <1 hour away.\n6. Once event+class+role known: call find_candidates (default 4 weeks). Call multiple times in one turn if multiple classes needed. Present results as a clean simple list: "Here's what we've got for [event] at [time]: Warriors (DPS): X available, Priests: X available, etc. Want me to reach out to all of those (Y unique players total)? Or start smaller and expand if needed?" No technical jargon. No date ranges. No "top 30 most recently active". Excluded counts are for your info only. Confirm before send_outreach.\n7. After sending: report count + candidates page link.\n\nFormatting: No em-dashes or en-dashes. Natural conversational language. Concise.`;
 
       const model = persona?.model || 'claude-haiku-4-5';
       let messages = [...formattedMessages];
@@ -669,14 +669,25 @@ STEP 5 - LAST SPOT: If the raid starts more than 1 hour from now: SKIP this ques
 
 COMBINE all open questions into a single message (not one per message). Only ask what you don't already know.
 
-STEP 6 - SEARCH: Once event + class + role are known, call find_candidates immediately (default weeks_back=4, i.e. 1 month). Then summarize the results like this:
-- Say "**X players** who have a [class] character" -- NOT "[class] candidates". These are Discord accounts, not characters.
-- State exactly how far back you looked: "who raided with us in the last **4 weeks**" (4 weeks = 1 month, 12 weeks = 3 months, etc.)
-- Always include the exclusion line from the tool result verbatim: "I excluded X accounts because they were already saved to [dungeon] this reset, and Y accounts already in the roster for [event name]."
-- Give the date range of their last raids using actual dates, NOT vague terms like "recently" or "last one on Friday". Say something like "their last raids range from [oldest date] to [newest date]"
-- If results <= 30: ask "Want me to reach out to all X of them, or expand the search to look further back?"
-- If results > 30: WARN first -- "I found X players -- that's a lot. Do you want me to reach out to all X, or should I start with the 30 most recently active and expand the search if we don't find anyone?" Only send to all if they explicitly confirm.
-- Do NOT say things like "pretty solid pool" or "last one on Friday" -- stick to concrete facts.
+STEP 6 - SEARCH: Once event + class + role are known, call find_candidates immediately (default weeks_back=4, i.e. 1 month). You may call find_candidates multiple times in one turn if multiple classes are needed (e.g. warriors + all healer classes). Then present the results as a clean, simple summary:
+
+FORMAT (use exactly this style -- no technical jargon, no date ranges, no "last active", no "top 30"):
+"Great! Here's what we've got for **[event name]** tonight at **[time]**:
+
+- **Warriors (DPS):** X candidates available
+- **Priests:** X candidates available
+- **Druids:** X candidates available
+- **Shamans:** X candidates available
+
+Want me to reach out to all of those (**Y unique players** total)?
+Or should I start smaller and expand if needed?"
+
+RULES:
+- Use the total count from the tool (the "Found X players" number), not capped at 30.
+- If multiple classes, add up unique players at the end (mention total unique players).
+- No "top 30 most recently active", no "last raided March X-Y", no "not saved to Naxxramas", no "not in event roster" -- strip all that out. Just the clean counts.
+- The excluded accounts line is for YOUR information only -- do NOT mention it to the user unless they ask.
+- Only call send_outreach after the user confirms.
 
 STEP 7 - REPORT: After sending, report count + candidates page link. Ask if they want to be pinged when someone accepts.
 
