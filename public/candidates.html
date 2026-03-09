@@ -212,12 +212,12 @@
             padding: 1px 8px; font-size: 12px; font-weight: 500;
         }
         .om-strip {
-            display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
         }
-        .om-strip::-webkit-scrollbar { height: 4px; }
-        .om-strip::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
         .om-card {
-            flex: 0 0 200px; background: #111827; border: 1px solid #374151;
+            background: #111827; border: 1px solid #374151;
             border-radius: 8px; padding: 10px 12px; cursor: pointer;
             border-left: 3px solid #6b7280; text-decoration: none;
             transition: border-color 0.2s, background 0.2s;
