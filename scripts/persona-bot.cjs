@@ -1005,7 +1005,28 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         systemPrompt += '\n\n' + persona.candidate_outreach_context;
       }
 
-      // === Fix 2: Raid timing context (pre-computed, front and center) ===
+      // === Classic Era WoW class knowledge + candidate role ===
+    const classicRoleMap = {
+      warrior: 'Tank or DPS (Fury/Arms). Can tank as Protection or deal damage.',
+      druid: 'Healer (Restoration) or Tank (Feral Bear). Cannot DPS competitively in Classic Era raids.',
+      priest: 'Healer only (Holy or Discipline). Priests do NOT tank or DPS in Classic Era raids.',
+      shaman: 'Healer (Restoration) in a raid context. Elemental/Enhancement are rarely brought for DPS in Classic Era.',
+      paladin: 'Healer (Holy) in Classic Era raids. Alliance-only class. Cannot tank or DPS effectively in raids.',
+      mage: 'DPS only (Arcane/Fire/Frost). Cannot tank or heal.',
+      warlock: 'DPS only (Affliction/Demonology/Destruction). Cannot tank or heal.',
+      rogue: 'DPS only (Combat/Subtlety). Cannot tank or heal.',
+      hunter: 'DPS only (Marksmanship/Survival/Beast Mastery). Cannot tank or heal.',
+    };
+    const candidateClass = (conv.candidate_char_name ? '' : '') + '';
+    const convClassRaw = conv.candidate_class || '';
+    const classKey = convClassRaw.toLowerCase().trim();
+    const classRole = classicRoleMap[classKey];
+    systemPrompt += `\n\n=== CLASSIC ERA WOW — CLASS ROLES (IMPORTANT) ===\nThis is Classic Era World of Warcraft. Class roles are fixed and limited:\n${Object.entries(classicRoleMap).map(([c, r]) => `- ${c.charAt(0).toUpperCase() + c.slice(1)}: ${r}`).join('\n')}`;
+    if (classRole && convClassRaw) {
+      systemPrompt += `\n\nYou are recruiting this player as a ${convClassRaw}. In Classic Era: ${classRole} Do NOT suggest they bring a different spec/role than what the class is designed for. Do NOT say things like "if you have a DPS or tank ready" when recruiting a Priest — they are a healer.`;
+    }
+
+    // === Fix 2: Raid timing context (pre-computed, front and center) ===
       if (conv.event_id) {
         try {
           const rhRow = await pool.query(
