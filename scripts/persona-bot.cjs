@@ -296,6 +296,28 @@ function createPersonaBot(options = {}) {
   }
 
   /**
+   * Check whether a Discord user has the management role on the guild.
+   * Uses the bot's guild member cache (+ fetch fallback).
+   * @param {string} discordUserId
+   * @returns {Promise<boolean>}
+   */
+  async function hasManagementRole(discordUserId) {
+    try {
+      const guildId = process.env.DISCORD_GUILD_ID || '777268886939893821';
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) return false;
+      const member = guild.members.cache.get(discordUserId) || await guild.members.fetch(discordUserId).catch(() => null);
+      if (!member) return false;
+      const roleId = process.env.MANAGEMENT_ROLE_ID;
+      const roleName = (process.env.MANAGEMENT_ROLE_NAME || 'Management').toLowerCase();
+      if (roleId) return member.roles.cache.has(roleId);
+      return member.roles.cache.some(r => r.name.toLowerCase() === roleName);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Returns the tier for a given channel ID.
    * Officer channels get full access; all others are public.
    *
@@ -439,10 +461,102 @@ function createPersonaBot(options = {}) {
    *
    * @param {import('discord.js').Message} message - The incoming Discord message
    */
+  /**
+   * handleManagementDM — handles DMs from management members who don't have an active outreach conv.
+   * Shares the same tool-use loop and system prompt as the management channel handler.
+   */
+  async function handleManagementDM(message) {
+    const typingInterval = setInterval(() => {
+      message.channel.sendTyping().catch(() => {});
+    }, 8000);
+    message.channel.sendTyping().catch(() => {});
+    try {
+      // Reuse the management channel handler logic by temporarily adapting the message
+      // Fetch recent DM history (last 10 messages)
+      const recentMessages = await message.channel.messages.fetch({ limit: 10 });
+      const sortedMessages = [...recentMessages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      const formattedMessages = sortedMessages.map(msg => ({
+        role: msg.author.id === client.user.id ? 'assistant' : 'user',
+        content: msg.author.id === client.user.id
+          ? msg.content
+          : `${msg.author.globalName || msg.author.username}: ${msg.content}`
+      }));
+
+      const eventList = await getEventList(pool);
+      const now = new Date();
+      const currentDateTime = now.toLocaleString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short'
+      });
+      const persona = await getPersona();
+      const soulText = persona?.system_prompt || '';
+
+      let rosterStatusLine = '';
+      try {
+        const upRow = await pool.query(`SELECT event_id FROM raid_helper_events_cache ORDER BY (event_data->>'startTime')::bigint DESC LIMIT 1`);
+        if (upRow.rows.length > 0) {
+          const cnt = await pool.query(`SELECT COUNT(*) as total FROM roster_overrides WHERE event_id = $1 AND in_raid = true AND is_placeholder = false`, [upRow.rows[0].event_id]);
+          const total = parseInt(cnt.rows[0]?.total) || 0;
+          const needed = Math.max(0, 40 - total);
+          rosterStatusLine = needed > 0 ? `Current roster: ${total}/40 confirmed, ${needed} spots needed.` : `Current roster: ${total}/40 -- full.`;
+        }
+      } catch (_) {}
+
+      const classRoleRef = `Classic Era WoW class roles (HARD RULES):\n- Warrior: Tank or DPS\n- Druid/Priest/Shaman/Paladin: Healer only\n- Mage/Rogue/Hunter: DPS only\n- Warlock: DPS + utility (curses, healthstones, soul stone)\n- Hunter: DPS + serves as raid puller`;
+
+      const systemPrompt = `${soulText}\n\n--- MANAGEMENT DM ---\nYou are in a private DM with a guild management member. You have full access to all guild data and can execute actions. Be direct and efficient.\n\nCurrent date/time: ${currentDateTime}\n${rosterStatusLine ? rosterStatusLine + '\n' : ''}\n--- RECENT RAID EVENTS ---\n${eventList}\n\n--- CLASS ROLES ---\n${classRoleRef}\n\n--- OUTREACH WORKFLOW ---\nIf asked to find/recruit players: 1) Use find_candidates. 2) Confirm details before sending (candidate count, class, role, raid name/time, weeks lookback, online-only, last-spot, Razuvious MC for Priests). 3) Only call send_outreach after explicit yes. 4) Report back with count and candidates page link.\n\nFormatting: No em-dashes or en-dashes. Natural conversational language. Concise.`;
+
+      const model = persona?.model || 'claude-haiku-4-5';
+      let messages = [...formattedMessages];
+      let finalText = '';
+      const maxIterations = 5;
+
+      for (let iteration = 0; iteration < maxIterations; iteration++) {
+        const response = await generateResponseWithTools(systemPrompt, messages, model, MANAGEMENT_TOOLS, 2048);
+        const toolUseBlocks = (response.content || []).filter(b => b.type === 'tool_use');
+        const textBlocks = (response.content || []).filter(b => b.type === 'text');
+        if (response.stop_reason === 'end_turn' || toolUseBlocks.length === 0) {
+          finalText = textBlocks.map(b => b.text).join('\n').trim();
+          break;
+        }
+        messages.push({ role: 'assistant', content: response.content });
+        const toolResults = [];
+        for (const tb of toolUseBlocks) {
+          console.log(`[persona-bot] Mgmt DM tool call: ${tb.name}(${JSON.stringify(tb.input)})`);
+          const result = await executeManagementTool(tb.name, tb.input, pool);
+          toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result });
+        }
+        messages.push({ role: 'user', content: toolResults });
+        if (iteration === maxIterations - 1) {
+          const finalResponse = await generateResponseWithTools(systemPrompt, messages, model, MANAGEMENT_TOOLS, 2048);
+          finalText = (finalResponse.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+        }
+      }
+
+      clearInterval(typingInterval);
+      if (finalText) {
+        let replyText = sanitizeResponse(finalText);
+        replyText = sanitizeForDiscord(replyText);
+        if (replyText.length > 2000) replyText = replyText.substring(0, 1997) + '...';
+        await message.reply(replyText).catch(() => message.channel.send(replyText));
+      }
+    } catch (err) {
+      clearInterval(typingInterval);
+      console.error('[persona-bot] handleManagementDM error:', err.message || err);
+    }
+  }
+
   async function handleManagementChannelMessage(message) {
     // Ignore @everyone and @here pings — these are announcements, not questions for Maya
     if (message.mentions.everyone) {
       console.log('[persona-bot] Management channel: ignoring @everyone/@here message');
+      return;
+    }
+
+    // Authorization: sender must have management role on the guild
+    const senderHasManagement = await hasManagementRole(message.author.id);
+    if (!senderHasManagement) {
+      console.log(`[persona-bot] Management channel: ${message.author.id} lacks management role, ignoring`);
       return;
     }
 
@@ -489,19 +603,62 @@ function createPersonaBot(options = {}) {
       const soulText = persona?.system_prompt || '';
       const managementContextBlock = persona?.management_context ||
         '--- CONTEXT: MANAGEMENT CHANNEL ---\nYou are responding in the private management Discord channel on Discord. This channel is for guild leadership only. You may freely discuss any player data, conversations, notes, raid history, gold, or anything else. Be concise, direct, and data-focused. Only respond to what is asked.';
+      // Inject current roster status for tonight's event
+      let rosterStatusLine = '';
+      try {
+        const upcomingEvRow = await pool.query(
+          `SELECT event_id FROM raid_helper_events_cache ORDER BY (event_data->>'startTime')::bigint DESC LIMIT 1`
+        );
+        if (upcomingEvRow.rows.length > 0) {
+          const evId = upcomingEvRow.rows[0].event_id;
+          const rosterCount = await pool.query(
+            `SELECT COUNT(*) as total FROM roster_overrides WHERE event_id = $1 AND in_raid = true AND is_placeholder = false`,
+            [evId]
+          );
+          const total = parseInt(rosterCount.rows[0]?.total) || 0;
+          const needed = Math.max(0, 40 - total);
+          rosterStatusLine = needed > 0
+            ? `Current roster (latest event): ${total}/40 confirmed, ${needed} spots still needed.`
+            : `Current roster (latest event): ${total}/40 — raid is full.`;
+        }
+      } catch (_) {}
+
+      const classRoleRef = `Classic Era WoW class roles (HARD RULES):
+- Warrior: Tank or DPS (depends on spec — must ask if unclear)
+- Druid: Healer only
+- Priest: Healer only (can also MC tank Razuvious if needed)
+- Shaman: Healer only
+- Paladin: Healer only (Alliance — irrelevant for Horde guild)
+- Mage: DPS only
+- Warlock: DPS + utility (curses, healthstones, soul stone)
+- Rogue: DPS only
+- Hunter: DPS only (when recruiting a Hunter, they serve as the raid puller)`;
+
       const systemPrompt = `${soulText}
 
 ${managementContextBlock}
 
 Current date/time: ${currentDateTime}
+${rosterStatusLine ? '\n' + rosterStatusLine : ''}
 
 --- RECENT RAID EVENTS ---
 ${eventList}
 
+--- CLASS ROLES ---
+${classRoleRef}
+
 --- INSTRUCTIONS ---
 Use the available tools to look up any data you need. The event list above shows recent raids. Identify the relevant event_id(s) from the list before calling tools. You can call multiple tools in a single turn. If the user asks about a player, use get_player_data. If no tools are needed (e.g. general chat), respond directly.
 
-FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise.`;
+CANDIDATE OUTREACH WORKFLOW: If the user asks you to find a player or recruit someone for a raid:
+1. Use find_candidates tool to search (default 12 weeks back).
+2. Before calling send_outreach, ASK the user to confirm: candidate count, class, role, raid name/time, time range used, online-only preference, last-spot status, and (for Priests) Razuvious MC requirement.
+3. Only call send_outreach after receiving explicit confirmation ("yes", "do it", "send", etc.).
+4. After sending, report back with count sent and link to the candidates page for monitoring.
+5. Ask if they want to be notified when someone accepts.
+If any clarification question is answered, proceed without asking again.
+
+FORMATTING: Never use em-dashes or en-dashes. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise and direct.`;
 
       // Model selection (persona already fetched above)
       const model = persona?.model || 'claude-haiku-4-5';
@@ -1206,6 +1363,25 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
           console.log(`[persona-bot] TEST MODE: Routing reply from ${discordId} to conversation ${realConv.id} (player: ${realConv.discord_id})`);
           // Use the real player's discord_id for context building
           discordId = realConv.discord_id;
+        }
+      }
+
+      // Management DM routing: if sender has management role AND no active outreach conv,
+      // route to the management handler instead of the regular DM handler.
+      if (!MAYA_TEST_MODE_DISCORD_ID || discordId !== MAYA_TEST_MODE_DISCORD_ID) {
+        const senderIsManagement = await hasManagementRole(discordId);
+        if (senderIsManagement) {
+          const activeOutreachConv = await pool.query(
+            `SELECT id FROM bot_conversations
+             WHERE discord_id = $1 AND status = 'active' AND trigger_type = 'candidate_outreach'
+             LIMIT 1`,
+            [discordId]
+          );
+          if (activeOutreachConv.rows.length === 0) {
+            // No active outreach conversation — treat as management command
+            handleManagementDM(message);
+            return;
+          }
         }
       }
 

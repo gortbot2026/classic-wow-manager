@@ -2914,6 +2914,11 @@ async function requireManagement(req, res, next) {
 
 // Middleware: allow Management or Helper (roster-only access)
 async function requireRosterManager(req, res, next) {
+    // Allow internal tool calls from the Maya bot (e.g. send_outreach tool)
+    const internalSecret = process.env.INTERNAL_API_SECRET || '';
+    if (internalSecret && req.headers['x-internal-tool'] === internalSecret) {
+        return next();
+    }
     if (!req.isAuthenticated()) {
         return res.status(401).json({ message: 'Authentication required' });
     }
@@ -4076,6 +4081,21 @@ app.get('/auth/discord/callback',
               last_login_at = CURRENT_TIMESTAMP,
               updated_at = CURRENT_TIMESTAMP
           `, [discordId, u.username || null, u.discriminator || null, u.avatar || null, u.email || null]);
+
+          // Sync Discord management role → site management role
+          try {
+            const isMgmt = await hasManagementRoleById(discordId);
+            if (isMgmt) {
+              await pool.query(`
+                INSERT INTO app_user_roles (discord_id, role_key, granted_at, granted_by)
+                VALUES ($1, 'management', CURRENT_TIMESTAMP, 'discord-role-sync')
+                ON CONFLICT (discord_id, role_key) DO UPDATE SET granted_at = CURRENT_TIMESTAMP
+              `, [discordId]);
+              console.log(`[auth] Discord role sync: granted management to ${discordId}`);
+            }
+          } catch (syncErr) {
+            console.warn(`[auth] Discord role sync failed for ${discordId}:`, syncErr.message);
+          }
         }
       } catch (e) {
         console.error('⚠️ Failed to upsert discord user:', e.message);

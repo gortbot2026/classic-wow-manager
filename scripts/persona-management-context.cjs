@@ -1105,6 +1105,36 @@ const MANAGEMENT_TOOLS = [
       },
       required: ['player_name']
     }
+  },
+  {
+    name: 'find_candidates',
+    description: 'Search for raid candidates who have a specific class and have raided with the guild recently. Returns a list of eligible Discord accounts with their character names, last raid date, and online status. Use this when someone asks to find or recruit a player for a raid.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Raid Helper event ID to recruit for (use from the event list)' },
+        class_name: { type: 'string', description: 'WoW class to search for (warrior, druid, priest, shaman, mage, warlock, rogue, hunter)' },
+        role: { type: 'string', description: 'Role needed: tank, dps, or healer. Must be compatible with the class.' },
+        weeks_back: { type: 'number', description: 'How many weeks back to look for raid history. Default is 12 (3 months).' },
+        online_only: { type: 'boolean', description: 'If true, only return players currently online on Discord. Default false.' }
+      },
+      required: ['event_id', 'class_name', 'role']
+    }
+  },
+  {
+    name: 'send_outreach',
+    description: 'Send Maya outreach DMs to a list of candidate Discord IDs for a specific event. Only call this AFTER getting explicit confirmation from the user. Returns count of messages sent.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Raid Helper event ID' },
+        discord_ids: { type: 'array', items: { type: 'string' }, description: 'Array of Discord user IDs to message' },
+        role: { type: 'string', description: 'Role needed (tank, dps, healer) — used to tell players what we need' },
+        last_spot: { type: 'boolean', description: 'Is this the last open spot? If true, players are told they can join immediately.' },
+        must_mc_razuvious: { type: 'boolean', description: 'For Priests only — must MC tank Razuvious. Default false.' }
+      },
+      required: ['event_id', 'discord_ids']
+    }
   }
 ];
 
@@ -1965,6 +1995,115 @@ async function fetchPlayerNotesTool(pool, identifier) {
 
 /**
  * Executes a management tool by name with the given input parameters.
+ /**
+ * find_candidates tool — queries candidates for a given class/event.
+ */
+async function findCandidatesTool(pool, input) {
+  const { event_id, class_name, role, weeks_back = 12, online_only = false } = input;
+  try {
+    const weeksNum = parseInt(weeks_back) || 12;
+    const cls = (class_name || '').toLowerCase().trim();
+    const cutoffDate = new Date(Date.now() - weeksNum * 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const res = await pool.query(
+      `SELECT DISTINCT p.discord_id,
+              p.character_name AS candidate_char_name,
+              p.character_class AS candidate_class,
+              du.username AS discord_username
+       FROM players p
+       JOIN discord_users du ON du.discord_id = p.discord_id
+       JOIN roster_overrides ro ON ro.discord_user_id = p.discord_id AND ro.in_raid = true AND ro.is_placeholder = false
+       WHERE LOWER(COALESCE(p.character_class, '')) = $1
+         AND ro.event_id IN (
+           SELECT rse.event_id FROM rewards_snapshot_events rse WHERE rse.event_date >= $2
+         )
+         AND p.discord_id NOT IN (
+           SELECT ro2.discord_user_id FROM roster_overrides ro2
+           WHERE ro2.event_id = $3 AND ro2.in_raid = true AND ro2.is_placeholder = false
+         )
+       GROUP BY p.discord_id, p.character_name, p.character_class, du.username
+       ORDER BY p.character_name LIMIT 50`,
+      [cls, cutoffDate, event_id]
+    );
+
+    if (res.rows.length === 0) {
+      return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks and are not already signed up.`;
+    }
+    const lines = res.rows.map(r =>
+      `- ${r.discord_username || r.discord_id}: ${r.candidate_char_name} (${r.candidate_class}) [id:${r.discord_id}]`
+    );
+    const ids = res.rows.map(r => r.discord_id);
+    return `Found ${res.rows.length} ${cls} candidates (${weeksNum}w lookback)${online_only ? ' — filter to online-only before sending' : ''}:\n${lines.join('\n')}\n\ndiscord_ids_for_outreach: ${ids.join(',')}`;
+  } catch (err) {
+    return `Error finding candidates: ${err.message}`;
+  }
+}
+
+/**
+ * send_outreach tool — dispatches outreach DMs via the internal API.
+ * Must only be called after explicit user confirmation.
+ */
+async function sendOutreachTool(pool, input) {
+  const { event_id, discord_ids, role, last_spot = false, must_mc_razuvious = false } = input;
+  if (!Array.isArray(discord_ids) || discord_ids.length === 0) {
+    return 'No discord_ids provided.';
+  }
+  try {
+    const baseUrl = process.env.APP_BASE_URL || 'https://www.1principles.net';
+    const internalSecret = process.env.INTERNAL_API_SECRET || '';
+    const metaRes = await pool.query(
+      `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.character_class
+       FROM players p WHERE p.discord_id = ANY($1::text[]) ORDER BY p.discord_id, p.character_name`,
+      [discord_ids]
+    );
+    const candidatesPayload = metaRes.rows.map(r => ({
+      discordId: r.discord_id, charName: r.character_name, className: r.character_class,
+      candidateChars: [{ name: r.character_name, class: r.character_class }]
+    }));
+
+    const body = JSON.stringify({
+      discordIds: discord_ids,
+      candidates: candidatesPayload.length > 0 ? candidatesPayload : undefined,
+      searchRole: role ? [role] : undefined,
+      lastSpot: last_spot || undefined,
+      mustMcRazuvious: must_mc_razuvious || undefined
+    });
+
+    const https = require('https');
+    const http = require('http');
+    const url = new URL(`${baseUrl}/api/roster/${event_id}/outreach`);
+    const mod = url.protocol === 'https:' ? https : http;
+
+    const result = await new Promise((resolve, reject) => {
+      const req = mod.request({
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname, method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'x-internal-tool': internalSecret
+        }
+      }, res => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({ success: false, message: d }); } });
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    if (result.success) {
+      return `Outreach dispatched: ${result.sent || discord_ids.length} sent, ${result.skipped || 0} skipped, ${result.failed || 0} failed.\nTrack progress: ${baseUrl}/event/${event_id}/candidates`;
+    }
+    return `Outreach failed: ${result.message || 'Unknown error'}`;
+  } catch (err) {
+    return `Error sending outreach: ${err.message}`;
+  }
+}
+
+/**
  * Catches all errors and returns a friendly error string instead of throwing.
  * Results are cached via the individual fetcher's caching mechanism.
  *
@@ -2022,6 +2161,12 @@ async function executeManagementTool(name, input, pool, options = {}) {
 
       case 'get_player_loot_history':
         return (await fetchPlayerLootHistory(pool, input.player_name)) || 'No player loot history data available.';
+
+      case 'find_candidates':
+        return await findCandidatesTool(pool, input);
+
+      case 'send_outreach':
+        return await sendOutreachTool(pool, input);
 
       default:
         return `Unknown tool: ${name}`;
