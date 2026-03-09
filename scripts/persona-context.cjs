@@ -652,7 +652,7 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
         ? pool.query(
             `SELECT player_name, trigger_type, candidate_char_name, candidate_class,
                     candidate_last_raid_name, candidate_last_raid_date, tonight_raid_title,
-                    candidate_chars, event_id
+                    candidate_chars, event_id, search_role, last_spot, must_mc_razuvious
              FROM bot_conversations WHERE id = $1`,
             [conversationId]
           )
@@ -1093,6 +1093,43 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
           vars.set('mention_last_raid', 'no');
           vars.set('last_raid_blurb', '');  // empty — Claude omits it naturally
         }
+      }
+
+      // search_role_blurb: "we need a healer" / "we need a tank" etc. — class-aware
+      {
+        const classicHealerOnly = ['druid', 'priest', 'shaman', 'paladin'];
+        const classicDpsOnly = ['mage', 'warlock', 'rogue', 'hunter'];
+        const cls = (convRowForOutreach.candidate_class || '').toLowerCase().trim();
+        const searchRoles = convRowForOutreach.search_role
+          ? convRowForOutreach.search_role.split(',').map(r => r.trim().toLowerCase())
+          : [];
+        let roleLabel = '';
+        if (classicHealerOnly.includes(cls)) {
+          roleLabel = 'a healer';
+        } else if (classicDpsOnly.includes(cls)) {
+          roleLabel = cls === 'warlock' ? 'a warlock (for DPS utility)' : (cls === 'hunter' ? 'a hunter to pull' : 'a DPS');
+        } else if (cls === 'warrior') {
+          const wantedRoles = searchRoles.filter(r => ['tank', 'dps'].includes(r));
+          if (wantedRoles.length === 1) roleLabel = wantedRoles[0] === 'tank' ? 'a tank' : 'a DPS warrior';
+          else roleLabel = 'a warrior (tank or DPS)';
+        } else if (searchRoles.length > 0) {
+          roleLabel = `a ${searchRoles[0]}`;
+        }
+        vars.set('search_role_blurb', roleLabel ? `We need ${roleLabel}.` : '');
+      }
+
+      // last_spot_blurb: if this is the last open spot
+      if (convRowForOutreach.last_spot) {
+        vars.set('last_spot_blurb', 'This is the last open spot — once you sign up we can summon you immediately and start the raid.');
+      } else {
+        vars.set('last_spot_blurb', '');
+      }
+
+      // must_mc_razuvious_blurb
+      if (convRowForOutreach.must_mc_razuvious) {
+        vars.set('must_mc_razuvious_blurb', 'We specifically need a Priest to Mind Control tank Razuvious — this is critical for the fight.');
+      } else {
+        vars.set('must_mc_razuvious_blurb', '');
       }
 
       // raid_start_time: fetch from raid_helper_events_cache for this event

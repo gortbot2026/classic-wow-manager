@@ -70,6 +70,28 @@ async function pollPresence() {
     } catch (_) {}
 }
 
+function toggleRoleChip(el) {
+    el.classList.toggle('active');
+    // Show/hide Razuvious checkbox only when Priest class is checked AND we might recruit them
+    updateRazuviousVisibility();
+}
+
+function updateToggleLabel(input) {
+    const label = document.getElementById(input.id.replace('-toggle', '-label'));
+    if (label) label.classList.toggle('active', input.checked);
+}
+
+function updateRazuviousVisibility() {
+    const priestSelected = Array.from(document.querySelectorAll('#class-picker input:checked'))
+        .some(cb => cb.value === 'priest');
+    const row = document.getElementById('mc-razuvious-row');
+    if (row) row.style.display = priestSelected ? 'flex' : 'none';
+    if (!priestSelected) {
+        const toggle = document.getElementById('mc-razuvious-toggle');
+        if (toggle) toggle.checked = false;
+    }
+}
+
 function togglePresenceChip(el) {
     el.classList.toggle('active');
     applyPresenceFilter();
@@ -88,6 +110,11 @@ function applyPresenceFilter() {
 
 // On load: set back link + fetch and show event title
 document.addEventListener('DOMContentLoaded', async () => {
+    // Wire up class picker changes to Razuvious visibility
+    document.querySelectorAll('#class-picker input').forEach(cb => {
+        cb.addEventListener('change', updateRazuviousVisibility);
+    });
+
     const backLink = document.getElementById('back-link');
     if (eventId && backLink) backLink.href = `/event/${eventId}/roster`;
 
@@ -439,12 +466,20 @@ async function executeOutreach() {
             .map(id => candidateMetaCache.get(id))
             .filter(Boolean);
 
+        // Collect search context options
+        const searchRole = Array.from(document.querySelectorAll('.role-chip.active')).map(c => c.dataset.role);
+        const lastSpot = document.getElementById('last-spot-toggle')?.checked || false;
+        const mustMcRazuvious = document.getElementById('mc-razuvious-toggle')?.checked || false;
+
         const resp = await fetch(`/api/roster/${eventId}/outreach`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 discordIds: Array.from(selectedIds),
-                candidates: candidatesPayload.length > 0 ? candidatesPayload : undefined
+                candidates: candidatesPayload.length > 0 ? candidatesPayload : undefined,
+                searchRole: searchRole.length > 0 ? searchRole : undefined,
+                lastSpot: lastSpot || undefined,
+                mustMcRazuvious: mustMcRazuvious || undefined
             })
         });
         const data = await resp.json();

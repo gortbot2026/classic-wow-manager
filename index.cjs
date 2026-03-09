@@ -1135,6 +1135,9 @@ async function initializeMayaTables() {
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS tonight_raid_title TEXT`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS candidate_chars JSONB`);
     await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS status_flag TEXT DEFAULT NULL`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS search_role TEXT`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS last_spot BOOLEAN DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE bot_conversations ADD COLUMN IF NOT EXISTS must_mc_razuvious BOOLEAN DEFAULT FALSE`);
 
     // bot_messages — Individual messages in a conversation
     await pool.query(`
@@ -15737,12 +15740,19 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
 app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), async (req, res) => {
     try {
         const { eventId } = req.params;
-        const { discordIds, candidates } = req.body;
+        const { discordIds, candidates, searchRole, lastSpot, mustMcRazuvious } = req.body;
 
         // Validate discordIds
         if (!Array.isArray(discordIds) || discordIds.length === 0 || !discordIds.every(id => typeof id === 'string' && id.length > 0)) {
             return res.status(400).json({ success: false, message: 'discordIds must be a non-empty array of strings' });
         }
+
+        // Normalize new search context fields
+        const searchRoleStr = Array.isArray(searchRole) && searchRole.length > 0
+            ? searchRole.map(r => r.toLowerCase()).join(',')
+            : null;
+        const lastSpotBool = lastSpot === true || lastSpot === 'true';
+        const mustMcBool = mustMcRazuvious === true || mustMcRazuvious === 'true';
 
         // Build candidate metadata lookup from the optional candidates array
         const candidateMetaMap = new Map();
@@ -15853,11 +15863,11 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                     `INSERT INTO bot_conversations
                      (id, discord_id, player_name, status, started_by, template_id, event_id, trigger_type,
                       candidate_char_name, candidate_class, candidate_last_raid_name, candidate_last_raid_date,
-                      tonight_raid_title, candidate_chars)
-                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                      tonight_raid_title, candidate_chars, search_role, last_spot, must_mc_razuvious)
+                     VALUES ($1, $2, $3, 'active', 'outreach', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
                     [convId, discordId, playerName, templateId, eventId, 'candidate_outreach',
                      candidateCharName, candidateClass, candidateLastRaidName, candidateLastRaidDate,
-                     tonightRaidTitle, candidateCharsJson]
+                     tonightRaidTitle, candidateCharsJson, searchRoleStr, lastSpotBool, mustMcBool]
                 );
 
                 // Generate opening message via Claude directly (avoids getPersona scope issue in generateOpeningMessage)
@@ -15869,10 +15879,19 @@ app.post('/api/roster/:eventId/outreach', requireRosterManager, express.json(), 
                         const tplVars = await resolveTemplateVariables(pool, discordId, null, convId);
                         const resolvedInstruction = applyTemplateVariables(template.opening_message, tplVars);
                         const llmModel = template.model_override || 'claude-haiku-4-5';
+
+                        // Build extra context from search options (appended to system prompt for opening generation)
+                        const extraCtxLines = [];
+                        const roleBlurb = tplVars.get('search_role_blurb') || '';
+                        if (roleBlurb) extraCtxLines.push(`ROLE NEEDED: ${roleBlurb} Always say this explicitly in the message.`);
+                        if (lastSpotBool) extraCtxLines.push('LAST SPOT: This is the last open spot. Mention that once they sign up we can summon immediately and start the raid.');
+                        if (mustMcBool) extraCtxLines.push('RAZUVIOUS MC: We need this Priest specifically to Mind Control tank Razuvious. Mention this in the message.');
+                        const extraCtx = extraCtxLines.length > 0 ? '\n\n=== Additional Context ===\n' + extraCtxLines.join('\n') : '';
+
                         const systemPrompt = 'You are Maya, a friendly Discord bot for a Classic WoW GDKP guild called 1Principles. ' +
                             'Generate ONLY the opening DM message — nothing else, no preamble, no quotes. ' +
                             'Short, casual, direct. No em-dashes or en-dashes.\n\n' +
-                            '=== Instructions ===\n' + resolvedInstruction;
+                            '=== Instructions ===\n' + resolvedInstruction + extraCtx;
                         const rawMsg = await generateLlmResponse(systemPrompt, [{ role: 'user', content: 'Write the message.' }], llmModel);
                         if (rawMsg && rawMsg.trim().length > 5) {
                             message = rawMsg.trim().replace(/^["']|["']$/g, '');

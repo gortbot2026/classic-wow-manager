@@ -40,6 +40,35 @@
             border: 1px solid #374151; border-radius: 6px; font-size: 14px;
         }
 
+        /* Role filter chips */
+        .role-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .role-chip {
+            display: flex; align-items: center; gap: 6px;
+            background: #111827; border: 1px solid #374151;
+            padding: 5px 12px; border-radius: 20px;
+            font-size: 13px; color: #9ca3af; cursor: pointer; user-select: none;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+        .role-chip:hover { border-color: #4b5563; color: #d1d5db; }
+        .role-chip.active { color: #f9fafb; background: #1f2937; border-color: #6366f1; }
+
+        /* Toggle switch */
+        .toggle-row { display: flex; align-items: center; gap: 10px; }
+        .toggle-switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute; inset: 0; background: #374151; border-radius: 20px;
+            cursor: pointer; transition: background 0.2s;
+        }
+        .toggle-slider:before {
+            content: ''; position: absolute; width: 14px; height: 14px;
+            left: 3px; top: 3px; background: #9ca3af; border-radius: 50%; transition: 0.2s;
+        }
+        .toggle-switch input:checked + .toggle-slider { background: #6366f1; }
+        .toggle-switch input:checked + .toggle-slider:before { transform: translateX(16px); background: white; }
+        .toggle-label { font-size: 13px; color: #9ca3af; cursor: pointer; }
+        .toggle-label.active { color: #e5e7eb; }
+
         /* Presence filter chips */
         .pf-chips { display: flex; flex-wrap: wrap; gap: 6px; }
         .pf-chip {
@@ -262,6 +291,33 @@
                     <option value="Temple of Ahn'Qiraj">Temple of Ahn'Qiraj</option>
                     <option value="none">No save filter</option>
                 </select>
+            </div>
+            <div class="cand-filter-group">
+                <label class="group-label">Role Needed</label>
+                <div class="role-chips" id="role-filter">
+                    <div class="role-chip" data-role="tank"   onclick="toggleRoleChip(this)">🛡️ Tank</div>
+                    <div class="role-chip" data-role="dps"    onclick="toggleRoleChip(this)">⚔️ DPS</div>
+                    <div class="role-chip" data-role="healer" onclick="toggleRoleChip(this)">💚 Healer</div>
+                </div>
+            </div>
+            <div class="cand-filter-group">
+                <label class="group-label">Options</label>
+                <div style="display:flex;flex-direction:column;gap:10px;padding-top:2px;">
+                    <div class="toggle-row">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="last-spot-toggle" onchange="updateToggleLabel(this)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label" id="last-spot-label">Last spot</span>
+                    </div>
+                    <div class="toggle-row" id="mc-razuvious-row" style="display:none;">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="mc-razuvious-toggle" onchange="updateToggleLabel(this)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label" id="mc-razuvious-label">Must MC Razuvious</span>
+                    </div>
+                </div>
             </div>
             <div class="cand-filter-group">
                 <label class="group-label">Discord Status</label>

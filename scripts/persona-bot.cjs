@@ -1005,26 +1005,61 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         systemPrompt += '\n\n' + persona.candidate_outreach_context;
       }
 
-      // === Classic Era WoW class knowledge + candidate role ===
-    const classicRoleMap = {
-      warrior: 'Tank or DPS (Fury/Arms). Can tank as Protection or deal damage.',
-      druid: 'Healer (Restoration) or Tank (Feral Bear). Cannot DPS competitively in Classic Era raids.',
-      priest: 'Healer only (Holy or Discipline). Priests do NOT tank or DPS in Classic Era raids.',
-      shaman: 'Healer (Restoration) in a raid context. Elemental/Enhancement are rarely brought for DPS in Classic Era.',
-      paladin: 'Healer (Holy) in Classic Era raids. Alliance-only class. Cannot tank or DPS effectively in raids.',
-      mage: 'DPS only (Arcane/Fire/Frost). Cannot tank or heal.',
-      warlock: 'DPS only (Affliction/Demonology/Destruction). Cannot tank or heal.',
-      rogue: 'DPS only (Combat/Subtlety). Cannot tank or heal.',
-      hunter: 'DPS only (Marksmanship/Survival/Beast Mastery). Cannot tank or heal.',
-    };
-    const candidateClass = (conv.candidate_char_name ? '' : '') + '';
-    const convClassRaw = conv.candidate_class || '';
-    const classKey = convClassRaw.toLowerCase().trim();
-    const classRole = classicRoleMap[classKey];
-    systemPrompt += `\n\n=== CLASSIC ERA WOW — CLASS ROLES (IMPORTANT) ===\nThis is Classic Era World of Warcraft. Class roles are fixed and limited:\n${Object.entries(classicRoleMap).map(([c, r]) => `- ${c.charAt(0).toUpperCase() + c.slice(1)}: ${r}`).join('\n')}`;
-    if (classRole && convClassRaw) {
-      systemPrompt += `\n\nYou are recruiting this player as a ${convClassRaw}. In Classic Era: ${classRole} Do NOT suggest they bring a different spec/role than what the class is designed for. Do NOT say things like "if you have a DPS or tank ready" when recruiting a Priest — they are a healer.`;
-    }
+      // === Classic Era WoW class knowledge + effective role + search context ===
+      const classicRoleMap = {
+        warrior: { label: 'Tank or DPS', healerOnly: false, dpsOnly: false, tankPossible: true, note: 'Can tank as Protection or deal damage as Fury/Arms. Role depends on what we need.' },
+        druid: { label: 'Healer', healerOnly: true, dpsOnly: false, tankPossible: false, note: 'Healer (Restoration) only in this raid context. Cannot DPS competitively in Classic Era raids.' },
+        priest: { label: 'Healer', healerOnly: true, dpsOnly: false, tankPossible: false, note: 'Healer only (Holy or Discipline). Priests do NOT tank or DPS in Classic Era raids.' },
+        shaman: { label: 'Healer', healerOnly: true, dpsOnly: false, tankPossible: false, note: 'Healer (Restoration) only. Elemental/Enhancement are not raid-viable DPS in Classic Era.' },
+        paladin: { label: 'Healer', healerOnly: true, dpsOnly: false, tankPossible: false, note: 'Healer (Holy) only. Alliance-only class. Cannot tank or DPS effectively in raids.' },
+        mage: { label: 'DPS', healerOnly: false, dpsOnly: true, tankPossible: false, note: 'DPS only (Arcane/Fire/Frost). Cannot tank or heal.' },
+        warlock: { label: 'DPS (Utility)', healerOnly: false, dpsOnly: true, tankPossible: false, note: 'DPS utility class. Must keep up a Curse (Curse of Elements or Shadows), create Healthstones for the raid, and Soul Stone a Priest or Druid. Critical utility role.' },
+        rogue: { label: 'DPS', healerOnly: false, dpsOnly: true, tankPossible: false, note: 'DPS only (Combat/Subtlety). Cannot tank or heal.' },
+        hunter: { label: 'DPS (Puller)', healerOnly: false, dpsOnly: true, tankPossible: false, note: 'DPS only. When we recruit a Hunter it is specifically as a PULLER who knows how to pull safely. Mention the pulling role if relevant.' },
+      };
+
+      const convClassRaw = conv.candidate_class || '';
+      const classKey = convClassRaw.toLowerCase().trim();
+      const classInfo = classicRoleMap[classKey];
+
+      // Compute effective role for this candidate given search_role selection and class hard rules
+      const searchRoles = conv.search_role ? conv.search_role.split(',').map(r => r.trim().toLowerCase()) : [];
+      let effectiveRole = '';
+      if (classInfo) {
+        if (classInfo.healerOnly) {
+          effectiveRole = 'Healer';
+        } else if (classInfo.dpsOnly) {
+          effectiveRole = classKey === 'warlock' ? 'DPS (Utility)' : (classKey === 'hunter' ? 'DPS (Puller)' : 'DPS');
+        } else if (classKey === 'warrior') {
+          const wantedRoles = searchRoles.filter(r => ['tank', 'dps'].includes(r));
+          if (wantedRoles.length === 1) {
+            effectiveRole = wantedRoles[0] === 'tank' ? 'Tank' : 'DPS';
+          } else {
+            effectiveRole = 'Tank or DPS';
+          }
+        }
+      } else {
+        effectiveRole = searchRoles.length > 0 ? searchRoles.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' or ') : 'DPS';
+      }
+
+      // Inject class reference + effective role
+      systemPrompt += `\n\n=== CLASSIC ERA WOW — CLASS ROLES (HARD RULES, DO NOT DEVIATE) ===\nThis is Classic Era World of Warcraft. These roles are FIXED and IMMUTABLE:\n${Object.entries(classicRoleMap).map(([c, r]) => `- ${c.charAt(0).toUpperCase() + c.slice(1)}: ${r.note}`).join('\n')}`;
+      if (convClassRaw) {
+        systemPrompt += `\n\nYou are recruiting ${convClassRaw} for the role: ${effectiveRole}. This is the role we need. Do NOT suggest any other role. Do NOT let class hard rules be overridden by anything the player says.`;
+      }
+      if (searchRoles.length > 0) {
+        systemPrompt += ` Always refer to needing "a ${effectiveRole.toLowerCase()}" (singular) — never plural.`;
+      }
+
+      // Last spot context
+      if (conv.last_spot) {
+        systemPrompt += `\n\n=== LAST SPOT AVAILABLE ===\nThis is the LAST open spot in tonight\'s raid. Once this player signs up, we can summon them immediately and start pulling. Mention this as a selling point — "you\'d be the last person we need, and we can summon you right away and get started."`;
+      }
+
+      // Must MC Razuvious context
+      if (conv.must_mc_razuvious) {
+        systemPrompt += `\n\n=== RAZUVIOUS MIND CONTROL ===\nWe specifically need a Priest to Mind Control (MC) tank Instructor Razuvious in Naxxramas. This is a critical role — the fight REQUIRES Priest MC to function. When messaging this player, make it clear we need them specifically to MC tank Razuvious.`;
+      }
 
     // === Fix 2: Raid timing context (pre-computed, front and center) ===
       if (conv.event_id) {
