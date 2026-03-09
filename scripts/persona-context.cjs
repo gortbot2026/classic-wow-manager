@@ -1054,6 +1054,12 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
       try {
         let chars = convRowForOutreach.candidate_chars;
         if (typeof chars === 'string') chars = JSON.parse(chars);
+
+        // Fallback: build from single-char fields if candidate_chars is missing
+        if ((!Array.isArray(chars) || chars.length === 0) && convRowForOutreach.candidate_char_name) {
+          chars = [{ name: convRowForOutreach.candidate_char_name, class: convRowForOutreach.candidate_class || 'Unknown' }];
+        }
+
         if (Array.isArray(chars) && chars.length > 0) {
           // Group by class
           const byClass = {};
