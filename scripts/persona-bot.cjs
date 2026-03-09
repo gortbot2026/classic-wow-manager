@@ -504,7 +504,7 @@ function createPersonaBot(options = {}) {
 
       const classRoleRef = `Classic Era WoW class roles (HARD RULES):\n- Warrior: Tank or DPS\n- Druid/Priest/Shaman/Paladin: Healer only\n- Mage/Rogue/Hunter: DPS only\n- Warlock: DPS + utility (curses, healthstones, soul stone)\n- Hunter: DPS + serves as raid puller`;
 
-      const systemPrompt = `${soulText}\n\n--- MANAGEMENT DM ---\nYou are in a private DM with a guild management member. You have full access to all guild data and can execute actions. Be direct and efficient.\n\nCurrent date/time: ${currentDateTime}\n${rosterStatusLine ? rosterStatusLine + '\n' : ''}\n--- RECENT RAID EVENTS ---\n${eventList}\n\n--- CLASS ROLES ---\n${classRoleRef}\n\n--- OUTREACH WORKFLOW ---\nIf asked to find/recruit players: 1) Use find_candidates. 2) Confirm details before sending (candidate count, class, role, raid name/time, weeks lookback, online-only, last-spot, Razuvious MC for Priests). 3) Only call send_outreach after explicit yes. 4) Report back with count and candidates page link.\n\nFormatting: No em-dashes or en-dashes. Natural conversational language. Concise.`;
+      const systemPrompt = `${soulText}\n\n--- MANAGEMENT DM ---\nYou are in a private DM with a guild management member. You have full access to all guild data and can execute actions. Be direct and efficient.\n\nCurrent date/time: ${currentDateTime}\n${rosterStatusLine ? rosterStatusLine + '\n' : ''}\n--- RECENT RAID EVENTS ---\n${eventList}\n\n--- CLASS ROLES ---\n${classRoleRef}\n\n--- OUTREACH WORKFLOW ---\nIf asked to find or recruit a player:\n1. EVENT: Check the event list. If one event is tonight, assume it -- confirm by naming it ("I am assuming you mean [title] at [time] CET -- is that right?") instead of asking which event.\n2. ROLE: Infer from class. Druid/Priest/Shaman = Healer. Mage/Rogue/Hunter/Warlock = DPS. Warrior = ask. Never ask role for single-role classes.\n3. PRIEST SPECIAL: Ask Razuvious MC instead of role.\n4. ONLINE-ONLY: Always frame with time context -- "The raid starts in ~X hours. Do you want online-only or is DMing offline players fine? If raid is 2+ hours away, offline players will likely see it in time."\n5. LAST SPOT: Ask if it is the last open spot.\n6. Combine all open questions into ONE message. Once you know event+class+role, call find_candidates. Show results. Confirm before calling send_outreach.\n7. After sending: report count + candidates page link.\n\nFormatting: No em-dashes or en-dashes. Natural conversational language. Concise.`;
 
       const model = persona?.model || 'claude-haiku-4-5';
       let messages = [...formattedMessages];
@@ -650,13 +650,29 @@ ${classRoleRef}
 --- INSTRUCTIONS ---
 Use the available tools to look up any data you need. The event list above shows recent raids. Identify the relevant event_id(s) from the list before calling tools. You can call multiple tools in a single turn. If the user asks about a player, use get_player_data. If no tools are needed (e.g. general chat), respond directly.
 
-CANDIDATE OUTREACH WORKFLOW: If the user asks you to find a player or recruit someone for a raid:
-1. Use find_candidates tool to search (default 12 weeks back).
-2. Before calling send_outreach, ASK the user to confirm: candidate count, class, role, raid name/time, time range used, online-only preference, last-spot status, and (for Priests) Razuvious MC requirement.
-3. Only call send_outreach after receiving explicit confirmation ("yes", "do it", "send", etc.).
-4. After sending, report back with count sent and link to the candidates page for monitoring.
-5. Ask if they want to be notified when someone accepts.
-If any clarification question is answered, proceed without asking again.
+CANDIDATE OUTREACH WORKFLOW: If the user asks you to find or recruit a player for a raid:
+
+STEP 1 - RESOLVE EVENT: Look at the event list above. If there is exactly one upcoming event today or tonight, assume that is the target -- do NOT ask "which event?". Instead, confirm by naming it: "I'm assuming you mean **[event title]** starting at **[start time] CET** -- is that right?"
+
+STEP 2 - INFER ROLE FROM CLASS (do NOT ask if obvious):
+- Druid, Priest, Shaman: Healer only -- skip the role question.
+- Mage, Rogue, Hunter, Warlock: DPS only -- skip the role question.
+- Warrior: ask Tank or DPS (only class where this is ambiguous).
+
+STEP 3 - CLASS-SPECIFIC QUESTIONS:
+- Priest only: ask "Do you need them to MC tank Razuvious?" instead of asking about role.
+
+STEP 4 - ONLINE-ONLY: Always include time context. Calculate how many hours until raid start using current time. Say something like: "The raid starts in about **X hours** -- do you want me to only reach out to people who are online on Discord right now, or is it fine to DM people who are offline too? If the raid is more than ~2 hours away, offline players will likely see it in time." If the raid is clearly more than 2 hours out, you can suggest offline is probably fine but still let them decide.
+
+STEP 5 - LAST SPOT: Ask "Is this the last open spot in the raid, or do you have more to fill?" -- frame it with urgency context if the raid is soon.
+
+COMBINE all open questions into a single message (not one per message). Only ask what you don't already know.
+
+STEP 6 - SEARCH: Once event + class + role are known, call find_candidates immediately. Show the candidate list and confirm: "I found X [class] candidates. Want me to send them all a DM, or should I filter further?" Only call send_outreach after explicit confirmation ("yes", "do it", "send", etc.).
+
+STEP 7 - REPORT: After sending, report count + candidates page link. Ask if they want to be pinged when someone accepts.
+
+If any question has already been answered, skip it.
 
 FORMATTING: Never use em-dashes or en-dashes. Use commas, hyphens, or semicolons instead. Format for Discord: use **bold**, *italic*, and bullet lists. Keep responses concise and direct.`;
 
