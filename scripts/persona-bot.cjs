@@ -691,6 +691,7 @@ RULES:
 - TOP N FILTERING: The discord_ids_for_outreach list is already sorted by most recently active first. If the user asks for "top 5" or "most recently active 10" etc., you CAN do it -- just take the first N ids from the list and pass only those to send_outreach. Say "I'll reach out to the 5 most recently active [class]s." Do NOT say you lack this ability.
 - SENDING AFTER SUMMARY: When the user confirms ("yes", "do it", "send"), call find_candidates AGAIN for EACH class separately to get fresh discord_ids, then call send_outreach ONCE PER CLASS with the correct class_name. NEVER batch multiple classes into one send_outreach call -- each call must have its own class_name so the right character is selected per player. Do not ask for confirmation again if you already confirmed.
 - Never say "I don't have the IDs" -- you can always get them by calling find_candidates again.
+- CRITICAL: Discord IDs are 17-19 digit numbers (e.g. 492023474437619732). In the find_candidates result, use ONLY the IDs from the "=== DISCORD_IDS ===" section at the bottom. NEVER pass character names (like "Neverlies", "Hixia") as discord_ids -- those are character names, not IDs.
 
 STEP 7 - REPORT: After send_outreach returns, IMMEDIATELY post in the channel: "Sent! Reaching out to **X players** now. Track responses here: https://www.1principles.net/event/[event_id]/candidates" Then ask: "Want me to ping you here when someone accepts?"
 - ALWAYS include the candidates page link in your confirmation message.

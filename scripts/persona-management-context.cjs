@@ -2167,7 +2167,7 @@ async function findCandidatesTool(pool, input) {
       ? `Excluded: ${exclusionParts.join(' + ')} (not included in the results above).`
       : '';
 
-    return `Found ${ids.length} players who have a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nIMPORTANT: "last active" = their most recent raid attendance in ANY character, not necessarily as their ${cls}. They may have attended that raid as a different class.\n${exclusionLine}\n\nTop ${Math.min(30, ids.length)} most recently active:\n${lines.join('\n')}${overflowNote}\n\ndiscord_ids_for_outreach (all ${ids.length}): ${ids.join(',')}`;
+    return `Found ${ids.length} players who have a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nIMPORTANT: "last active" = their most recent raid attendance in ANY character, not necessarily as their ${cls}.\n${exclusionLine}\n\nTop ${Math.min(30, ids.length)} most recently active:\n${lines.join('\n')}${overflowNote}\n\n=== DISCORD_IDS (${ids.length} total -- use these for send_outreach, NOT the character names above) ===\n${ids.join(',')}`;
   } catch (err) {
     console.error('[persona-mgmt-ctx] findCandidatesTool error:', err.message, err.stack);
     return `Error finding candidates: ${err.message}`;
@@ -2185,6 +2185,17 @@ async function sendOutreachTool(pool, input) {
   }
   if (!class_name) {
     return 'class_name is required for send_outreach — it ensures the correct character is picked for each player.';
+  }
+
+  // Validate: Discord snowflake IDs are 17-19 digit numbers.
+  // Reject any that look like character names (non-numeric strings).
+  const validIds = discord_ids.filter(id => /^\d{15,20}$/.test(String(id).trim()));
+  const invalidIds = discord_ids.filter(id => !/^\d{15,20}$/.test(String(id).trim()));
+  if (invalidIds.length > 0) {
+    return `ERROR: You passed character names or invalid values as discord_ids: [${invalidIds.slice(0,5).join(', ')}]. Discord IDs are 17-19 digit numbers (e.g. 492023474437619732). Use the IDs from the "DISCORD_IDS:" line in the find_candidates result, NOT the character names from the candidate list.`;
+  }
+  if (validIds.length === 0) {
+    return 'ERROR: No valid Discord snowflake IDs provided.';
   }
   try {
     const baseUrl = process.env.APP_BASE_URL || 'https://www.1principles.net';
@@ -2212,7 +2223,7 @@ async function sendOutreachTool(pool, input) {
        ) lr ON TRUE
        WHERE p.discord_id = ANY($1::text[]) AND ${clsSendFilter}
        ORDER BY p.discord_id, p.character_name`,
-      [discord_ids]
+      [validIds]
     );
 
     // Group all chars of the searched class per discord_id
@@ -2226,7 +2237,7 @@ async function sendOutreachTool(pool, input) {
 
     // Fall back for any discord_ids not found with the class filter
     const foundIds = new Set(byDiscordId.keys());
-    const missingIds = discord_ids.filter(id => !foundIds.has(id));
+    const missingIds = validIds.filter(id => !foundIds.has(id));
     if (missingIds.length > 0) {
       const fallback = await pool.query(
         `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.class AS character_class
@@ -2248,7 +2259,7 @@ async function sendOutreachTool(pool, input) {
     }));
 
     const body = JSON.stringify({
-      discordIds: discord_ids,
+      discordIds: validIds,
       candidates: candidatesPayload.length > 0 ? candidatesPayload : undefined,
       searchRole: role ? [role] : undefined,
       lastSpot: last_spot || undefined,
