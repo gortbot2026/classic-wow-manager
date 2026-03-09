@@ -1997,44 +1997,77 @@ async function fetchPlayerNotesTool(pool, identifier) {
  * Executes a management tool by name with the given input parameters.
  /**
  * find_candidates tool — queries candidates for a given class/event.
+ * Uses the same query pattern as GET /api/roster/:eventId/candidates.
  */
 async function findCandidatesTool(pool, input) {
-  const { event_id, class_name, role, weeks_back = 12, online_only = false } = input;
+  const { event_id, class_name, role, weeks_back = 12 } = input;
   try {
     const weeksNum = parseInt(weeks_back) || 12;
     const cls = (class_name || '').toLowerCase().trim();
-    const cutoffDate = new Date(Date.now() - weeksNum * 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const intervalSql = weeksNum >= 52 ? '1 year'
+      : weeksNum >= 12 ? `${Math.round(weeksNum / 4)} months`
+      : `${weeksNum} weeks`;
 
-    const res = await pool.query(
-      `SELECT DISTINCT p.discord_id,
-              p.character_name AS candidate_char_name,
-              p.character_class AS candidate_class,
-              du.username AS discord_username
-       FROM players p
-       JOIN discord_users du ON du.discord_id = p.discord_id
-       JOIN roster_overrides ro ON ro.discord_user_id = p.discord_id AND ro.in_raid = true AND ro.is_placeholder = false
-       WHERE LOWER(COALESCE(p.character_class, '')) = $1
-         AND ro.event_id IN (
-           SELECT rse.event_id FROM rewards_snapshot_events rse WHERE rse.event_date >= $2
-         )
-         AND p.discord_id NOT IN (
-           SELECT ro2.discord_user_id FROM roster_overrides ro2
-           WHERE ro2.event_id = $3 AND ro2.in_raid = true AND ro2.is_placeholder = false
-         )
-       GROUP BY p.discord_id, p.character_name, p.character_class, du.username
-       ORDER BY p.character_name LIMIT 50`,
-      [cls, cutoffDate, event_id]
-    );
+    const res = await pool.query(`
+      WITH recent_raiders AS (
+        SELECT DISTINCT ro.discord_user_id
+        FROM roster_overrides ro
+        JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+        WHERE ro.in_raid = true
+          AND ro.is_placeholder = false
+          AND rse.published_at >= NOW() - INTERVAL '${intervalSql}'
+      ),
+      last_raid_per_account AS (
+        SELECT DISTINCT ON (ro.discord_user_id)
+          ro.discord_user_id,
+          ro.assigned_char_name  AS last_char_name,
+          ro.assigned_char_class AS last_char_class,
+          rse.published_at       AS last_raid_date,
+          COALESCE(rhc.event_data->>'title', '') AS last_raid_name
+        FROM roster_overrides ro
+        JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+        LEFT JOIN raid_helper_events_cache rhc ON rhc.event_id = rse.event_id
+        WHERE ro.in_raid = true
+          AND ro.is_placeholder = false
+          AND rse.published_at IS NOT NULL
+        ORDER BY ro.discord_user_id, rse.published_at DESC NULLS LAST
+      ),
+      already_in_event AS (
+        SELECT DISTINCT discord_user_id FROM roster_overrides WHERE event_id = $1
+      )
+      SELECT
+        p.discord_id,
+        du.username           AS discord_username,
+        p.character_name      AS candidate_char_name,
+        p.class               AS candidate_class,
+        lr.last_char_name,
+        lr.last_raid_date,
+        lr.last_raid_name,
+        (ae.discord_user_id IS NOT NULL) AS already_in_event
+      FROM players p
+      LEFT JOIN discord_users du         ON du.discord_id = p.discord_id
+      JOIN recent_raiders rr             ON rr.discord_user_id = p.discord_id
+      JOIN last_raid_per_account lr      ON lr.discord_user_id = p.discord_id
+      LEFT JOIN already_in_event ae      ON ae.discord_user_id = p.discord_id
+      WHERE LOWER(p.class) = $2
+        AND ae.discord_user_id IS NULL
+      ORDER BY lr.last_raid_date DESC, COALESCE(du.username, p.discord_id), p.character_name
+      LIMIT 40
+    `, [event_id, cls]);
 
     if (res.rows.length === 0) {
-      return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks and are not already signed up.`;
+      return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks and are not already in the event roster.`;
     }
-    const lines = res.rows.map(r =>
-      `- ${r.discord_username || r.discord_id}: ${r.candidate_char_name} (${r.candidate_class}) [id:${r.discord_id}]`
-    );
-    const ids = res.rows.map(r => r.discord_id);
-    return `Found ${res.rows.length} ${cls} candidates (${weeksNum}w lookback)${online_only ? ' — filter to online-only before sending' : ''}:\n${lines.join('\n')}\n\ndiscord_ids_for_outreach: ${ids.join(',')}`;
+    const lines = res.rows.map(r => {
+      const lastRaid = r.last_raid_date
+        ? `last raid: ${r.last_raid_name || 'unknown'} (${new Date(r.last_raid_date).toLocaleDateString('en-GB')})`
+        : 'no recent raid';
+      return `- ${r.discord_username || r.discord_id}: ${r.candidate_char_name} (${r.candidate_class}) -- ${lastRaid} [id:${r.discord_id}]`;
+    });
+    const ids = [...new Set(res.rows.map(r => r.discord_id))];
+    return `Found ${ids.length} ${cls} candidates (${weeksNum}w lookback):\n${lines.join('\n')}\n\ndiscord_ids_for_outreach: ${ids.join(',')}`;
   } catch (err) {
+    console.error('[persona-mgmt-ctx] findCandidatesTool error:', err.message, err.stack);
     return `Error finding candidates: ${err.message}`;
   }
 }
@@ -2052,7 +2085,7 @@ async function sendOutreachTool(pool, input) {
     const baseUrl = process.env.APP_BASE_URL || 'https://www.1principles.net';
     const internalSecret = process.env.INTERNAL_API_SECRET || '';
     const metaRes = await pool.query(
-      `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.character_class
+      `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.class AS character_class
        FROM players p WHERE p.discord_id = ANY($1::text[]) ORDER BY p.discord_id, p.character_name`,
       [discord_ids]
     );
