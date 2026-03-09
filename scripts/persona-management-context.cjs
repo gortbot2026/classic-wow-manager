@@ -2010,6 +2010,11 @@ async function findCandidatesTool(pool, input) {
     if (cls === 'paladin') {
       return '1Principles is a Horde guild. Paladins do not exist. Do not search for or mention Paladins.';
     }
+
+    // Normalize: "Tank" class in DB = Warriors who are tanks. Include them in warrior searches.
+    const clsFilter = cls === 'warrior'
+      ? `LOWER(p.class) IN ('warrior', 'tank')`
+      : `LOWER(p.class) = '${cls.replace(/'/g, "''")}'`;
     const intervalSql = weeksNum >= 52 ? '1 year'
       : weeksNum >= 12 ? `${Math.round(weeksNum / 4)} months`
       : `${weeksNum} weeks`;
@@ -2096,7 +2101,7 @@ async function findCandidatesTool(pool, input) {
         SELECT DISTINCT p.discord_id
         FROM players p
         JOIN recent_raiders rr ON rr.discord_user_id = p.discord_id
-        WHERE LOWER(p.class) = $2
+        WHERE ${clsFilter}
       )
       SELECT
         p.discord_id,
@@ -2114,9 +2119,9 @@ async function findCandidatesTool(pool, input) {
       JOIN recent_raiders rr             ON rr.discord_user_id = p.discord_id
       JOIN last_raid_per_account lr      ON lr.discord_user_id = p.discord_id
       LEFT JOIN already_in_event ae      ON ae.discord_user_id = p.discord_id
-      WHERE LOWER(p.class) = $2
+      WHERE ${clsFilter}
       ORDER BY lr.last_raid_date DESC, COALESCE(du.username, p.discord_id), p.character_name
-    `, [event_id, cls]);
+    `, [event_id]);
 
     if (res.rows.length === 0) {
       return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks, are not already in the event roster${saveFilterDesc}.`;
@@ -2186,6 +2191,11 @@ async function sendOutreachTool(pool, input) {
     const internalSecret = process.env.INTERNAL_API_SECRET || '';
     const cls = class_name.toLowerCase().trim();
 
+    // Normalize class filter: "Tank" entries in DB are warriors
+    const clsSendFilter = cls === 'warrior'
+      ? `LOWER(p.class) IN ('warrior', 'tank')`
+      : `LOWER(p.class) = '${cls.replace(/'/g, "''")}'`;
+
     // Get all characters of the searched class per player + last raid info
     const metaRes = await pool.query(
       `SELECT p.discord_id, p.character_name, p.class AS character_class,
@@ -2200,9 +2210,9 @@ async function sendOutreachTool(pool, input) {
          WHERE ro.discord_user_id = p.discord_id AND ro.in_raid = true AND rse.published_at IS NOT NULL
          ORDER BY rse.published_at DESC LIMIT 1
        ) lr ON TRUE
-       WHERE p.discord_id = ANY($1::text[]) AND LOWER(p.class) = $2
+       WHERE p.discord_id = ANY($1::text[]) AND ${clsSendFilter}
        ORDER BY p.discord_id, p.character_name`,
-      [discord_ids, cls]
+      [discord_ids]
     );
 
     // Group all chars of the searched class per discord_id
