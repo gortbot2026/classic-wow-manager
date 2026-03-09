@@ -673,8 +673,8 @@ STEP 6 - SEARCH: Once event + class + role are known, call find_candidates immed
 - State exactly how far back you looked: "who raided with us in the last **3 months**" (12 weeks = 3 months, 4 weeks = 1 month, etc.)
 - Always include the exclusion line from the tool result verbatim: "I excluded X accounts because they were already saved to [dungeon] this reset, and Y accounts already in the roster for [event name]."
 - Give the date range of their last raids using actual dates, NOT vague terms like "recently" or "last one on Friday". Say something like "their last raids range from [oldest date] to [newest date]"
-- If results <= 30: ask "Want me to reach out to all X of them, or look further back first?"
-- If results > 30: WARN first -- "I found X players -- that's a lot. Do you want me to reach out to all X, or should I start with the 30 most recently active and expand if we don't find anyone?" Only send to all if they explicitly confirm.
+- If results <= 30: ask "Want me to reach out to all X of them, or expand the search to look further back?"
+- If results > 30: WARN first -- "I found X players -- that's a lot. Do you want me to reach out to all X, or should I start with the 30 most recently active and expand the search if we don't find anyone?" Only send to all if they explicitly confirm.
 - Do NOT say things like "pretty solid pool" or "last one on Friday" -- stick to concrete facts.
 
 STEP 7 - REPORT: After sending, report count + candidates page link. Ask if they want to be pinged when someone accepts.
