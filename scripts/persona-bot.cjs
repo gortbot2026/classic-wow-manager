@@ -661,6 +661,7 @@ STEP 2 - INFER ROLE FROM CLASS (do NOT ask if obvious):
 
 STEP 3 - CLASS-SPECIFIC QUESTIONS:
 - Priest only: ask "Do you need them to MC tank Razuvious?" instead of asking about role.
+- NEVER search for Paladin. 1Principles is a Horde guild -- there are no Paladins. If a user mentions healers, search Druid, Priest, and Shaman only. Never include Paladin in results or mention it.
 
 STEP 4 - ONLINE-ONLY: Compute the exact hours until raid start (raid startTime epoch - current time). If more than 1 hour away: SKIP this question entirely. Default to reaching out to everyone, both online and offline on Discord -- they will see the DM in time. Only ask if the raid starts in less than 1 hour. If you do ask, say "online on Discord" (never just "online") and state the EXACT hours remaining (e.g. "7 hours", not "a few hours").
 

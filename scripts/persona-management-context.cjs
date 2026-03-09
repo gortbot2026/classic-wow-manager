@@ -2004,6 +2004,11 @@ async function findCandidatesTool(pool, input) {
   try {
     const weeksNum = parseInt(weeks_back) || 12;
     const cls = (class_name || '').toLowerCase().trim();
+
+    // 1Principles is Horde-only -- no Paladins exist
+    if (cls === 'paladin') {
+      return '1Principles is a Horde guild. Paladins do not exist. Do not search for or mention Paladins.';
+    }
     const intervalSql = weeksNum >= 52 ? '1 year'
       : weeksNum >= 12 ? `${Math.round(weeksNum / 4)} months`
       : `${weeksNum} weeks`;
@@ -2139,13 +2144,13 @@ async function findCandidatesTool(pool, input) {
     const displayRows = uniqueRows.slice(0, 30);
     const lines = displayRows.map(r => {
       const lastRaid = r.last_raid_date
-        ? `most recent raid: "${r.last_raid_name || 'unknown'}" on ${new Date(r.last_raid_date).toLocaleDateString('en-GB')}`
+        ? `last active: ${new Date(r.last_raid_date).toLocaleDateString('en-GB')} in "${r.last_raid_name || 'unknown'}"`
         : 'no recent raid recorded';
       return `- ${r.discord_username || r.discord_id}: ${r.candidate_char_name} (${r.candidate_class}) -- ${lastRaid} [id:${r.discord_id}]`;
     });
 
     const overflowNote = ids.length > 30
-      ? `\n\nWARNING: ${ids.length} total matches. Showing top 30 most recently active. Ask the user: "Do you want me to reach out to all ${ids.length}, or just the 30 most recently active first and expand if needed?"`
+      ? `\n\nWARNING: ${ids.length} total matches. Showing top 30 most recently active. Ask the user: "Do you want me to reach out to all ${ids.length}, or just the 30 most recently active and expand the search if we don't find anyone?"`
       : '';
 
     // Build exclusion summary line
@@ -2153,10 +2158,10 @@ async function findCandidatesTool(pool, input) {
     if (excludedInRosterIds.size > 0) exclusionParts.push(`${excludedInRosterIds.size} already in the roster for this event`);
     if (excludedSavedIds.size > 0) exclusionParts.push(`${excludedSavedIds.size} saved to ${saveFilterDesc.replace(' and not saved to ', '').replace(' this reset', '')} this reset`);
     const exclusionLine = exclusionParts.length > 0
-      ? `Excluded: ${exclusionParts.join(' + ')} (these were not included in the results above).`
+      ? `Excluded: ${exclusionParts.join(' + ')} (not included in the results above).`
       : '';
 
-    return `Found ${ids.length} players with a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nMost recent last-raid: ${newest} | Oldest in pool: ${oldest}\n${exclusionLine}\nNote: "most recent raid" = last published event attended, not the only raid they have done.\n\nTop 30 most recently active:\n${lines.join('\n')}${overflowNote}\n\ndiscord_ids_for_outreach (all ${ids.length}): ${ids.join(',')}`;
+    return `Found ${ids.length} players who have a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nIMPORTANT: "last active" = their most recent raid attendance in ANY character, not necessarily as their ${cls}. They may have attended that raid as a different class.\n${exclusionLine}\n\nTop ${Math.min(30, ids.length)} most recently active:\n${lines.join('\n')}${overflowNote}\n\ndiscord_ids_for_outreach (all ${ids.length}): ${ids.join(',')}`;
   } catch (err) {
     console.error('[persona-mgmt-ctx] findCandidatesTool error:', err.message, err.stack);
     return `Error finding candidates: ${err.message}`;
