@@ -1222,7 +1222,10 @@ async function resolveTemplateVariables(pool, discordId, eventId, conversationId
 function applyTemplateVariables(text, variableMap) {
   if (!text || !variableMap || variableMap.size === 0) return text || '';
   return text.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-    return variableMap.has(varName) ? variableMap.get(varName) : match;
+    // If the variable is known but empty, return empty string.
+    // If the variable is completely unknown, also return empty string (never leave raw {{...}} in the message).
+    if (variableMap.has(varName)) return variableMap.get(varName) || '';
+    return '';
   });
 }
 

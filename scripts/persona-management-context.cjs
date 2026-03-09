@@ -2186,31 +2186,55 @@ async function sendOutreachTool(pool, input) {
     const internalSecret = process.env.INTERNAL_API_SECRET || '';
     const cls = class_name.toLowerCase().trim();
 
-    // Pick the correct character for each player: match the searched class first,
-    // fall back to any character if no exact match (shouldn't happen).
+    // Get all characters of the searched class per player + last raid info
     const metaRes = await pool.query(
-      `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.class AS character_class
+      `SELECT p.discord_id, p.character_name, p.class AS character_class,
+              lr.last_raid_name, lr.last_raid_date
        FROM players p
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(rhc.event_data->>'title', '') AS last_raid_name,
+                rse.published_at AS last_raid_date
+         FROM roster_overrides ro
+         JOIN rewards_snapshot_events rse ON rse.event_id = ro.event_id
+         LEFT JOIN raid_helper_events_cache rhc ON rhc.event_id = rse.event_id
+         WHERE ro.discord_user_id = p.discord_id AND ro.in_raid = true AND rse.published_at IS NOT NULL
+         ORDER BY rse.published_at DESC LIMIT 1
+       ) lr ON TRUE
        WHERE p.discord_id = ANY($1::text[]) AND LOWER(p.class) = $2
        ORDER BY p.discord_id, p.character_name`,
       [discord_ids, cls]
     );
-    // Fall back: any players not found with the class filter (shouldn't happen, but safety net)
-    const foundIds = new Set(metaRes.rows.map(r => r.discord_id));
+
+    // Group all chars of the searched class per discord_id
+    const byDiscordId = new Map();
+    for (const r of metaRes.rows) {
+      if (!byDiscordId.has(r.discord_id)) {
+        byDiscordId.set(r.discord_id, { discord_id: r.discord_id, chars: [], last_raid_name: r.last_raid_name, last_raid_date: r.last_raid_date });
+      }
+      byDiscordId.get(r.discord_id).chars.push({ name: r.character_name, class: r.character_class });
+    }
+
+    // Fall back for any discord_ids not found with the class filter
+    const foundIds = new Set(byDiscordId.keys());
     const missingIds = discord_ids.filter(id => !foundIds.has(id));
-    let fallbackRows = [];
     if (missingIds.length > 0) {
       const fallback = await pool.query(
         `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.class AS character_class
          FROM players p WHERE p.discord_id = ANY($1::text[]) ORDER BY p.discord_id, p.character_name`,
         [missingIds]
       );
-      fallbackRows = fallback.rows;
+      for (const r of fallback.rows) {
+        byDiscordId.set(r.discord_id, { discord_id: r.discord_id, chars: [{ name: r.character_name, class: r.character_class }], last_raid_name: null, last_raid_date: null });
+      }
     }
-    const allRows = [...metaRes.rows, ...fallbackRows];
-    const candidatesPayload = allRows.map(r => ({
-      discordId: r.discord_id, charName: r.character_name, className: r.character_class,
-      candidateChars: [{ name: r.character_name, class: r.character_class }]
+
+    const candidatesPayload = Array.from(byDiscordId.values()).map(d => ({
+      discordId: d.discord_id,
+      charName: d.chars[0]?.name || null,
+      className: d.chars[0]?.class || null,
+      candidateChars: d.chars,
+      lastRaidName: d.last_raid_name || null,
+      lastRaidDate: d.last_raid_date ? new Date(d.last_raid_date).toISOString() : null
     }));
 
     const body = JSON.stringify({
