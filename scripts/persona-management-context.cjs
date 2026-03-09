@@ -1115,7 +1115,7 @@ const MANAGEMENT_TOOLS = [
         event_id: { type: 'string', description: 'The Raid Helper event ID to recruit for (use from the event list)' },
         class_name: { type: 'string', description: 'WoW class to search for (warrior, druid, priest, shaman, mage, warlock, rogue, hunter)' },
         role: { type: 'string', description: 'Role needed: tank, dps, or healer. Must be compatible with the class.' },
-        weeks_back: { type: 'number', description: 'How many weeks back to look for raid history. Default is 12 (3 months).' },
+        weeks_back: { type: 'number', description: 'How many weeks back to look for raid history. Default is 4 (1 month).' },
         online_only: { type: 'boolean', description: 'If true, only return players currently online on Discord. Default false.' }
       },
       required: ['event_id', 'class_name', 'role']
@@ -2000,7 +2000,7 @@ async function fetchPlayerNotesTool(pool, identifier) {
  * Uses the same query pattern as GET /api/roster/:eventId/candidates.
  */
 async function findCandidatesTool(pool, input) {
-  const { event_id, class_name, role, weeks_back = 12 } = input;
+  const { event_id, class_name, role, weeks_back = 4 } = input;
   try {
     const weeksNum = parseInt(weeks_back) || 12;
     const cls = (class_name || '').toLowerCase().trim();

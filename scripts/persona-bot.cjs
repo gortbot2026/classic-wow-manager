@@ -669,9 +669,9 @@ STEP 5 - LAST SPOT: If the raid starts more than 1 hour from now: SKIP this ques
 
 COMBINE all open questions into a single message (not one per message). Only ask what you don't already know.
 
-STEP 6 - SEARCH: Once event + class + role are known, call find_candidates immediately (default weeks_back=12). Then summarize the results like this:
+STEP 6 - SEARCH: Once event + class + role are known, call find_candidates immediately (default weeks_back=4, i.e. 1 month). Then summarize the results like this:
 - Say "**X players** who have a [class] character" -- NOT "[class] candidates". These are Discord accounts, not characters.
-- State exactly how far back you looked: "who raided with us in the last **3 months**" (12 weeks = 3 months, 4 weeks = 1 month, etc.)
+- State exactly how far back you looked: "who raided with us in the last **4 weeks**" (4 weeks = 1 month, 12 weeks = 3 months, etc.)
 - Always include the exclusion line from the tool result verbatim: "I excluded X accounts because they were already saved to [dungeon] this reset, and Y accounts already in the roster for [event name]."
 - Give the date range of their last raids using actual dates, NOT vague terms like "recently" or "last one on Friday". Say something like "their last raids range from [oldest date] to [newest date]"
 - If results <= 30: ask "Want me to reach out to all X of them, or expand the search to look further back?"
