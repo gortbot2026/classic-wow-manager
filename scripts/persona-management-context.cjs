@@ -2008,6 +2008,50 @@ async function findCandidatesTool(pool, input) {
       : weeksNum >= 12 ? `${Math.round(weeksNum / 4)} months`
       : `${weeksNum} weeks`;
 
+    // WoW reset start: most recent Wednesday 00:00 UTC
+    const now = new Date();
+    const dow = now.getUTCDay();
+    const daysSinceWed = (dow - 3 + 7) % 7;
+    const resetStart = new Date(now);
+    resetStart.setUTCDate(resetStart.getUTCDate() - daysSinceWed);
+    resetStart.setUTCHours(0, 0, 0, 0);
+
+    // Determine dungeon type for save filter (look up this event's zone)
+    let saveFilter = 'AND FALSE'; // default: no save filtering
+    let saveFilterDesc = '';
+    try {
+      // Check raid_helper_events_cache for event title to guess dungeon
+      const rhRow = await pool.query(
+        `SELECT event_data->>'title' AS title FROM raid_helper_events_cache WHERE event_id = $1 LIMIT 1`,
+        [String(event_id)]
+      );
+      const title = (rhRow.rows[0]?.title || '').toLowerCase();
+      let wclZone = null;
+      if (title.includes('naxx') || title.includes('naxxramas')) wclZone = 'Naxxramas';
+      else if (title.includes('aq') || title.includes('temple') || title.includes('qiraj')) wclZone = "Temple of Ahn'Qiraj";
+
+      if (wclZone) {
+        // Get all published event_ids for this dungeon type since reset start
+        const sameDungeonRows = await pool.query(
+          `SELECT rse.event_id FROM rewards_snapshot_events rse WHERE rse.wcl_zone = $1 AND rse.published_at >= $2`,
+          [wclZone, resetStart.toISOString()]
+        );
+        const sameDungeonIds = sameDungeonRows.rows.map(r => String(r.event_id));
+        if (sameDungeonIds.length > 0) {
+          saveFilter = `AND NOT EXISTS (
+            SELECT 1 FROM roster_overrides ro_save
+            WHERE ro_save.discord_user_id = p.discord_id
+              AND LOWER(ro_save.assigned_char_name) = LOWER(p.character_name)
+              AND ro_save.event_id = ANY(ARRAY[${sameDungeonIds.map(id => `'${id}'`).join(',')}])
+              AND ro_save.in_raid = true
+          )`;
+          saveFilterDesc = ` and not saved to ${wclZone} this reset`;
+        }
+      }
+    } catch (saveErr) {
+      console.warn('[persona-mgmt-ctx] Save filter error (non-fatal):', saveErr.message);
+    }
+
     const res = await pool.query(`
       WITH recent_raiders AS (
         SELECT DISTINCT ro.discord_user_id
@@ -2040,10 +2084,8 @@ async function findCandidatesTool(pool, input) {
         du.username           AS discord_username,
         p.character_name      AS candidate_char_name,
         p.class               AS candidate_class,
-        lr.last_char_name,
         lr.last_raid_date,
-        lr.last_raid_name,
-        (ae.discord_user_id IS NOT NULL) AS already_in_event
+        lr.last_raid_name
       FROM players p
       LEFT JOIN discord_users du         ON du.discord_id = p.discord_id
       JOIN recent_raiders rr             ON rr.discord_user_id = p.discord_id
@@ -2051,14 +2093,15 @@ async function findCandidatesTool(pool, input) {
       LEFT JOIN already_in_event ae      ON ae.discord_user_id = p.discord_id
       WHERE LOWER(p.class) = $2
         AND ae.discord_user_id IS NULL
+        ${saveFilter}
       ORDER BY lr.last_raid_date DESC, COALESCE(du.username, p.discord_id), p.character_name
     `, [event_id, cls]);
 
     if (res.rows.length === 0) {
-      return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks and are not already in the event roster.`;
+      return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks, are not already in the event roster${saveFilterDesc}.`;
     }
 
-    // Deduplicate by discord_id (some players have multiple warrior alts)
+    // Deduplicate by discord_id (some players have multiple alts of same class)
     const seenIds = new Set();
     const uniqueRows = [];
     for (const r of res.rows) {
@@ -2068,18 +2111,24 @@ async function findCandidatesTool(pool, input) {
       }
     }
 
-    const lines = uniqueRows.map(r => {
+    const ids = uniqueRows.map(r => r.discord_id);
+    const newest = uniqueRows[0]?.last_raid_date ? new Date(uniqueRows[0].last_raid_date).toLocaleDateString('en-GB') : 'unknown';
+    const oldest = uniqueRows[uniqueRows.length - 1]?.last_raid_date ? new Date(uniqueRows[uniqueRows.length - 1].last_raid_date).toLocaleDateString('en-GB') : 'unknown';
+
+    // Build top-30 list for display, warn if more
+    const displayRows = uniqueRows.slice(0, 30);
+    const lines = displayRows.map(r => {
       const lastRaid = r.last_raid_date
         ? `most recent raid: "${r.last_raid_name || 'unknown'}" on ${new Date(r.last_raid_date).toLocaleDateString('en-GB')}`
         : 'no recent raid recorded';
       return `- ${r.discord_username || r.discord_id}: ${r.candidate_char_name} (${r.candidate_class}) -- ${lastRaid} [id:${r.discord_id}]`;
     });
 
-    const ids = uniqueRows.map(r => r.discord_id);
-    const newest = new Date(uniqueRows[0]?.last_raid_date).toLocaleDateString('en-GB');
-    const oldest = new Date(uniqueRows[uniqueRows.length - 1]?.last_raid_date).toLocaleDateString('en-GB');
+    const overflowNote = ids.length > 30
+      ? `\n\nWARNING: ${ids.length} total matches. Showing top 30 most recently active. Ask the user: "Do you want me to reach out to all ${ids.length}, or just the 30 most recently active first and expand if needed?"`
+      : '';
 
-    return `Found ${ids.length} players with a ${cls} character who raided in the last ${weeksNum} weeks and are not already in the event roster.\nMost recent last-raid: ${newest} | Oldest last-raid in pool: ${oldest}\nNote: "most recent raid" = the last published event they attended, not the only raid they've done.\n\nCandidates:\n${lines.join('\n')}\n\ndiscord_ids_for_outreach: ${ids.join(',')}`;
+    return `Found ${ids.length} players with a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nMost recent last-raid: ${newest} | Oldest in pool: ${oldest}\nNote: "most recent raid" = last published event attended, not the only raid they have done.\n\nTop 30 most recently active:\n${lines.join('\n')}${overflowNote}\n\ndiscord_ids_for_outreach (all ${ids.length}): ${ids.join(',')}`;
   } catch (err) {
     console.error('[persona-mgmt-ctx] findCandidatesTool error:', err.message, err.stack);
     return `Error finding candidates: ${err.message}`;
