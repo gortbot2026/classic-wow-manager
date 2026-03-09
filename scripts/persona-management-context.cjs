@@ -1638,7 +1638,7 @@ async function getEventList(pool) {
         const allEvents = typeof rawEvents === 'string' ? JSON.parse(rawEvents) : rawEvents;
         if (Array.isArray(allEvents)) {
           for (const ev of allEvents) {
-            titleMap[String(ev.id)] = ev.channelName || ev.title || null;
+            titleMap[String(ev.id)] = ev.title || ev.channelName || null;
           }
         }
       }
@@ -1661,7 +1661,7 @@ async function getEventList(pool) {
             .filter(e => e.startTime && parseInt(e.startTime, 10) > now)
             .sort((a, b) => parseInt(a.startTime, 10) - parseInt(b.startTime, 10));
           for (const ev of upcoming) {
-            const title = ev.channelName || ev.title || 'Unknown Raid';
+            const title = ev.title || ev.channelName || 'Unknown Raid';
             const d = new Date(parseInt(ev.startTime, 10) * 1000);
             const dateStr = d.toISOString().split('T')[0];
             const dayName = d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
