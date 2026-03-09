@@ -2052,6 +2052,13 @@ async function findCandidatesTool(pool, input) {
       console.warn('[persona-mgmt-ctx] Save filter error (non-fatal):', saveErr.message);
     }
 
+    // Build save filter ID list for exclusion counting
+    let sameDungeonIdsSql = 'NULL';
+    if (saveFilter !== 'AND FALSE' && saveFilter.includes('ARRAY[')) {
+      const match = saveFilter.match(/ARRAY\[([^\]]+)\]/);
+      if (match) sameDungeonIdsSql = `ARRAY[${match[1]}]`;
+    }
+
     const res = await pool.query(`
       WITH recent_raiders AS (
         SELECT DISTINCT ro.discord_user_id
@@ -2078,6 +2085,12 @@ async function findCandidatesTool(pool, input) {
       ),
       already_in_event AS (
         SELECT DISTINCT discord_user_id FROM roster_overrides WHERE event_id = $1
+      ),
+      all_class_raiders AS (
+        SELECT DISTINCT p.discord_id
+        FROM players p
+        JOIN recent_raiders rr ON rr.discord_user_id = p.discord_id
+        WHERE LOWER(p.class) = $2
       )
       SELECT
         p.discord_id,
@@ -2085,15 +2098,17 @@ async function findCandidatesTool(pool, input) {
         p.character_name      AS candidate_char_name,
         p.class               AS candidate_class,
         lr.last_raid_date,
-        lr.last_raid_name
+        lr.last_raid_name,
+        (ae.discord_user_id IS NOT NULL) AS excluded_in_roster,
+        CASE WHEN ${sameDungeonIdsSql !== 'NULL'
+          ? `EXISTS (SELECT 1 FROM roster_overrides ro_save WHERE ro_save.discord_user_id = p.discord_id AND LOWER(ro_save.assigned_char_name) = LOWER(p.character_name) AND ro_save.event_id = ANY(${sameDungeonIdsSql}) AND ro_save.in_raid = true)`
+          : 'FALSE'} THEN TRUE ELSE FALSE END AS excluded_saved
       FROM players p
       LEFT JOIN discord_users du         ON du.discord_id = p.discord_id
       JOIN recent_raiders rr             ON rr.discord_user_id = p.discord_id
       JOIN last_raid_per_account lr      ON lr.discord_user_id = p.discord_id
       LEFT JOIN already_in_event ae      ON ae.discord_user_id = p.discord_id
       WHERE LOWER(p.class) = $2
-        AND ae.discord_user_id IS NULL
-        ${saveFilter}
       ORDER BY lr.last_raid_date DESC, COALESCE(du.username, p.discord_id), p.character_name
     `, [event_id, cls]);
 
@@ -2101,11 +2116,16 @@ async function findCandidatesTool(pool, input) {
       return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks, are not already in the event roster${saveFilterDesc}.`;
     }
 
-    // Deduplicate by discord_id (some players have multiple alts of same class)
+    // Separate included vs excluded, deduplicate by discord_id
     const seenIds = new Set();
     const uniqueRows = [];
+    const excludedInRosterIds = new Set();
+    const excludedSavedIds = new Set();
+
     for (const r of res.rows) {
-      if (!seenIds.has(r.discord_id)) {
+      if (r.excluded_in_roster) excludedInRosterIds.add(r.discord_id);
+      if (r.excluded_saved) excludedSavedIds.add(r.discord_id);
+      if (!r.excluded_in_roster && !r.excluded_saved && !seenIds.has(r.discord_id)) {
         seenIds.add(r.discord_id);
         uniqueRows.push(r);
       }
@@ -2128,7 +2148,15 @@ async function findCandidatesTool(pool, input) {
       ? `\n\nWARNING: ${ids.length} total matches. Showing top 30 most recently active. Ask the user: "Do you want me to reach out to all ${ids.length}, or just the 30 most recently active first and expand if needed?"`
       : '';
 
-    return `Found ${ids.length} players with a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nMost recent last-raid: ${newest} | Oldest in pool: ${oldest}\nNote: "most recent raid" = last published event attended, not the only raid they have done.\n\nTop 30 most recently active:\n${lines.join('\n')}${overflowNote}\n\ndiscord_ids_for_outreach (all ${ids.length}): ${ids.join(',')}`;
+    // Build exclusion summary line
+    const exclusionParts = [];
+    if (excludedInRosterIds.size > 0) exclusionParts.push(`${excludedInRosterIds.size} already in the roster for this event`);
+    if (excludedSavedIds.size > 0) exclusionParts.push(`${excludedSavedIds.size} saved to ${saveFilterDesc.replace(' and not saved to ', '').replace(' this reset', '')} this reset`);
+    const exclusionLine = exclusionParts.length > 0
+      ? `Excluded: ${exclusionParts.join(' + ')} (these were not included in the results above).`
+      : '';
+
+    return `Found ${ids.length} players with a ${cls} character, raided in the last ${weeksNum} weeks (${intervalSql}), not in event roster${saveFilterDesc}.\nMost recent last-raid: ${newest} | Oldest in pool: ${oldest}\n${exclusionLine}\nNote: "most recent raid" = last published event attended, not the only raid they have done.\n\nTop 30 most recently active:\n${lines.join('\n')}${overflowNote}\n\ndiscord_ids_for_outreach (all ${ids.length}): ${ids.join(',')}`;
   } catch (err) {
     console.error('[persona-mgmt-ctx] findCandidatesTool error:', err.message, err.stack);
     return `Error finding candidates: ${err.message}`;
