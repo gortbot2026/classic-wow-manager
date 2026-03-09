@@ -1129,11 +1129,12 @@ const MANAGEMENT_TOOLS = [
       properties: {
         event_id: { type: 'string', description: 'The Raid Helper event ID' },
         discord_ids: { type: 'array', items: { type: 'string' }, description: 'Array of Discord user IDs to message' },
+        class_name: { type: 'string', description: 'The class being recruited (warrior, druid, priest, shaman, etc.). REQUIRED — used to pick the correct character for each player.' },
         role: { type: 'string', description: 'Role needed (tank, dps, healer) — used to tell players what we need' },
         last_spot: { type: 'boolean', description: 'Is this the last open spot? If true, players are told they can join immediately.' },
         must_mc_razuvious: { type: 'boolean', description: 'For Priests only — must MC tank Razuvious. Default false.' }
       },
-      required: ['event_id', 'discord_ids']
+      required: ['event_id', 'discord_ids', 'class_name']
     }
   }
 ];
@@ -2173,19 +2174,41 @@ async function findCandidatesTool(pool, input) {
  * Must only be called after explicit user confirmation.
  */
 async function sendOutreachTool(pool, input) {
-  const { event_id, discord_ids, role, last_spot = false, must_mc_razuvious = false } = input;
+  const { event_id, discord_ids, class_name, role, last_spot = false, must_mc_razuvious = false } = input;
   if (!Array.isArray(discord_ids) || discord_ids.length === 0) {
     return 'No discord_ids provided.';
+  }
+  if (!class_name) {
+    return 'class_name is required for send_outreach — it ensures the correct character is picked for each player.';
   }
   try {
     const baseUrl = process.env.APP_BASE_URL || 'https://www.1principles.net';
     const internalSecret = process.env.INTERNAL_API_SECRET || '';
+    const cls = class_name.toLowerCase().trim();
+
+    // Pick the correct character for each player: match the searched class first,
+    // fall back to any character if no exact match (shouldn't happen).
     const metaRes = await pool.query(
       `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.class AS character_class
-       FROM players p WHERE p.discord_id = ANY($1::text[]) ORDER BY p.discord_id, p.character_name`,
-      [discord_ids]
+       FROM players p
+       WHERE p.discord_id = ANY($1::text[]) AND LOWER(p.class) = $2
+       ORDER BY p.discord_id, p.character_name`,
+      [discord_ids, cls]
     );
-    const candidatesPayload = metaRes.rows.map(r => ({
+    // Fall back: any players not found with the class filter (shouldn't happen, but safety net)
+    const foundIds = new Set(metaRes.rows.map(r => r.discord_id));
+    const missingIds = discord_ids.filter(id => !foundIds.has(id));
+    let fallbackRows = [];
+    if (missingIds.length > 0) {
+      const fallback = await pool.query(
+        `SELECT DISTINCT ON (p.discord_id) p.discord_id, p.character_name, p.class AS character_class
+         FROM players p WHERE p.discord_id = ANY($1::text[]) ORDER BY p.discord_id, p.character_name`,
+        [missingIds]
+      );
+      fallbackRows = fallback.rows;
+    }
+    const allRows = [...metaRes.rows, ...fallbackRows];
+    const candidatesPayload = allRows.map(r => ({
       discordId: r.discord_id, charName: r.character_name, className: r.character_class,
       candidateChars: [{ name: r.character_name, class: r.character_class }]
     }));
