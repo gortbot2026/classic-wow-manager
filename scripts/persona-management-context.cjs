@@ -2052,20 +2052,34 @@ async function findCandidatesTool(pool, input) {
       WHERE LOWER(p.class) = $2
         AND ae.discord_user_id IS NULL
       ORDER BY lr.last_raid_date DESC, COALESCE(du.username, p.discord_id), p.character_name
-      LIMIT 40
     `, [event_id, cls]);
 
     if (res.rows.length === 0) {
       return `No ${cls} candidates found who have raided in the last ${weeksNum} weeks and are not already in the event roster.`;
     }
-    const lines = res.rows.map(r => {
+
+    // Deduplicate by discord_id (some players have multiple warrior alts)
+    const seenIds = new Set();
+    const uniqueRows = [];
+    for (const r of res.rows) {
+      if (!seenIds.has(r.discord_id)) {
+        seenIds.add(r.discord_id);
+        uniqueRows.push(r);
+      }
+    }
+
+    const lines = uniqueRows.map(r => {
       const lastRaid = r.last_raid_date
-        ? `last raid: ${r.last_raid_name || 'unknown'} (${new Date(r.last_raid_date).toLocaleDateString('en-GB')})`
-        : 'no recent raid';
+        ? `most recent raid: "${r.last_raid_name || 'unknown'}" on ${new Date(r.last_raid_date).toLocaleDateString('en-GB')}`
+        : 'no recent raid recorded';
       return `- ${r.discord_username || r.discord_id}: ${r.candidate_char_name} (${r.candidate_class}) -- ${lastRaid} [id:${r.discord_id}]`;
     });
-    const ids = [...new Set(res.rows.map(r => r.discord_id))];
-    return `Found ${ids.length} ${cls} candidates (${weeksNum}w lookback):\n${lines.join('\n')}\n\ndiscord_ids_for_outreach: ${ids.join(',')}`;
+
+    const ids = uniqueRows.map(r => r.discord_id);
+    const newest = new Date(uniqueRows[0]?.last_raid_date).toLocaleDateString('en-GB');
+    const oldest = new Date(uniqueRows[uniqueRows.length - 1]?.last_raid_date).toLocaleDateString('en-GB');
+
+    return `Found ${ids.length} players with a ${cls} character who raided in the last ${weeksNum} weeks and are not already in the event roster.\nMost recent last-raid: ${newest} | Oldest last-raid in pool: ${oldest}\nNote: "most recent raid" = the last published event they attended, not the only raid they've done.\n\nCandidates:\n${lines.join('\n')}\n\ndiscord_ids_for_outreach: ${ids.join(',')}`;
   } catch (err) {
     console.error('[persona-mgmt-ctx] findCandidatesTool error:', err.message, err.stack);
     return `Error finding candidates: ${err.message}`;
