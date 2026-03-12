@@ -11183,7 +11183,8 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       worldBuffsRes,
       frostResRes,
       goldEarnedRes,
-      characterStatsRes
+      characterStatsRes,
+      rosterCharNamesRes
     ] = await Promise.all([
       // Identity from discord_users
       client.query(
@@ -11359,6 +11360,15 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
          FROM log_data
          WHERE discord_id = $1
          GROUP BY character_name, character_class`, [discordId]
+      ),
+      // Distinct character names seen in roster_overrides for this player
+      client.query(
+        `SELECT DISTINCT assigned_char_name AS character_name, assigned_char_class AS class
+         FROM roster_overrides
+         WHERE discord_user_id = $1
+           AND assigned_char_name IS NOT NULL
+           AND assigned_char_name != ''
+         ORDER BY assigned_char_name`, [discordId]
       )
     ]);
 
@@ -11451,9 +11461,9 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
     });
 
     // Merge non-guild characters from the players table
-    const guildCharNames = new Set(characters.map(c => c.characterName.toLowerCase()));
+    const knownCharNames = new Set(characters.map(c => c.characterName.toLowerCase()));
     for (const p of playersRes.rows) {
-      if (!guildCharNames.has(p.character_name.toLowerCase())) {
+      if (!knownCharNames.has(p.character_name.toLowerCase())) {
         const specInfo = specMap[p.character_name.toLowerCase()] || {};
         characters.push({
           characterName: p.character_name,
@@ -11465,6 +11475,25 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
           primaryRole: specInfo.primaryRole || null,
           inGuild: false
         });
+        knownCharNames.add(p.character_name.toLowerCase());
+      }
+    }
+
+    // Merge characters seen only in roster_overrides (raided but never registered)
+    for (const r of rosterCharNamesRes.rows) {
+      if (!knownCharNames.has(r.character_name.toLowerCase())) {
+        const specInfo = specMap[r.character_name.toLowerCase()] || {};
+        characters.push({
+          characterName: r.character_name,
+          class: r.class || null,
+          race: null, sex: null, level: null, faction: null,
+          mainAlt: null, playerAlts: null, joinDate: null, promoDate: null,
+          lastOnlineDays: null, publicNote: null, officerNote: null, customNote: null,
+          specName: specInfo.specName || null,
+          primaryRole: specInfo.primaryRole || null,
+          inGuild: false
+        });
+        knownCharNames.add(r.character_name.toLowerCase());
       }
     }
 
