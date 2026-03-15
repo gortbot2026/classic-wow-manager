@@ -21521,6 +21521,62 @@ app.post('/api/rewards-snapshot/:eventId/lock', requireManagement, express.json(
             }
         }
 
+        // Always inject fresh big_buyer data from loot_items — loot is often entered AFTER the
+        // initial lock/publish, so we can't rely on the DOM scrape or engine output being current.
+        try {
+            const bbRes = await client.query(`
+                WITH spend AS (
+                    SELECT player_name AS character_name, SUM(COALESCE(gold_amount,0))::bigint AS spent_gold
+                    FROM loot_items WHERE event_id = $1 GROUP BY player_name
+                )
+                SELECT s.character_name, s.spent_gold,
+                       COALESCE(ld.character_class, 'Unknown') AS character_class
+                FROM spend s
+                LEFT JOIN LATERAL (
+                    SELECT character_class FROM log_data
+                    WHERE event_id = $1 AND LOWER(character_name) = LOWER(s.character_name) LIMIT 1
+                ) ld ON TRUE
+                WHERE s.spent_gold >= 25000
+                ORDER BY s.spent_gold DESC, LOWER(s.character_name)
+                LIMIT 3
+            `, [eventId]);
+
+            const tierPoints = (g) => {
+                const n = Number(g) || 0;
+                if (n >= 100000) return 20;
+                if (n >= 75000)  return 15;
+                if (n >= 50000)  return 10;
+                if (n >= 25000)  return 5;
+                return 0;
+            };
+
+            if (bbRes.rows.length > 0) {
+                // Remove any existing big_buyer entries (from DOM scrape or engine) and replace with fresh data
+                entries = entries.filter(e => String(e.panel_key||'') !== 'big_buyer');
+                bbRes.rows.forEach((r, idx) => {
+                    entries.push({
+                        panel_key: 'big_buyer',
+                        panel_name: 'Big Buyer Bonus',
+                        discord_user_id: null,
+                        character_name: r.character_name,
+                        character_class: r.character_class || null,
+                        ranking_number_original: idx + 1,
+                        point_value_original: tierPoints(r.spent_gold),
+                        character_details_original: `${Number(r.spent_gold).toLocaleString()} gold`,
+                        primary_numeric_original: null,
+                        aux_json: null
+                    });
+                });
+                console.log(`✅ [SNAPSHOT] Injected ${bbRes.rows.length} big_buyer entries from live loot_items`);
+            } else {
+                // No qualifying big buyers — remove any stale big_buyer entries from prior locks
+                entries = entries.filter(e => String(e.panel_key||'') !== 'big_buyer');
+                console.log(`ℹ️ [SNAPSHOT] No big_buyer entries (no loot ≥25k for event ${eventId})`);
+            }
+        } catch (bbErr) {
+            console.warn('⚠️ [SNAPSHOT] Big buyer injection failed:', bbErr?.message || bbErr);
+        }
+
         if (entries.length > 0) {
             // Bulk insert entries using UNNEST columns
             const cols = {
