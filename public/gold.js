@@ -270,6 +270,7 @@ class GoldPotManager {
             });
             const existing = new Set((this.allPlayers||[]).map(p=> lower(p && p.character_name)));
             const toAdd = [];
+            // Add players from confirmed_logs first
             (confRows||[]).forEach(r=>{
                 const raw = String(r && r.character_name || '').trim();
                 if (!raw) return;
@@ -279,6 +280,20 @@ class GoldPotManager {
                 const key = lower(nm);
                 if (existing.has(key)) return;
                 const cls = classByName.get(lower(raw)) || 'Unknown';
+                toAdd.push({ character_name: nm, character_class: cls });
+                existing.add(key);
+            });
+            // Also add players from log_data — this ensures gold is distributed correctly
+            // even when the snapshot was locked before WCL logs were imported (loot-before-logs scenario)
+            (logRows||[]).forEach(p=>{
+                const raw = String(p && p.character_name || '').trim();
+                if (!raw) return;
+                const nm = this.normalizeSnapshotName(raw);
+                if (!this.isValidWoWName(nm)) return;
+                if (this.shouldIgnorePlayer(nm)) return;
+                const key = lower(nm);
+                if (existing.has(key)) return;
+                const cls = String(p && p.character_class || 'Unknown');
                 toAdd.push({ character_name: nm, character_class: cls });
                 existing.add(key);
             });
