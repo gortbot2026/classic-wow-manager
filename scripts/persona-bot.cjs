@@ -1983,23 +1983,9 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
       }
 
       // ── Step 2a: QUESTION_OR_CHAT path ──
+      // Maya monitors but does NOT post in the gear-check channel — silent monitoring only
       if (classification === 'QUESTION_OR_CHAT') {
-        try {
-          const redirectPrompt = gearCheckSoul +
-            'Task: generate a redirect reply for an off-topic message in the gear-check channel. Follow the gear-check redirect rules in your context. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
-
-          const redirectMessages = [
-            { role: 'user', content: `Discord user: ${displayName} (${username})\nTheir message: ${postContent}\n\nGenerate a polite redirect reply. Use <@${discordId}> to mention them.` }
-          ];
-
-          let redirectReply = await generateResponse(redirectPrompt, redirectMessages, 'claude-haiku-4-5');
-          redirectReply = sanitizeResponse(redirectReply);
-          redirectReply = sanitizeForDiscord(redirectReply);
-          await message.channel.send(redirectReply);
-        } catch (redirectErr) {
-          console.error('[persona-bot] Gear-check redirect generation failed:', redirectErr.message || redirectErr);
-          await message.channel.send(`Hey <@${discordId}>, for questions feel free to DM me directly! This channel is mainly for gear-check applications.`);
-        }
+        console.log(`[persona-bot] Gear-check QUESTION_OR_CHAT from ${username} — skipping channel reply (silent monitoring mode)`);
         return;
       }
 
@@ -2011,22 +1997,8 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         );
 
         if (existingConv.rows.length > 0) {
-          try {
-            const welcomeBackPrompt = gearCheckSoul +
-              'Task: generate a welcome-back reply for a returning applicant in the gear-check channel. Follow the welcome-back rules in your context. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
-
-            const welcomeBackMessages = [
-              { role: 'user', content: `Discord user: ${displayName} (${username})\nTheir new post: ${postContent}\n\nGenerate a welcome-back reply. Use <@${discordId}> to mention them.` }
-            ];
-
-            let welcomeBackReply = await generateResponse(welcomeBackPrompt, welcomeBackMessages, 'claude-haiku-4-5');
-            welcomeBackReply = sanitizeResponse(welcomeBackReply);
-            welcomeBackReply = sanitizeForDiscord(welcomeBackReply);
-            await message.channel.send(welcomeBackReply);
-          } catch (wbErr) {
-            console.error('[persona-bot] Gear-check welcome-back generation failed:', wbErr.message || wbErr);
-            await message.channel.send(`Hey <@${discordId}>, welcome back! I see you have posted here before. If anything has changed, feel free to DM me!`);
-          }
+          // Returning applicant — silent in channel, just log it
+          console.log(`[persona-bot] Gear-check returning applicant ${username} (${discordId}) — skipping channel reply (silent monitoring mode)`);
           return;
         }
       } catch (dbErr) {
@@ -2074,48 +2046,9 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         console.warn('[persona-bot] Gear-check image analysis failed (non-fatal):', imgErr.message || imgErr);
       }
 
-      // ── Step 5: Generate personalised channel response ──
-      let channelResponse = null;
-      try {
-        const persona = await getPersona();
-        const responseModel = (persona && persona.model) || 'claude-sonnet-4-20250514';
-
-        const channelSystemPrompt = gearCheckSoul +
-          'Task: generate a new-applicant channel welcome greeting. Follow the new applicant greeting rules in your context. Do not use em-dashes or en-dashes. Do not use backticks or code formatting.';
-
-        // Build content blocks for the user message
-        const contentBlocks = [];
-        if (imageVisionBlock) {
-          contentBlocks.push(imageVisionBlock);
-        }
-        contentBlocks.push({
-          type: 'text',
-          text: `Discord user: ${displayName} (${username})\nTheir gear-check post:\n${postContent}` +
-            (imageVisionBlock ? '\n\nAn image is attached. Comment on what you see in the image (gear, character, UI, etc.) in your greeting.' : '')
-        });
-
-        const channelMessages = [{ role: 'user', content: contentBlocks }];
-        const rawResponse = await generateResponse(channelSystemPrompt, channelMessages, responseModel);
-        channelResponse = sanitizeForDiscord(sanitizeResponse(rawResponse));
-      } catch (genErr) {
-        console.error('[persona-bot] Gear-check channel response generation failed:', genErr.message || genErr);
-      }
-
-      // Fallback if generation failed
-      if (!channelResponse || channelResponse.trim().length === 0) {
-        channelResponse = `Hey <@${discordId}>, welcome to the gear-check channel! I will send you a DM shortly with a few quick questions.`;
-      }
-
-      // ── Step 6: Typing indicator + send (feels human — ~12s total) ──
-      try { await message.channel.sendTyping(); } catch (_) { /* non-fatal */ }
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      try { await message.channel.sendTyping(); } catch (_) { /* non-fatal */ }
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      // 1.5s break — typing pauses briefly before sending
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      // Always prepend the correct Discord mention (don't trust LLM to format it right)
-      const finalChannelResponse = `<@${discordId}> ${channelResponse}`;
-      await message.channel.send(finalChannelResponse);
+      // ── Step 5: Start DM conversation ──
+      // Maya no longer posts in the gear-check channel — silent monitoring only; DM only
+      console.log(`[persona-bot] Gear-check new application from ${username} (${discordId}) — skipping channel reply, proceeding to DM`);
 
       // ── Step 7: Start DM conversation ──
       let conversationId = null;
