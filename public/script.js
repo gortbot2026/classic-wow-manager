@@ -575,13 +575,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         const nameLink = document.createElement('a');
         nameLink.className = 'raid-name-link';
         nameLink.href = link;
-        if (isCompleted) {
-            // Just the raid name — date moves to Day column
-            nameLink.textContent = cleanChannelName(event.channelName, event.channelId);
-        } else {
-            // Strip " | Day | Time" suffix from title (e.g. "Nax Thursday | Thursday | 20:30" → "Nax Thursday")
-            const rawTitle = event.title || 'Untitled Event';
-            nameLink.textContent = rawTitle.includes(' | ') ? rawTitle.split(' | ')[0].trim() : rawTitle;
+        {
+            // Use event.title for both upcoming and completed — strip " | Day | Time" suffix consistently
+            // Fall back to cleanChannelName only if title is missing
+            const rawTitle = event.title || '';
+            if (rawTitle) {
+                nameLink.textContent = rawTitle.includes(' | ') ? rawTitle.split(' | ')[0].trim() : rawTitle;
+            } else {
+                nameLink.textContent = cleanChannelName(event.channelName, event.channelId);
+            }
         }
         tdName.appendChild(nameLink);
         tr.appendChild(tdName);
