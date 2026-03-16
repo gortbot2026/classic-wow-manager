@@ -671,6 +671,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
+        // Separator row between upcoming and completed
+        if (!appendMode && completedEvents.length > 0) {
+            const sepTr = document.createElement('tr');
+            sepTr.className = 'raid-section-separator';
+            const sepTd = document.createElement('td');
+            sepTd.colSpan = 7;
+            sepTd.innerHTML = '<div class="raid-section-separator__inner"><span>Completed Raids</span></div>';
+            sepTr.appendChild(sepTd);
+            raidsTbody.appendChild(sepTr);
+        }
+
         // Determine which completed events to render
         const startIdx = appendMode ? (currentHistoricDisplayLimit - historicEventsPerPage) : 0;
         const endIdx = currentHistoricDisplayLimit;

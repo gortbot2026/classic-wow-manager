@@ -1514,6 +1514,43 @@ body.faq .content { background: transparent; box-shadow: none; }
     color: #e5e7eb;
 }
 
+/* Separator between upcoming and completed raids */
+.raid-section-separator td {
+    padding: 16px 0 8px;
+    border: none;
+    background: transparent;
+}
+
+.raid-section-separator__inner {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.raid-section-separator__inner::before,
+.raid-section-separator__inner::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #374151;
+}
+
+.raid-section-separator__inner span {
+    padding: 0 12px;
+    white-space: nowrap;
+}
+
+/* Ensure separator row doesn't get hover/click styles */
+.raids-table tbody tr.raid-section-separator:hover {
+    background: transparent;
+    cursor: default;
+}
+
 .raid-row--completed td {
     opacity: 0.80;
 }
