@@ -575,15 +575,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         const nameLink = document.createElement('a');
         nameLink.className = 'raid-name-link';
         nameLink.href = link;
-        {
-            // Use event.title for both upcoming and completed — strip " | Day | Time" suffix consistently
-            // Fall back to cleanChannelName only if title is missing
+        if (isCompleted) {
+            // Completed raids: show full title (date/time is in the title, not in separate columns)
             const rawTitle = event.title || '';
-            if (rawTitle) {
-                nameLink.textContent = rawTitle.includes(' | ') ? rawTitle.split(' | ')[0].trim() : rawTitle;
+            nameLink.textContent = rawTitle || cleanChannelName(event.channelName, event.channelId);
+        } else {
+            // Upcoming raids: strip day/time suffix — day+time already shown in separate columns
+            // Handles both "Nax | Thursday | 20:30" (pipes) and "Nax Thursday 20:30" (inline)
+            const rawTitle = (event.title || 'Untitled Event').trim();
+            let displayTitle = rawTitle;
+            if (displayTitle.includes(' | ')) {
+                displayTitle = displayTitle.split(' | ')[0].trim();
             } else {
-                nameLink.textContent = cleanChannelName(event.channelName, event.channelId);
+                // Strip trailing "DayName HH:MM" or "DayName" or "HH:MM"
+                displayTitle = displayTitle
+                    .replace(/\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(\s+\d{1,2}:\d{2})?\s*$/i, '')
+                    .replace(/\s+\d{1,2}:\d{2}\s*$/, '')
+                    .trim();
             }
+            nameLink.textContent = displayTitle || rawTitle;
         }
         tdName.appendChild(nameLink);
         tr.appendChild(tdName);
