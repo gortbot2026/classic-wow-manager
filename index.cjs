@@ -1870,7 +1870,7 @@ async function fetchEventsFromAPI() {
   console.log('🌐 Fetching fresh events from Raid-Helper API...');
 
   const response = await axios.get(
-    `https://raid-helper.dev/api/v3/servers/${discordGuildId}/events`,
+    `https://raid-helper.xyz/api/v4/servers/${discordGuildId}/events`,
     {
       headers: {
         'Authorization': `${raidHelperApiKey}`,
@@ -1905,7 +1905,7 @@ async function fetchHistoricEventsFromAPI() {
       console.log('🌐 Fetching historic events from Raid-Helper API (last year)...');
 
   const response = await axios.get(
-    `https://raid-helper.dev/api/v3/servers/${discordGuildId}/events`,
+    `https://raid-helper.xyz/api/v4/servers/${discordGuildId}/events`,
     {
       headers: {
         'Authorization': `${raidHelperApiKey}`,
@@ -1936,7 +1936,7 @@ async function fetchHistoricEventsFromAPIWithinMonths(months) {
   console.log(`🌐 Fetching historic events from Raid-Helper API (last ${months} months)...`);
 
   const response = await axios.get(
-    `https://raid-helper.dev/api/v3/servers/${discordGuildId}/events`,
+    `https://raid-helper.xyz/api/v4/servers/${discordGuildId}/events`,
     {
       headers: {
         'Authorization': `${raidHelperApiKey}`,
@@ -1988,7 +1988,7 @@ async function enrichEventsWithChannelNames(events) {
         console.log(`🔄 Fetching channelName for event ${eventId} (attempt ${attempt}/${maxRetries})`);
         
         const eventDetailResponse = await axios.get(
-          `https://raid-helper.dev/api/v2/events/${eventId}`,
+          `https://raid-helper.xyz/api/v4/events/${eventId}`,
           {
             headers: {
               'Authorization': `${process.env.RAID_HELPER_API_KEY}`,
@@ -4778,7 +4778,7 @@ app.post('/api/discord/announce-invites', requireRosterManager, async (req, res)
             const nowUnixTimestamp = Math.floor(Date.now() / 1000);
             const oneYearInSeconds = 365 * 24 * 60 * 60;
             const futureUnixTimestamp = nowUnixTimestamp + oneYearInSeconds;
-            const resp = await axios.get(`https://raid-helper.dev/api/v3/servers/${guildId}/events`, {
+            const resp = await axios.get(`https://raid-helper.xyz/api/v4/servers/${guildId}/events`, {
               headers: { 'Authorization': `${raidHelperApiKey}`, 'User-Agent': 'ClassicWoWManagerApp/1.0.0 (Node.js)' },
               params: { StartTimeFilter: nowUnixTimestamp - 7 * 24 * 3600, EndTimeFilter: futureUnixTimestamp },
               timeout: 10000
@@ -5007,7 +5007,7 @@ app.post('/api/discord/send-assignment/:eventId/:discordUserId', requireRosterMa
       // Event not in cache, fetch from Raid-Helper API
       console.log(`🔄 Event ${eventId} not in cache, fetching from Raid-Helper API`);
       try {
-        const response = await axios.get(`https://raid-helper.dev/api/v2/events/${eventId}`, {
+        const response = await axios.get(`https://raid-helper.xyz/api/v4/events/${eventId}`, {
           timeout: 10000,
           headers: { 
             'Authorization': process.env.RAID_HELPER_API_KEY,
@@ -5306,7 +5306,7 @@ app.post('/api/discord/prompt-confirmation', requireRosterManager, async (req, r
               const nowUnixTimestamp = Math.floor(Date.now() / 1000);
               const oneYearInSeconds = 365 * 24 * 60 * 60;
               const futureUnixTimestamp = nowUnixTimestamp + oneYearInSeconds;
-              const resp = await axios.get(`https://raid-helper.dev/api/v3/servers/${guildId}/events`, {
+              const resp = await axios.get(`https://raid-helper.xyz/api/v4/servers/${guildId}/events`, {
                 headers: { 'Authorization': `${raidHelperApiKey}`, 'User-Agent': 'ClassicWoWManagerApp/1.0.0 (Node.js)' },
                 params: { StartTimeFilter: nowUnixTimestamp - 7 * 24 * 3600, EndTimeFilter: futureUnixTimestamp },
                 timeout: 10000
@@ -5405,7 +5405,7 @@ app.post('/api/discord/prompt-confirmation', requireRosterManager, async (req, r
             const nowUnixTimestamp = Math.floor(Date.now() / 1000);
             const oneYearInSeconds = 365 * 24 * 60 * 60;
             const futureUnixTimestamp = nowUnixTimestamp + oneYearInSeconds;
-            const resp = await axios.get(`https://raid-helper.dev/api/v3/servers/${guildId}/events`, {
+            const resp = await axios.get(`https://raid-helper.xyz/api/v4/servers/${guildId}/events`, {
               headers: { 'Authorization': `${raidHelperApiKey}`, 'User-Agent': 'ClassicWoWManagerApp/1.0.0 (Node.js)' },
               params: { StartTimeFilter: nowUnixTimestamp - 7 * 24 * 3600, EndTimeFilter: futureUnixTimestamp },
               timeout: 10000
@@ -5534,7 +5534,7 @@ app.post('/api/discord/prompt-invite', requireRosterManager, async (req, res) =>
             const nowUnixTimestamp = Math.floor(Date.now() / 1000);
             const oneYearInSeconds = 365 * 24 * 60 * 60;
             const futureUnixTimestamp = nowUnixTimestamp + oneYearInSeconds;
-            const resp = await axios.get(`https://raid-helper.dev/api/v3/servers/${guildId}/events`, {
+            const resp = await axios.get(`https://raid-helper.xyz/api/v4/servers/${guildId}/events`, {
               headers: { 'Authorization': `${raidHelperApiKey}`, 'User-Agent': 'ClassicWoWManagerApp/1.0.0 (Node.js)' },
               params: { StartTimeFilter: nowUnixTimestamp - 7 * 24 * 3600, EndTimeFilter: futureUnixTimestamp },
               timeout: 10000
@@ -13541,7 +13541,7 @@ const getCanonicalClass = (className) => {
 // Refactored helper to ONLY get data from the Raid Helper API
 async function getRosterDataFromApi(eventId) {
     try {
-        const rosterResponse = await axios.get(`https://raid-helper.dev/api/raidplan/${eventId}`, {
+        const rosterResponse = await axios.get(`https://raid-helper.xyz/api/raidplan/${eventId}`, {
             timeout: 10000, // 10 second timeout
             headers: {
                 'User-Agent': 'Classic-WoW-Manager/1.0'
@@ -13750,7 +13750,7 @@ async function getPlayerForInsert(eventId, discordUserId, client) {
 
 async function getFullEventDataFromApi(eventId) {
     try {
-        const response = await axios.get(`https://raid-helper.dev/api/v2/events/${eventId}`, {
+        const response = await axios.get(`https://raid-helper.xyz/api/v4/events/${eventId}`, {
             timeout: 10000, // 10 second timeout
             headers: { 
                 'Authorization': process.env.RAID_HELPER_API_KEY,
@@ -13927,7 +13927,7 @@ app.get('/api/roster/:eventId', async (req, res) => {
 // Helper function to get details that might not be in our DB
 async function getRaidDetailsFromRaidHelper(eventId) {
     try {
-        const response = await axios.get(`https://raid-helper.dev/api/raidplan/${eventId}`);
+        const response = await axios.get(`https://raid-helper.xyz/api/raidplan/${eventId}`);
         const event = response.data;
         return {
             title: event.name,
@@ -15311,7 +15311,7 @@ app.get('/api/roster/:eventId/title', requireRosterManager, async (req, res) => 
 
         // 2. Fetch from Raid Helper API and cache
         try {
-            const rhRes = await fetch(`https://raid-helper.dev/api/v2/events/${eventId}`, {
+            const rhRes = await fetch(`https://raid-helper.xyz/api/v4/events/${eventId}`, {
                 headers: { Authorization: process.env.RAID_HELPER_API_KEY || 'CkvppyW6ZWfuYv2GdpTSTOQpdn6PSMV4iJjlrWo6' }
             });
             if (rhRes.ok) {
@@ -15366,7 +15366,7 @@ app.get('/api/roster/:eventId/candidates', requireRosterManager, async (req, res
         // ── Raid Helper signups (exclude from candidates) ─────────────────────
         const raidHelperExclude = new Set();
         try {
-            const rhRes = await fetch(`https://raid-helper.dev/api/raidplan/${eventId}`, {
+            const rhRes = await fetch(`https://raid-helper.xyz/api/raidplan/${eventId}`, {
                 headers: { Authorization: process.env.RAID_HELPER_API_KEY || 'CkvppyW6ZWfuYv2GdpTSTOQpdn6PSMV4iJjlrWo6' }
             });
             if (rhRes.ok) {
@@ -20867,7 +20867,7 @@ app.get('/api/raid-helper/events/:eventId', async (req, res) => {
         
         console.log(`🔄 Fetching fresh Raid-Helper data for event: ${eventId}`);
         
-        const response = await axios.get(`https://raid-helper.dev/api/v2/events/${eventId}`, {
+        const response = await axios.get(`https://raid-helper.xyz/api/v4/events/${eventId}`, {
             timeout: 10000,
             headers: { 
                 'Authorization': process.env.RAID_HELPER_API_KEY,
@@ -27835,7 +27835,7 @@ app.post('/api/attendance/rebuild', async (req, res) => {
                 
                 while (attempts < maxAttempts && !eventData) {
                     try {
-                        const response = await fetch(`https://raid-helper.dev/api/v2/events/${eventId}`);
+                        const response = await fetch(`https://raid-helper.xyz/api/v4/events/${eventId}`);
                         
                         if (response.status === 429) {
                             // Rate limited - increase delay and retry
@@ -28078,7 +28078,7 @@ app.post('/api/attendance/rebuild-week', async (req, res) => {
                     eventData = cacheResult.rows[0].event_data;
                 } else {
                     // Fetch from API if not in cache or cache is old
-                    const response = await fetch(`https://raid-helper.dev/api/v2/events/${row.event_id}`);
+                    const response = await fetch(`https://raid-helper.xyz/api/v4/events/${row.event_id}`);
                     if (response.ok) {
                         eventData = await response.json();
                         
