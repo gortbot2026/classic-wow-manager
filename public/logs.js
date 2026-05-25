@@ -69,6 +69,9 @@ class WoWLogsAnalyzer {
             
             if (result.success && result.hasData && result.data.length > 0) {
                 console.log(`✅ [STORED DATA] Found stored data for ${result.data.length} players`);
+                // Show clear data button when stored data exists
+                const clearBtnData = document.getElementById('clearEventDataBtn');
+                if (clearBtnData) clearBtnData.style.display = '';
                 try {
                     await this.displayStoredLogData(result.data);
                     // Also check RPB status after displaying stored data
@@ -79,7 +82,10 @@ class WoWLogsAnalyzer {
                 }
             } else {
                 console.log('📄 [STORED DATA] No stored data found, showing blank page');
-                // Still check RPB status even if no stored data
+                // Hide clear data button when no stored data
+                const clearBtnNoData = document.getElementById('clearEventDataBtn');
+                if (clearBtnNoData) clearBtnNoData.style.display = 'none';
+                // Still check RPB status even if no stored data — may still show clear button
                 await this.checkRPBStatus();
             }
             
@@ -106,11 +112,59 @@ class WoWLogsAnalyzer {
             if (result.success && result.hasRPB) {
                 console.log(`📊 [RPB STATUS] Found RPB status: ${result.status}`);
                 this.displayRPBStatus(result);
+                // Also show clear data button when RPB tracking exists
+                const clearBtnRpb = document.getElementById('clearEventDataBtn');
+                if (clearBtnRpb) clearBtnRpb.style.display = '';
             } else {
                 console.log('📊 [RPB STATUS] No RPB tracking found for this event');
             }
         } catch (error) {
             console.error('❌ [RPB STATUS] Error checking RPB status:', error);
+        }
+    }
+
+    /**
+     * Clears all imported data for the current event after user confirmation.
+     * Calls DELETE /api/event-data/:eventId/clear and reloads on success.
+     */
+    async clearEventData() {
+        const activeEventSession = localStorage.getItem('activeEventSession');
+        if (!activeEventSession) {
+            alert('No active event session found.');
+            return;
+        }
+
+        const confirmed = confirm(
+            'Are you sure you want to clear ALL imported data for this event?\n\n' +
+            'This will remove:\n' +
+            '• Log data\n' +
+            '• Role mappings\n' +
+            '• World buffs\n' +
+            '• Frost resistance data\n' +
+            '• RPB tracking\n' +
+            '• Confirmed player matches\n' +
+            '• Sheet imports\n' +
+            '• Cached endpoint data\n\n' +
+            'This action cannot be undone.'
+        );
+
+        if (!confirmed) return;
+
+        try {
+            const response = await fetch(`/api/event-data/${activeEventSession}/clear`, {
+                method: 'DELETE',
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                console.log(`✅ [CLEAR DATA] ${result.message}`, result.summary);
+                location.reload();
+            } else {
+                alert('Failed to clear event data: ' + (result.message || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('❌ [CLEAR DATA] Error clearing event data:', error);
+            alert('Failed to clear event data: ' + error.message);
         }
     }
 
@@ -1074,6 +1128,11 @@ class WoWLogsAnalyzer {
         // RPB button click
         document.getElementById('runRpbBtn').addEventListener('click', () => {
             this.runRPBAnalysis();
+        });
+
+        // Clear event data button click
+        document.getElementById('clearEventDataBtn').addEventListener('click', () => {
+            this.clearEventData();
         });
 
         // Enter key in input field

@@ -18396,6 +18396,100 @@ app.get('/api/log-data/:eventId', async (req, res) => {
     }
 });
 
+/**
+ * DELETE /api/event-data/:eventId/clear
+ * 
+ * Clears all imported data for a specific event across all event-scoped tables.
+ * Uses a database transaction to ensure atomicity — either all deletes succeed
+ * or the entire operation rolls back.
+ * 
+ * Child tables (sheet_player_abilities, sheet_players_buffs, sheet_players_frostres)
+ * are deleted before their parent (sheet_imports) to get accurate row counts
+ * rather than relying on CASCADE.
+ * 
+ * @param {string} eventId - The event identifier
+ * @returns {object} Summary with row counts deleted from each table
+ */
+app.delete('/api/event-data/:eventId/clear', async (req, res) => {
+    const { eventId } = req.params;
+
+    if (!eventId || eventId.trim() === '') {
+        return res.status(400).json({ success: false, message: 'Event ID is required' });
+    }
+
+    console.log(`🗑️ [CLEAR DATA] Starting clear of all imported data for event: ${eventId}`);
+
+    let client;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        // Delete from child tables first (FK references to sheet_imports)
+        const sheetAbilities = await client.query(
+            'DELETE FROM sheet_player_abilities WHERE event_id = $1', [eventId]
+        );
+        const sheetBuffs = await client.query(
+            'DELETE FROM sheet_players_buffs WHERE event_id = $1', [eventId]
+        );
+        const sheetFrostres = await client.query(
+            'DELETE FROM sheet_players_frostres WHERE event_id = $1', [eventId]
+        );
+
+        // Delete parent table after children
+        const sheetImports = await client.query(
+            'DELETE FROM sheet_imports WHERE event_id = $1', [eventId]
+        );
+
+        // Delete remaining event-scoped tables
+        const logData = await client.query(
+            'DELETE FROM log_data WHERE event_id = $1', [eventId]
+        );
+        const roleMapping = await client.query(
+            'DELETE FROM player_role_mapping WHERE event_id = $1', [eventId]
+        );
+        const confirmedLogs = await client.query(
+            'DELETE FROM player_confirmed_logs WHERE raid_id = $1', [eventId]
+        );
+        const rpbTracking = await client.query(
+            'DELETE FROM rpb_tracking WHERE event_id = $1', [eventId]
+        );
+        const endpointsJson = await client.query(
+            'DELETE FROM event_endpoints_json WHERE event_id = $1', [eventId]
+        );
+
+        await client.query('COMMIT');
+
+        const summary = {
+            sheet_player_abilities: sheetAbilities.rowCount,
+            sheet_players_buffs: sheetBuffs.rowCount,
+            sheet_players_frostres: sheetFrostres.rowCount,
+            sheet_imports: sheetImports.rowCount,
+            log_data: logData.rowCount,
+            player_role_mapping: roleMapping.rowCount,
+            player_confirmed_logs: confirmedLogs.rowCount,
+            rpb_tracking: rpbTracking.rowCount,
+            event_endpoints_json: endpointsJson.rowCount,
+        };
+
+        const totalDeleted = Object.values(summary).reduce((sum, count) => sum + count, 0);
+
+        console.log(`✅ [CLEAR DATA] Successfully cleared ${totalDeleted} total rows for event: ${eventId}`);
+        console.log(`📊 [CLEAR DATA] Breakdown:`, JSON.stringify(summary));
+
+        res.json({ success: true, message: `Cleared ${totalDeleted} rows across 9 tables`, summary });
+    } catch (error) {
+        if (client) {
+            try { await client.query('ROLLBACK'); } catch (rollbackErr) {
+                console.error('❌ [CLEAR DATA] Rollback failed:', rollbackErr);
+            }
+        }
+        console.error(`❌ [CLEAR DATA] Error clearing data for event ${eventId}:`, error);
+        res.status(500).json({ success: false, message: 'Failed to clear event data: ' + error.message });
+    } finally {
+        if (client) client.release();
+    }
+});
+
 // Get last raid (by event) for a specific character using log_data + cached event metadata
 app.get('/api/character/last-raid', async (req, res) => {
     if (!req.isAuthenticated()) {
