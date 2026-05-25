@@ -6363,7 +6363,7 @@ class WoWLogsAnalyzer {
 
         // Reset all step indicators to initial state
         for (let i = 1; i <= 10; i++) {
-            this.updateWorkflowStep(i, '', 'Waiting...', '⏳');
+            this.updateWorkflowStep(i, 'waiting', 'Waiting...', '⏳');
         }
 
         // Hide logData section and remove completion message
