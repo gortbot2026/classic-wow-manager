@@ -1137,6 +1137,11 @@ class WoWLogsAnalyzer {
             this.resetWorkflow();
         });
 
+        // Cancel workflow button
+        document.getElementById('cancelWorkflowBtn').addEventListener('click', () => {
+            this.cancelWorkflow();
+        });
+
         // Checkbox control buttons
         document.getElementById('selectAllStepsBtn').addEventListener('click', () => {
             this.selectAllWorkflowSteps();
@@ -1151,7 +1156,7 @@ class WoWLogsAnalyzer {
             if (!this.workflowState) {
                 const input = document.getElementById('workflowLogInput')?.value || document.getElementById('logInput')?.value || '';
                 const eventId = this.getActiveEventSession();
-                this.workflowState = { currentStep: 0, failedStep: null, logUrl: input, eventId };
+                this.workflowState = { currentStep: 0, failedStep: null, cancelled: false, logUrl: input, eventId };
                 // Ensure progress UI is visible to reflect statuses
                 try { this.showWorkflowProgress(); } catch {}
             }
@@ -4965,6 +4970,7 @@ class WoWLogsAnalyzer {
         this.workflowState = {
             currentStep: 0,
             failedStep: null,
+            cancelled: false,
             logUrl: input,
             eventId: activeEventSession
         };
@@ -4981,6 +4987,8 @@ class WoWLogsAnalyzer {
         }
 
         try {
+            // Wrap steps in do/while(false) so cancellation checks can break out
+            do {
             // Step 1: Confirm Logs
             if (this.isStepEnabled(1)) {
                 this.workflowState.currentStep = 1;
@@ -4988,6 +4996,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(1, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 2: RPB Analysis
             if (this.isStepEnabled(2)) {
@@ -4996,6 +5005,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(2, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 3: World Buffs Analysis
             if (this.isStepEnabled(3)) {
@@ -5004,6 +5014,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(3, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 4: Frost Resistance Analysis
             if (this.isStepEnabled(4)) {
@@ -5012,6 +5023,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(4, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 5: Archive RPB sheet
             if (this.isStepEnabled(5)) {
@@ -5020,6 +5032,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(5, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 6: Archive World Buffs sheet
             if (this.isStepEnabled(6)) {
@@ -5028,6 +5041,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(6, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 7: Archive Frost Resistance sheet
             if (this.isStepEnabled(7)) {
@@ -5036,6 +5050,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(7, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 8: Import RPB data to database
             if (this.isStepEnabled(8)) {
@@ -5044,6 +5059,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(8, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 9: Import World Buffs data to database
             if (this.isStepEnabled(9)) {
@@ -5052,6 +5068,7 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(9, 'skipped', 'Skipped by user', '⏭️');
             }
+            if (this.workflowState.cancelled) { this.finalizeCancellation(); break; }
             
             // Step 10: Import Frost Resistance data to database
             if (this.isStepEnabled(10)) {
@@ -5060,9 +5077,11 @@ class WoWLogsAnalyzer {
             } else {
                 this.updateWorkflowStep(10, 'skipped', 'Skipped by user', '⏭️');
             }
+            // No cancellation check after step 10 — workflow is complete
             
             // Show completion
             await this.showWorkflowComplete();
+            } while (false); // End of cancellation-breakable block
             
         } catch (error) {
             console.error('❌ [WORKFLOW] Workflow failed:', error);
@@ -5756,6 +5775,10 @@ class WoWLogsAnalyzer {
         for (let i = 1; i <= 10; i++) {
             this.updateWorkflowStep(i, 'waiting', 'Waiting...', '⏳');
         }
+
+        // Show cancel button while workflow is running
+        const cancelBtn = document.getElementById('cancelWorkflowBtn');
+        if (cancelBtn) cancelBtn.style.display = 'block';
         
         this.hideOtherElements();
     }
@@ -5967,6 +5990,10 @@ class WoWLogsAnalyzer {
     }
 
     async showWorkflowComplete() {
+        // Hide cancel button — workflow is done
+        const cancelBtn = document.getElementById('cancelWorkflowBtn');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+
         // Fetch archive URLs from tracking
         const eventId = this.workflowState.eventId;
         const archiveUrls = await this.getAllArchiveUrls(eventId);
@@ -6190,6 +6217,10 @@ class WoWLogsAnalyzer {
 
 
     showWorkflowError(errorMessage) {
+        // Hide cancel button — workflow has failed
+        const cancelBtn = document.getElementById('cancelWorkflowBtn');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+
         // Restore button and input states since workflow has failed
         const runButton = document.getElementById('runCompleteWorkflowBtn');
         const workflowInput = document.getElementById('workflowLogInput');
@@ -6232,6 +6263,66 @@ class WoWLogsAnalyzer {
                 actionsDiv.style.display = 'block';
             }
         }
+    }
+
+    /**
+     * Cancels a running workflow. Sets the cancelled flag so the next
+     * between-step check will stop execution. The in-flight step finishes
+     * normally — cancellation takes effect between steps.
+     */
+    cancelWorkflow() {
+        if (!this.workflowState) return;
+        this.workflowState.cancelled = true;
+
+        // Hide cancel button immediately for responsive feedback
+        const cancelBtn = document.getElementById('cancelWorkflowBtn');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+    }
+
+    /**
+     * Called between steps when the cancelled flag is detected.
+     * Updates the UI: marks remaining steps as cancelled, re-enables
+     * the Run button and input, shows Retry/Start Over actions.
+     */
+    finalizeCancellation() {
+        const lastCompleted = this.workflowState.currentStep;
+
+        // Mark remaining steps as cancelled
+        for (let i = lastCompleted + 1; i <= 10; i++) {
+            this.updateWorkflowStep(i, 'error', 'Cancelled', '⛔');
+        }
+
+        // Set failedStep so Retry resumes from the right place
+        this.workflowState.failedStep = lastCompleted + 1;
+
+        // Re-enable Run button
+        const runButton = document.getElementById('runCompleteWorkflowBtn');
+        if (runButton) {
+            runButton.disabled = false;
+            runButton.innerHTML = 'Run Complete Workflow';
+            runButton.style.cursor = 'pointer';
+        }
+
+        // Re-enable input field
+        const workflowInput = document.getElementById('workflowLogInput');
+        if (workflowInput) {
+            workflowInput.readOnly = false;
+            workflowInput.style.backgroundColor = '';
+            workflowInput.style.cursor = '';
+        }
+
+        // Show Retry/Start Over actions
+        const actionsDiv = document.getElementById('workflowActions');
+        if (actionsDiv) {
+            actionsDiv.style.display = 'block';
+            // Show retry button since we have a resumable state
+            const retryBtn = document.getElementById('retryWorkflowBtn');
+            if (retryBtn) retryBtn.style.display = '';
+        }
+
+        // Hide cancel button (already hidden in cancelWorkflow, but be safe)
+        const cancelBtn = document.getElementById('cancelWorkflowBtn');
+        if (cancelBtn) cancelBtn.style.display = 'none';
     }
 
     resetWorkflow() {
@@ -6285,10 +6376,11 @@ class WoWLogsAnalyzer {
             completionMessage.remove();
         }
 
-        // Reset workflow state
+        // Reset workflow state (including cancelled flag)
         this.workflowState = {
             currentStep: 0,
             failedStep: null,
+            cancelled: false,
             logUrl: null,
             eventId: null
         };

@@ -554,6 +554,30 @@
     background: var(--border-color, #3a3a3a);
 }
 
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+    transform: translateY(-1px);
+}
+
+.btn-danger:disabled {
+    background: #6c3540;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Cancel workflow button — positioned after the progress steps */
+#cancelWorkflowBtn {
+    margin-top: 1rem;
+    width: 100%;
+    padding: 0.8rem 1.2rem;
+    font-size: 1rem;
+}
+
 .btn-small {
     padding: 0.4rem 0.8rem;
     font-size: 0.8rem;
