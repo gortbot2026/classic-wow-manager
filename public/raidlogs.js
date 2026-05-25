@@ -8118,6 +8118,11 @@ class RaidLogsManager {
             if (templatesEl) templatesEl.style.display = 'block';
             if (formEl) formEl.style.display = 'block';
             if (deniedEl) deniedEl.style.display = 'none';
+
+            // Update raid-type-aware button visibility (async, non-blocking)
+            if (this.activeEventId) {
+                this.updateTemplateButtonVisibility();
+            }
         } else {
             if (templatesEl) templatesEl.style.display = 'none';
             if (formEl) formEl.style.display = 'none';
@@ -8231,6 +8236,12 @@ class RaidLogsManager {
                 this.autoAddPuller();
             });
         }
+        const addTwinsTanksBtn = document.getElementById('add-templates-twins-tanks-btn');
+        if (addTwinsTanksBtn) {
+            addTwinsTanksBtn.addEventListener('click', () => {
+                this.autoAddTwinsTanks();
+            });
+        }
         const addGluthKiteBtn = document.getElementById('add-templates-gluth-kite-btn');
         if (addGluthKiteBtn) {
             addGluthKiteBtn.addEventListener('click', () => {
@@ -8265,6 +8276,70 @@ class RaidLogsManager {
         
         window.addEventListener('scroll', repositionDropdown);
         window.addEventListener('resize', repositionDropdown);
+    }
+
+    /**
+     * Fetch assignment panels for the active event and cache the result.
+     * Returns cached panels if already loaded for this event, avoiding redundant API calls.
+     * @returns {Promise<Array>} Array of assignment panel objects
+     */
+    async _fetchAndCacheAssignments() {
+        // Return cached data if it matches the current event
+        if (this._cachedAssignmentPanels && this._cachedAssignmentEventId === this.activeEventId) {
+            return this._cachedAssignmentPanels;
+        }
+        const res = await fetch(`/api/assignments/${this.activeEventId}`);
+        const data = await res.json();
+        if (!data || !data.success) throw new Error('Failed to load assignments');
+        const panels = Array.isArray(data.panels) ? data.panels : [];
+        this._cachedAssignmentPanels = panels;
+        this._cachedAssignmentEventId = this.activeEventId;
+        return panels;
+    }
+
+    /**
+     * Toggle visibility of raid-type-specific template buttons based on assignment data.
+     * Naxx raids show 4H tanks, Raz MC, Gluth kite. AQ40 raids show Twins tanks.
+     * Falls back to showing all buttons if assignments cannot be loaded (fail-open).
+     */
+    async updateTemplateButtonVisibility() {
+        const btn4H = document.getElementById('add-templates-4h-tanks-btn');
+        const btnRaz = document.getElementById('add-templates-raz-mc-btn');
+        const btnGluth = document.getElementById('add-templates-gluth-kite-btn');
+        const btnTwins = document.getElementById('add-templates-twins-tanks-btn');
+
+        try {
+            const panels = await this._fetchAndCacheAssignments();
+
+            // Determine raid type: AQ40 if any panel has dungeon containing 'AQ40'
+            const isAQ40 = panels.some(p => String(p.dungeon || '').toLowerCase().includes('aq40'));
+
+            // Check if warlocks are assigned in Twin Emperors panel
+            let hasWarlockTanks = false;
+            if (isAQ40) {
+                const twinsPanel = panels.find(p => String(p.boss || '').toLowerCase().includes('twin emperor'));
+                if (twinsPanel && Array.isArray(twinsPanel.entries)) {
+                    hasWarlockTanks = twinsPanel.entries.some(en =>
+                        String(en.class_name || '').toLowerCase() === 'warlock' && en.character_name
+                    );
+                }
+            }
+
+            // Toggle visibility: Naxx-specific buttons
+            if (btn4H) btn4H.style.display = isAQ40 ? 'none' : '';
+            if (btnRaz) btnRaz.style.display = isAQ40 ? 'none' : '';
+            if (btnGluth) btnGluth.style.display = isAQ40 ? 'none' : '';
+
+            // AQ40-specific: Twins tanks (only if warlocks are assigned)
+            if (btnTwins) btnTwins.style.display = (isAQ40 && hasWarlockTanks) ? '' : 'none';
+        } catch (err) {
+            // Fail-open: show all buttons if assignments cannot be loaded
+            console.warn('⚠️ [TEMPLATE VISIBILITY] Failed to fetch assignments, showing all buttons:', err);
+            if (btn4H) btn4H.style.display = '';
+            if (btnRaz) btnRaz.style.display = '';
+            if (btnGluth) btnGluth.style.display = '';
+            if (btnTwins) btnTwins.style.display = '';
+        }
     }
 
     // Auto-add 4H tanks from Assignments: pick warriors in Horsemen grid excluding main-page Tanking ID1..ID4
@@ -8359,6 +8434,72 @@ class RaidLogsManager {
             this.updateTotalPointsCard();
         } catch (err) {
             console.error('❌ [4H TANKS] Failed to auto add 4H tanks:', err);
+        }
+    }
+    /**
+     * Auto-add Twin Emperors warlock tanks from the assignments panel.
+     * Fetches assignments, finds the Twin Emperors panel, extracts up to 2 warlocks,
+     * and POSTs each with +15 points for warlock tanking duty.
+     */
+    async autoAddTwinsTanks() {
+        if (!this.activeEventId) {
+            console.error('❌ [TWINS TANKS] No active event ID');
+            return;
+        }
+        try {
+            // Use cached assignments if available, otherwise fetch
+            const panels = await this._fetchAndCacheAssignments();
+
+            // Find the Twin Emperors panel
+            const twinsPanel = panels.find(p => String(p.boss || '').toLowerCase().includes('twin emperor'));
+            if (!twinsPanel) {
+                console.warn('⚠️ [TWINS TANKS] Twin Emperors panel not found');
+                return;
+            }
+
+            // Extract warlock entries from the panel
+            const warlocks = (Array.isArray(twinsPanel.entries) ? twinsPanel.entries : [])
+                .filter(en => String(en.class_name || '').toLowerCase() === 'warlock' && en.character_name)
+                .slice(0, 2);
+
+            if (warlocks.length === 0) {
+                console.warn('⚠️ [TWINS TANKS] No warlocks found in Twin Emperors panel');
+                return;
+            }
+
+            const iconUrl = 'https://wow.zamimg.com/images/wow/icons/medium/classicon_warlock.jpg';
+
+            // Ensure players list present to resolve discord IDs
+            if (!this.playersData || !Array.isArray(this.playersData) || this.playersData.length === 0) {
+                try { await this.fetchPlayersForDropdown(); } catch {}
+            }
+
+            // POST each warlock sequentially
+            for (const entry of warlocks) {
+                const name = String(entry.character_name);
+                let discordId = null;
+                const match = (this.playersData || []).find(p => String(p.player_name || '').toLowerCase() === name.toLowerCase());
+                if (match) { discordId = match.discord_id || null; }
+                await fetch(`/api/manual-rewards/${this.activeEventId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        player_name: name,
+                        player_class: 'Warlock',
+                        discord_id: discordId,
+                        description: 'Twin Emperors warlock tanking',
+                        points: 15,
+                        icon_url: iconUrl
+                    })
+                });
+            }
+
+            // Refresh list
+            try { await this.fetchManualRewardsData(); } catch (e) { console.warn('⚠️ [MANUAL REWARDS] Skipping due to fetch error', e); }
+            this.populateManualRewardsTable();
+            this.updateTotalPointsCard();
+        } catch (err) {
+            console.error('❌ [TWINS TANKS] Failed to auto add twins tanks:', err);
         }
     }
     // Auto-add Raz MC: add exactly the two priests assigned in the Razuvious panel on /assignments/military
@@ -9096,6 +9237,7 @@ class RaidLogsManager {
         const addTemplatesBtn = document.getElementById('add-templates-btn');
         const groupButtons = [
             document.getElementById('add-templates-4h-tanks-btn'),
+            document.getElementById('add-templates-twins-tanks-btn'),
             document.getElementById('add-templates-raz-mc-btn'),
             document.getElementById('add-templates-puller-btn'),
             document.getElementById('add-templates-gluth-kite-btn'),
