@@ -1,6 +1,120 @@
 // public/roster.js
 
 document.addEventListener('DOMContentLoaded', async () => {
+
+    /**
+     * Classifies Gothik healers into Human and Undead sides using a role-aware algorithm.
+     *
+     * Instead of hardcoding group numbers, this inspects each group's composition
+     * (looking for Warriors and Rogues) to determine melee groups, then assigns
+     * healers accordingly with Priest/Group1 overrides, Shaman minimum enforcement,
+     * and Druid-based balancing.
+     *
+     * @param {Array} roster - Full raid roster (all members, not just healers)
+     * @param {Function} [filterFn] - Optional filter function. If omitted, all healers
+     *                                 are considered assignable.
+     * @returns {{ humanSide: Array, undeadSide: Array }} Two arrays of healer roster members
+     */
+    function classifyGothikHealers(roster, filterFn) {
+        const cls = (r) => String(r.class_name || '').toLowerCase();
+        const gid = (r) => Number(r.party_id);
+
+        // Step 1 — Identify melee groups (contain a Warrior or Rogue). Group 1 excluded (tank group).
+        const meleeGroups = new Set();
+        roster.forEach(r => {
+            const group = gid(r);
+            if (group === 1) return; // group 1 is always tank group, never melee
+            if (cls(r) === 'warrior' || cls(r) === 'rogue') {
+                meleeGroups.add(group);
+            }
+        });
+
+        // Step 2 — Collect all assignable healers
+        const isHealer = (r) => ['shaman', 'priest', 'druid'].includes(cls(r));
+        const allHealers = typeof filterFn === 'function'
+            ? filterFn(roster.filter(isHealer))
+            : roster.filter(isHealer);
+
+        // Step 3 — Initial side assignment
+        const humanSide = [];
+        const undeadSide = [];
+        allHealers.forEach(r => {
+            const className = cls(r);
+            const group = gid(r);
+            if (className === 'priest') {
+                // Priests always go Human side
+                humanSide.push(r);
+            } else if (group === 1) {
+                // Group 1 healers always go Human side (tank group)
+                humanSide.push(r);
+            } else if (meleeGroups.has(group)) {
+                // Healers in melee groups go Undead side
+                undeadSide.push(r);
+            } else {
+                // All other healers go Human side
+                humanSide.push(r);
+            }
+        });
+
+        // Step 4 — Enforce minimum 2 Shamans on Human side
+        const humanShamans = humanSide.filter(r => cls(r) === 'shaman');
+        let shamansNeeded = 2 - humanShamans.length;
+        if (shamansNeeded > 0) {
+            // First try non-melee-group Shamans from Undead side
+            const undeadShamansNonMelee = undeadSide
+                .filter(r => cls(r) === 'shaman' && !meleeGroups.has(gid(r)))
+                .sort((a, b) => gid(b) - gid(a));
+            for (const s of undeadShamansNonMelee) {
+                if (shamansNeeded <= 0) break;
+                undeadSide.splice(undeadSide.indexOf(s), 1);
+                humanSide.push(s);
+                shamansNeeded--;
+            }
+            // Then pull from melee-group Shamans, highest group number first
+            if (shamansNeeded > 0) {
+                const undeadShamansMelee = undeadSide
+                    .filter(r => cls(r) === 'shaman')
+                    .sort((a, b) => gid(b) - gid(a));
+                for (const s of undeadShamansMelee) {
+                    if (shamansNeeded <= 0) break;
+                    undeadSide.splice(undeadSide.indexOf(s), 1);
+                    humanSide.push(s);
+                    shamansNeeded--;
+                }
+            }
+        }
+
+        // Step 5 — Balance with Druids
+        const total = humanSide.length + undeadSide.length;
+        const undeadTarget = Math.ceil(total / 2);
+        const humanTarget = Math.floor(total / 2);
+
+        // Move Druids to achieve balance
+        while (humanSide.length > humanTarget) {
+            // Human has too many — move Druids from Human to Undead (highest group first)
+            const movable = humanSide
+                .filter(r => cls(r) === 'druid')
+                .sort((a, b) => gid(b) - gid(a));
+            if (movable.length === 0) break;
+            const d = movable[0];
+            humanSide.splice(humanSide.indexOf(d), 1);
+            undeadSide.push(d);
+        }
+
+        while (undeadSide.length > undeadTarget) {
+            // Undead has too many — move Druids from Undead to Human (lowest group first)
+            const movable = undeadSide
+                .filter(r => cls(r) === 'druid')
+                .sort((a, b) => gid(a) - gid(b));
+            if (movable.length === 0) break;
+            const d = movable[0];
+            undeadSide.splice(undeadSide.indexOf(d), 1);
+            humanSide.push(d);
+        }
+
+        return { humanSide, undeadSide };
+    }
+
     // Utility: Escape HTML to prevent XSS
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -4279,19 +4393,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 roster.filter(r=>['warlock','hunter'].includes(String(r.class_name||'').toLowerCase()))
                     .forEach(r=> toAdd.push(makeEntry(r, null, 'Place your Pet / Void Walker between the platforms to absorbe charge.')));
 
-                const isHealer = (r) => ['shaman','priest','druid'].includes(String(r.class_name||'').toLowerCase());
-                const inGroups = (r, groups) => groups.includes(Number(r.party_id));
-                const undeadHealers = roster.filter(r=>isHealer(r) && inGroups(r, [2,3,4,5]));
-                const humanHealers  = roster.filter(r=>isHealer(r) && inGroups(r, [1,6,7]));
-                undeadHealers.forEach(r=> toAdd.push(makeEntry(r, icons.star,   'Go heal Undead side.')));
-                humanHealers.forEach(r=> toAdd.push(makeEntry(r, icons.circle, 'Go heal Human side.')));
-                let undeadCount = undeadHealers.length;
-                let humanCount = humanHealers.length;
-                const group8Healers = roster.filter(r=>isHealer(r) && Number(r.party_id)===8);
-                group8Healers.forEach(r => {
-                    if (undeadCount <= humanCount) { toAdd.push(makeEntry(r, icons.star,   'Go heal Undead side.')); undeadCount += 1; }
-                    else {                           toAdd.push(makeEntry(r, icons.circle, 'Go heal Human side.'));  humanCount += 1; }
-                });
+                // Healers by side — role-aware algorithm
+                const { humanSide, undeadSide } = classifyGothikHealers(roster);
+                undeadSide.forEach(r => toAdd.push(makeEntry(r, icons.star, 'Go heal Undead side.')));
+                humanSide.forEach(r => toAdd.push(makeEntry(r, icons.circle, 'Go heal Human side.')));
 
                 const wing = (panel && panel.wing) || 'Military';
                 const boss = (panel && panel.boss) || 'Gothik';
