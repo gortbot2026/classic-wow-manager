@@ -260,6 +260,14 @@ textarea.profile-input {
   color: #2c3e50;
 }
 
+/* Override dark-theme text color from style.css (body.user-settings :where(p) sets #f8f9fa) */
+.modal-body p,
+.modal-body span,
+.modal-body label,
+.modal-body small {
+  color: #2c3e50;
+}
+
 .modal-body label {
   display: block;
   font-weight: 600;
