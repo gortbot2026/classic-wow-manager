@@ -680,6 +680,11 @@ initializeRaidDurationsTable();
     // Initialize Four Horsemen experience cache table
     initializeFourHorsemenExperienceTable();
 
+    // Seed Four Horsemen experience from historical data (non-blocking)
+    seedFourHorsemenExperience().catch(err => {
+      console.error('⚠️ [4H EXP] Auto-seed failed (non-blocking):', err.message);
+    });
+
 // Migrate player confirmed logs table
 migratePlayerConfirmedLogsTable();
 
@@ -1590,6 +1595,63 @@ const HORSEMEN_REWARD_WHITELIST = [
 function isHorsemenWhitelistedDescription(description) {
   if (!description) return false;
   return HORSEMEN_REWARD_WHITELIST.includes(String(description).trim().toLowerCase());
+}
+
+/**
+ * Seeds the four_horsemen_experience table by computing tank counts for ALL
+ * characters from historical data in assignment_confirmation_logs and
+ * manual_rewards_deductions. Uses UPSERT so it is idempotent and safe to
+ * call on every startup.
+ *
+ * @returns {Promise<{seeded: number, rows: Array<{character_name: string, tank_count: number}>}>}
+ */
+async function seedFourHorsemenExperience() {
+  let client;
+  try {
+    client = await pool.connect();
+
+    const whitelistParams = HORSEMEN_REWARD_WHITELIST.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await client.query(`
+      WITH source_a AS (
+        SELECT l.event_id, LOWER(TRIM(elem->>'character_name')) AS character_name
+        FROM assignment_confirmation_logs l,
+             jsonb_array_elements(COALESCE(l.server_assignments, '[]'::jsonb)) AS elem
+        WHERE elem->>'boss' ILIKE '%horse%'
+          AND elem->>'accept_status' = 'accept'
+          AND elem->>'character_name' IS NOT NULL
+      ),
+      source_b AS (
+        SELECT event_id, LOWER(TRIM(player_name)) AS character_name
+        FROM manual_rewards_deductions
+        WHERE LOWER(TRIM(description)) IN (${whitelistParams})
+          AND player_name IS NOT NULL
+      ),
+      combined AS (
+        SELECT event_id, character_name FROM source_a
+        UNION
+        SELECT event_id, character_name FROM source_b
+      ),
+      counts AS (
+        SELECT character_name, COUNT(DISTINCT event_id) AS cnt
+        FROM combined
+        WHERE character_name IS NOT NULL AND character_name != ''
+        GROUP BY character_name
+      )
+      INSERT INTO four_horsemen_experience (character_name, tank_count, last_updated)
+      SELECT character_name, cnt, NOW() FROM counts
+      ON CONFLICT (character_name) DO UPDATE
+        SET tank_count = EXCLUDED.tank_count, last_updated = NOW()
+      RETURNING character_name, tank_count
+    `, HORSEMEN_REWARD_WHITELIST);
+
+    const seeded = result.rows.length;
+    const total = result.rows.reduce((sum, r) => sum + r.tank_count, 0);
+    console.log(`✅ [4H EXP] Seeded ${seeded} characters (${total} total tank assignments)`);
+    return { seeded, rows: result.rows };
+  } finally {
+    if (client) client.release();
+  }
 }
 
 /**
@@ -21439,52 +21501,12 @@ app.get('/api/four-horsemen-experience', async (req, res) => {
  * manual_rewards_deductions, then upserts into four_horsemen_experience.
  */
 app.post('/api/four-horsemen-experience/seed', requireManagement, async (req, res) => {
-  let client;
   try {
-    client = await pool.connect();
-
-    const whitelistParams = HORSEMEN_REWARD_WHITELIST.map((_, i) => `$${i + 1}`).join(', ');
-
-    const result = await client.query(`
-      WITH source_a AS (
-        SELECT l.event_id, LOWER(TRIM(elem->>'character_name')) AS character_name
-        FROM assignment_confirmation_logs l,
-             jsonb_array_elements(COALESCE(l.server_assignments, '[]'::jsonb)) AS elem
-        WHERE elem->>'boss' ILIKE '%horse%'
-          AND elem->>'accept_status' = 'accept'
-          AND elem->>'character_name' IS NOT NULL
-      ),
-      source_b AS (
-        SELECT event_id, LOWER(TRIM(player_name)) AS character_name
-        FROM manual_rewards_deductions
-        WHERE LOWER(TRIM(description)) IN (${whitelistParams})
-          AND player_name IS NOT NULL
-      ),
-      combined AS (
-        SELECT event_id, character_name FROM source_a
-        UNION
-        SELECT event_id, character_name FROM source_b
-      ),
-      counts AS (
-        SELECT character_name, COUNT(DISTINCT event_id) AS cnt
-        FROM combined
-        WHERE character_name IS NOT NULL AND character_name != ''
-        GROUP BY character_name
-      )
-      INSERT INTO four_horsemen_experience (character_name, tank_count, last_updated)
-      SELECT character_name, cnt, NOW() FROM counts
-      ON CONFLICT (character_name) DO UPDATE
-        SET tank_count = EXCLUDED.tank_count, last_updated = NOW()
-      RETURNING character_name, tank_count
-    `, HORSEMEN_REWARD_WHITELIST);
-
-    console.log(`✅ [4H EXP] Seeded ${result.rows.length} characters`);
-    res.json({ success: true, seeded: result.rows.length, data: result.rows });
+    const { seeded, rows } = await seedFourHorsemenExperience();
+    res.json({ success: true, seeded, data: rows });
   } catch (error) {
     console.error('❌ [4H EXP] Error seeding experience data:', error.message);
     res.status(500).json({ success: false, message: 'Error seeding experience data', error: error.message });
-  } finally {
-    if (client) client.release();
   }
 });
 

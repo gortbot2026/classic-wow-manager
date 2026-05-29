@@ -459,7 +459,6 @@
 
           const altName = String(alt.character_name || '');
           const tankCount = expMap[altName.toLowerCase()] || 0;
-          if (tankCount <= 0) continue;
 
           const dedupKey = `${rosterName.toLowerCase()}|${altName.toLowerCase()}`;
           if (seen.has(dedupKey)) continue;
@@ -477,13 +476,15 @@
       // Sort by tank count descending
       alternatives.sort((a, b) => b.tankCount - a.tankCount);
 
-      // Render rows
+      // Render rows — zero-experience alts are visually dimmed
       alternatives.forEach(alt => {
         const row = document.createElement('div');
         row.style.padding = '5px 4px';
-        row.style.color = '#e5e7eb';
         row.style.fontSize = '13px';
         row.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+        const isZeroExp = alt.tankCount === 0;
+        row.style.color = isZeroExp ? '#6b7280' : '#e5e7eb';
+        row.style.fontStyle = isZeroExp ? 'italic' : 'normal';
         const classDisplay = alt.rosterClass.charAt(0).toUpperCase() + alt.rosterClass.slice(1);
         row.textContent = `Currently raiding: ${alt.rosterName} (${classDisplay}) | Alt warrior: ${alt.altName} | 4H experience: ${alt.tankCount} time${alt.tankCount !== 1 ? 's' : ''}`;
         body.appendChild(row);
