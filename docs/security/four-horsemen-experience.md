@@ -1,6 +1,6 @@
 # Security: Four Horsemen Experience & Auto-Assignment
 
-_Reviewed: 2026-05-29 | Reviewer: Security Gort_
+_Reviewed: 2026-05-29 (updated) | Reviewer: Security Gort_
 
 ## Feature Overview
 
@@ -42,8 +42,11 @@ _Reviewed: 2026-05-29 | Reviewer: Security Gort_
 - Whitelist comparison: `HORSEMEN_REWARD_WHITELIST` is pre-lowercased; comparison uses `String().trim().toLowerCase()` — no bypass via case or whitespace
 - Dynamic IN clause uses proper positional params (`$1, $2, ...`) — no interpolation
 
-### `POST /api/four-horsemen-experience/seed`
+### `POST /api/four-horsemen-experience/seed` / `seedFourHorsemenExperience()` auto-seed
 - No user-supplied input to the query body; only the pre-defined `HORSEMEN_REWARD_WHITELIST` is parameterized into the CTE
+- Startup auto-seed calls the same `seedFourHorsemenExperience()` function — no new code path
+- Startup seed is non-blocking: wrapped in `.catch(err => console.error(...))` so server boot never fails on seed error
+- Seed is idempotent: `ON CONFLICT (character_name) DO UPDATE` — safe to run on every restart
 
 ---
 
@@ -85,5 +88,7 @@ All new queries use parameterized `$N` placeholders:
 
 ## Audit Logging
 
+- Startup auto-seed logs: `✅ [4H EXP] Seeded N characters (M total tank assignments)` on success
+- Startup auto-seed logs: `⚠️ [4H EXP] Auto-seed failed (non-blocking): <message>` on failure — server continues
 - Recompute operations log to console: `❌ [4H EXP] Error recomputing for <name>` on failure
 - Hooks wrapped in try/catch — failures are swallowed to prevent breaking the parent operation (create/delete reward, confirm assignment). This is correct behavior but means failed recomputes are silent to the user.
