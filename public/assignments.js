@@ -338,6 +338,161 @@
     }).filter(Boolean);
   }
 
+  /**
+   * Renders a collapsible "Alternative tank options" panel below the horsemen grid.
+   * Shows non-Warrior raid members whose Warrior alts have 4H tanking experience.
+   *
+   * @param {HTMLElement} horseGridWrap - The horsemen grid wrapper element to append to
+   * @param {Array} roster - Current raid roster
+   */
+  async function renderAlternativeTankOptions(horseGridWrap, roster) {
+    const altPanel = document.createElement('div');
+    altPanel.style.marginTop = '12px';
+    altPanel.style.borderTop = '1px solid rgba(255,255,255,0.1)';
+
+    // Header with toggle
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.gap = '8px';
+    header.style.padding = '10px 8px';
+    header.style.cursor = 'pointer';
+    header.style.userSelect = 'none';
+
+    const arrow = document.createElement('span');
+    arrow.textContent = '▶';
+    arrow.style.color = '#9ca3af';
+    arrow.style.fontSize = '12px';
+    arrow.style.transition = 'transform 0.2s';
+
+    const title = document.createElement('span');
+    title.textContent = 'Alternative tank options';
+    title.style.color = '#e5e7eb';
+    title.style.fontWeight = '600';
+    title.style.fontSize = '14px';
+
+    header.appendChild(arrow);
+    header.appendChild(title);
+
+    const body = document.createElement('div');
+    body.style.display = 'none';
+    body.style.padding = '4px 8px 10px';
+
+    let collapsed = true;
+    header.addEventListener('click', () => {
+      collapsed = !collapsed;
+      body.style.display = collapsed ? 'none' : 'block';
+      arrow.style.transform = collapsed ? '' : 'rotate(90deg)';
+      arrow.textContent = collapsed ? '▶' : '▼';
+    });
+
+    altPanel.appendChild(header);
+    altPanel.appendChild(body);
+    horseGridWrap.appendChild(altPanel);
+
+    // Fetch data in parallel
+    try {
+      const expRes = await fetch('/api/four-horsemen-experience');
+      const expData = await expRes.json();
+      const expMap = {};
+      if (expData.success && Array.isArray(expData.data)) {
+        expData.data.forEach(e => { expMap[String(e.character_name).toLowerCase()] = e.tank_count || 0; });
+      }
+
+      // Find non-Warrior roster members
+      const nonWarriors = (Array.isArray(roster) ? roster : []).filter(r => {
+        const cls = canonicalizeClass(String(r.class_name || ''));
+        return cls !== 'warrior' && cls !== 'unknown';
+      });
+
+      if (nonWarriors.length === 0) {
+        body.innerHTML = '<div style="color:#6b7280;font-style:italic;padding:4px 0;">No alternative tank options available</div>';
+        return;
+      }
+
+      // Collect discord IDs and character names for batch alt lookup
+      const discordIds = [];
+      const characterNames = [];
+      const rosterByKey = {};
+
+      nonWarriors.forEach(r => {
+        const did = r.discord_user_id || r.discordId || r.discord_userid || r.discord_id || '';
+        const name = String(r.character_name || '').trim();
+        if (did) {
+          discordIds.push(String(did));
+          rosterByKey[`discord:${did}`] = r;
+        }
+        if (name) {
+          characterNames.push(name);
+          rosterByKey[`name:${name}`] = r;
+        }
+      });
+
+      const batchRes = await fetch('/api/guildies/alts-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discordIds, characterNames })
+      });
+      const batchData = await batchRes.json();
+
+      if (!batchData.success) {
+        body.innerHTML = '<div style="color:#6b7280;font-style:italic;padding:4px 0;">No alternative tank options available</div>';
+        return;
+      }
+
+      // Build alternatives list
+      const alternatives = [];
+      const seen = new Set(); // avoid duplicates
+
+      for (const [key, entry] of Object.entries(batchData.data || {})) {
+        const rosterRow = rosterByKey[key];
+        if (!rosterRow) continue;
+        const rosterName = String(rosterRow.character_name || '');
+        const rosterClass = canonicalizeClass(String(rosterRow.class_name || ''));
+
+        const alts = Array.isArray(entry.alts) ? entry.alts : [];
+        for (const alt of alts) {
+          const altClass = String(alt.class || '').toLowerCase();
+          if (altClass !== 'warrior') continue;
+          // Skip if alt is the same as the current character
+          if (String(alt.character_name || '').toLowerCase() === rosterName.toLowerCase()) continue;
+
+          const altName = String(alt.character_name || '');
+          const tankCount = expMap[altName.toLowerCase()] || 0;
+          if (tankCount <= 0) continue;
+
+          const dedupKey = `${rosterName.toLowerCase()}|${altName.toLowerCase()}`;
+          if (seen.has(dedupKey)) continue;
+          seen.add(dedupKey);
+
+          alternatives.push({ rosterName, rosterClass, altName, tankCount });
+        }
+      }
+
+      if (alternatives.length === 0) {
+        body.innerHTML = '<div style="color:#6b7280;font-style:italic;padding:4px 0;">No alternative tank options available</div>';
+        return;
+      }
+
+      // Sort by tank count descending
+      alternatives.sort((a, b) => b.tankCount - a.tankCount);
+
+      // Render rows
+      alternatives.forEach(alt => {
+        const row = document.createElement('div');
+        row.style.padding = '5px 4px';
+        row.style.color = '#e5e7eb';
+        row.style.fontSize = '13px';
+        row.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+        const classDisplay = alt.rosterClass.charAt(0).toUpperCase() + alt.rosterClass.slice(1);
+        row.textContent = `Currently raiding: ${alt.rosterName} (${classDisplay}) | Alt warrior: ${alt.altName} | 4H experience: ${alt.tankCount} time${alt.tankCount !== 1 ? 's' : ''}`;
+        body.appendChild(row);
+      });
+    } catch (err) {
+      body.innerHTML = '<div style="color:#6b7280;font-style:italic;padding:4px 0;">No alternative tank options available</div>';
+    }
+  }
+
   function buildPanel(panel, user, roster) {
     const { dungeon, wing, boss, strategy_text, image_url, default_strategy_text } = panel;
     const canManage = !!(user && user.loggedIn && user.hasManagementRole);
@@ -1480,6 +1635,11 @@
       // expose helpers to toggle and fetch state
       panelDiv._renderHorseGrid = (readOnly) => renderHorseGrid(readOnly);
       panelDiv._getHorseGridState = () => horseGridState;
+
+      // ── Alternative Tank Options Panel (admin-only, Classic only) ──
+      if (canManage && !isCleavePanel) {
+        renderAlternativeTankOptions(horseGridWrap, roster);
+      }
     }
 
     // Helper: Check if a player has a main (non-grid) assignment in this panel
@@ -3167,12 +3327,54 @@
                       state.tanksByRow[row] = [t ? t.character_name : null];
                     }
                   } else {
-                    // Classic: Map rows to tank indices with swap: row1<-tank3, row3<-tank1; others 1:1
-                    const indexMap = [null, 3, 2, 1, 4, 5, 6, 7, 8];
-                    for (let row=1; row<=8; row++) {
+                    // Classic: Map rows 1-4 to tank indices with swap: row1<-tank3, row3<-tank1; row2<-tank2, row4<-tank4
+                    const indexMap = [null, 3, 2, 1, 4];
+                    for (let row = 1; row <= 4; row++) {
                       const srcIdx = indexMap[row] ?? row;
                       const t = getTankByIndex(srcIdx);
                       state.tanksByRow[row] = [t ? t.character_name : null];
+                    }
+
+                    // Rows 5-8: fill with experience-sorted Warriors from the raid roster
+                    try {
+                      const expRes = await fetch('/api/four-horsemen-experience');
+                      const expData = await expRes.json();
+                      const expMap = {};
+                      if (expData.success && Array.isArray(expData.data)) {
+                        expData.data.forEach(e => { expMap[String(e.character_name).toLowerCase()] = e.tank_count || 0; });
+                      }
+
+                      // Collect names already assigned to rows 1-4
+                      const assignedNames = new Set();
+                      for (let r = 1; r <= 4; r++) {
+                        const n = (state.tanksByRow[r] || [])[0];
+                        if (n) assignedNames.add(String(n).toLowerCase());
+                      }
+
+                      // Filter roster to Warriors not already in rows 1-4, sort by experience DESC
+                      const eligibleWarriors = filterAssignable(
+                        roster.filter(r => {
+                          const cls = canonicalizeClass(String(r.class_name || ''));
+                          return cls === 'warrior' && !assignedNames.has(String(r.character_name || '').toLowerCase());
+                        })
+                      ).sort((a, b) => {
+                        const countA = expMap[String(a.character_name || '').toLowerCase()] || 0;
+                        const countB = expMap[String(b.character_name || '').toLowerCase()] || 0;
+                        if (countB !== countA) return countB - countA;
+                        return ((Number(a.party_id) || 99) - (Number(b.party_id) || 99)) || ((Number(a.slot_id) || 99) - (Number(b.slot_id) || 99));
+                      });
+
+                      // Assign top 4 eligible Warriors to rows 5-8
+                      for (let row = 5; row <= 8; row++) {
+                        const w = eligibleWarriors[row - 5];
+                        state.tanksByRow[row] = [w ? w.character_name : null];
+                      }
+                    } catch (expErr) {
+                      // Fallback: leave rows 5-8 from tanking panel as before
+                      for (let row = 5; row <= 8; row++) {
+                        const t = getTankByIndex(row);
+                        state.tanksByRow[row] = [t ? t.character_name : null];
+                      }
                     }
                   }
                   if (typeof panelDiv._renderHorseGrid === 'function') panelDiv._renderHorseGrid(true);

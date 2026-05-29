@@ -677,6 +677,9 @@ initializeRaidDurationsTable();
     // Initialize assignments tables
     initializeAssignmentsTables();
 
+    // Initialize Four Horsemen experience cache table
+    initializeFourHorsemenExperienceTable();
+
 // Migrate player confirmed logs table
 migratePlayerConfirmedLogsTable();
 
@@ -1534,6 +1537,108 @@ async function initializeAssignmentsTables() {
     console.log('✅ Assignments tables initialized');
   } catch (error) {
     console.error('❌ Error initializing assignments tables:', error);
+  }
+}
+
+/**
+ * Four Horsemen Experience Cache Table
+ *
+ * Tracks the number of distinct raids each character has tanked
+ * on the Four Horsemen encounter. Fed from assignment_confirmation_logs
+ * (accepted 4H assignments) and manual_rewards_deductions (whitelisted
+ * tank-reward descriptions). Used for experience-based auto-assignment
+ * of tank slots 5-8 on the Classic horsemen grid.
+ */
+async function initializeFourHorsemenExperienceTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS four_horsemen_experience (
+        character_name VARCHAR(255) PRIMARY KEY,
+        tank_count INT DEFAULT 0,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Four Horsemen experience table initialized');
+  } catch (error) {
+    console.error('❌ Error initializing four_horsemen_experience table:', error);
+  }
+}
+
+/**
+ * Whitelist of manual reward descriptions that count as Four Horsemen
+ * tank assignments. Compared case-insensitively.
+ */
+const HORSEMEN_REWARD_WHITELIST = [
+  '4 horsemen tank assignment',
+  '4 horsemen tank assignment #1',
+  '4 horsemen tank assignment #2',
+  '4 horsemen tank assignment #3',
+  '4 horsemen tank assignment #4',
+  'off tank 1',
+  'off tank 2',
+  'off tank 3',
+  'main tank'
+];
+
+/**
+ * Checks whether a manual reward description matches the Four Horsemen
+ * tank assignment whitelist (case-insensitive).
+ *
+ * @param {string} description - The reward description to check
+ * @returns {boolean} True if the description is whitelisted
+ */
+function isHorsemenWhitelistedDescription(description) {
+  if (!description) return false;
+  return HORSEMEN_REWARD_WHITELIST.includes(String(description).trim().toLowerCase());
+}
+
+/**
+ * Recomputes the Four Horsemen tank experience count for a single character
+ * by querying both assignment_confirmation_logs and manual_rewards_deductions,
+ * then upserts the result into four_horsemen_experience.
+ *
+ * @param {object} client - A pg client (from pool.connect())
+ * @param {string} characterName - The character name to recompute
+ */
+async function recomputeHorsemenExperience(client, characterName) {
+  if (!characterName) return;
+  const name = String(characterName).trim();
+  if (!name) return;
+
+  try {
+    const result = await client.query(`
+      WITH source_a AS (
+        SELECT DISTINCT l.event_id
+        FROM assignment_confirmation_logs l,
+             jsonb_array_elements(COALESCE(l.server_assignments, '[]'::jsonb)) AS elem
+        WHERE elem->>'boss' ILIKE '%horse%'
+          AND elem->>'accept_status' = 'accept'
+          AND LOWER(elem->>'character_name') = LOWER($1)
+      ),
+      source_b AS (
+        SELECT DISTINCT event_id
+        FROM manual_rewards_deductions
+        WHERE LOWER(player_name) = LOWER($1)
+          AND LOWER(TRIM(description)) IN (${HORSEMEN_REWARD_WHITELIST.map((_, i) => `$${i + 2}`).join(', ')})
+      ),
+      combined AS (
+        SELECT event_id FROM source_a
+        UNION
+        SELECT event_id FROM source_b
+      )
+      SELECT COUNT(*) AS cnt FROM combined
+    `, [name, ...HORSEMEN_REWARD_WHITELIST]);
+
+    const count = parseInt(result.rows[0].cnt, 10) || 0;
+
+    await client.query(`
+      INSERT INTO four_horsemen_experience (character_name, tank_count, last_updated)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (character_name) DO UPDATE
+        SET tank_count = $2, last_updated = NOW()
+    `, [name, count]);
+  } catch (error) {
+    console.error(`❌ [4H EXP] Error recomputing for ${name}:`, error.message);
   }
 }
 
@@ -18241,6 +18346,19 @@ app.post('/api/assignments/:eventId/verify-completion', async (req, res) => {
             userAgent
         ]);
         
+        // Recompute 4H experience for any accepted horsemen assignments
+        try {
+          const horseChars = new Set();
+          (Array.isArray(serverAccepts) ? serverAccepts : []).forEach(sa => {
+            if (sa.boss && String(sa.boss).toLowerCase().includes('horse') && sa.accept_status === 'accept' && sa.character_name) {
+              horseChars.add(String(sa.character_name).trim());
+            }
+          });
+          for (const charName of horseChars) {
+            await recomputeHorsemenExperience(client, charName);
+          }
+        } catch (e) { console.error('❌ [4H EXP] Hook error on confirmation log:', e.message); }
+
         // Log to console for immediate visibility
         if (!isMatch) {
             console.warn(`⚠️ [ASSIGNMENT VERIFICATION MISMATCH] User: ${discordUsername} (${discordUserId}), Event: ${eventId}`);
@@ -21122,6 +21240,14 @@ app.post('/api/manual-rewards/:eventId', requireManagement, async (req, res) => 
         console.log(`✅ [MANUAL REWARDS] Created entry with ID: ${newEntry.id}, is_gold: ${newEntry.is_gold}`);
         
         try { broadcastUpdate('raidlogs', eventId, { type: 'manual_rewards_changed', id: newEntry.id, byUserId: createdBy }); } catch {}
+
+        // Recompute 4H experience if this reward matches the whitelist
+        try {
+          if (isHorsemenWhitelistedDescription(description)) {
+            await recomputeHorsemenExperience(client, player_name);
+          }
+        } catch (e) { console.error('❌ [4H EXP] Hook error on manual reward create:', e.message); }
+
         res.json({ 
             success: true, 
             data: newEntry,
@@ -21257,6 +21383,14 @@ app.delete('/api/manual-rewards/:eventId/:entryId', requireManagement, async (re
         console.log(`✅ [MANUAL REWARDS] Deleted entry ID: ${deletedEntry.id}`);
         
         try { broadcastUpdate('raidlogs', eventId, { type: 'manual_rewards_changed', id: deletedEntry.id, op: 'delete', byUserId: req.user?.id || null }); } catch {}
+
+        // Recompute 4H experience if the deleted reward matched the whitelist
+        try {
+          if (isHorsemenWhitelistedDescription(deletedEntry.description)) {
+            await recomputeHorsemenExperience(client, deletedEntry.player_name);
+          }
+        } catch (e) { console.error('❌ [4H EXP] Hook error on manual reward delete:', e.message); }
+
         res.json({ 
             success: true, 
             data: deletedEntry,
@@ -21273,6 +21407,164 @@ app.delete('/api/manual-rewards/:eventId/:entryId', requireManagement, async (re
     } finally {
         if (client) client.release();
     }
+});
+
+// ─── Four Horsemen Experience Endpoints ───────────────────────────────
+
+/**
+ * GET /api/four-horsemen-experience
+ * Returns all characters with their 4H tank counts, sorted by tank_count DESC.
+ * No auth required (consistent with roster endpoints being public).
+ */
+app.get('/api/four-horsemen-experience', async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query(
+      'SELECT character_name, tank_count FROM four_horsemen_experience ORDER BY tank_count DESC, character_name ASC'
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error('❌ [4H EXP] Error fetching experience data:', error.message);
+    res.status(500).json({ success: false, message: 'Error fetching experience data' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+/**
+ * POST /api/four-horsemen-experience/seed
+ * Admin-only. Runs the full seed query that computes tank counts for ALL
+ * characters from historical data in assignment_confirmation_logs and
+ * manual_rewards_deductions, then upserts into four_horsemen_experience.
+ */
+app.post('/api/four-horsemen-experience/seed', requireManagement, async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+
+    const whitelistParams = HORSEMEN_REWARD_WHITELIST.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await client.query(`
+      WITH source_a AS (
+        SELECT l.event_id, LOWER(TRIM(elem->>'character_name')) AS character_name
+        FROM assignment_confirmation_logs l,
+             jsonb_array_elements(COALESCE(l.server_assignments, '[]'::jsonb)) AS elem
+        WHERE elem->>'boss' ILIKE '%horse%'
+          AND elem->>'accept_status' = 'accept'
+          AND elem->>'character_name' IS NOT NULL
+      ),
+      source_b AS (
+        SELECT event_id, LOWER(TRIM(player_name)) AS character_name
+        FROM manual_rewards_deductions
+        WHERE LOWER(TRIM(description)) IN (${whitelistParams})
+          AND player_name IS NOT NULL
+      ),
+      combined AS (
+        SELECT event_id, character_name FROM source_a
+        UNION
+        SELECT event_id, character_name FROM source_b
+      ),
+      counts AS (
+        SELECT character_name, COUNT(DISTINCT event_id) AS cnt
+        FROM combined
+        WHERE character_name IS NOT NULL AND character_name != ''
+        GROUP BY character_name
+      )
+      INSERT INTO four_horsemen_experience (character_name, tank_count, last_updated)
+      SELECT character_name, cnt, NOW() FROM counts
+      ON CONFLICT (character_name) DO UPDATE
+        SET tank_count = EXCLUDED.tank_count, last_updated = NOW()
+      RETURNING character_name, tank_count
+    `, HORSEMEN_REWARD_WHITELIST);
+
+    console.log(`✅ [4H EXP] Seeded ${result.rows.length} characters`);
+    res.json({ success: true, seeded: result.rows.length, data: result.rows });
+  } catch (error) {
+    console.error('❌ [4H EXP] Error seeding experience data:', error.message);
+    res.status(500).json({ success: false, message: 'Error seeding experience data', error: error.message });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+/**
+ * POST /api/guildies/alts-batch
+ * Admin-only. Accepts { discordIds: string[], characterNames: string[] }.
+ * Returns all alt characters from the guildies table grouped by identifier,
+ * with player_alts fallback parsing for characters without a discord_id.
+ */
+app.post('/api/guildies/alts-batch', requireManagement, express.json(), async (req, res) => {
+  let client;
+  try {
+    const { discordIds = [], characterNames = [] } = req.body || {};
+    client = await pool.connect();
+
+    const result = {};
+
+    // Primary lookup: all guildies matching any of the provided discord_ids
+    if (Array.isArray(discordIds) && discordIds.length > 0) {
+      const validIds = discordIds.filter(id => id && String(id).trim());
+      if (validIds.length > 0) {
+        const rows = await client.query(
+          'SELECT discord_id, character_name, class FROM guildies WHERE discord_id = ANY($1)',
+          [validIds]
+        );
+        for (const row of rows.rows) {
+          const key = `discord:${row.discord_id}`;
+          if (!result[key]) result[key] = { discordId: row.discord_id, alts: [] };
+          result[key].alts.push({ character_name: row.character_name, class: row.class });
+        }
+      }
+    }
+
+    // Fallback: for character names without a discord_id match, parse player_alts
+    if (Array.isArray(characterNames) && characterNames.length > 0) {
+      const validNames = characterNames.filter(n => n && String(n).trim());
+      if (validNames.length > 0) {
+        const nameLower = validNames.map(n => String(n).trim().toLowerCase());
+        const charRows = await client.query(
+          'SELECT character_name, player_alts FROM guildies WHERE LOWER(character_name) = ANY($1)',
+          [nameLower]
+        );
+
+        for (const charRow of charRows.rows) {
+          const key = `name:${charRow.character_name}`;
+          if (result[key]) continue; // already resolved
+
+          const altNames = [];
+          if (charRow.player_alts) {
+            // player_alts is comma-separated "CharName-Server" strings
+            const parts = String(charRow.player_alts).split(',').map(s => s.trim()).filter(Boolean);
+            for (const part of parts) {
+              // Strip server suffix (everything after the last hyphen)
+              const lastDash = part.lastIndexOf('-');
+              const altName = lastDash > 0 ? part.substring(0, lastDash) : part;
+              if (altName) altNames.push(altName);
+            }
+          }
+
+          if (altNames.length > 0) {
+            const altLower = altNames.map(n => n.toLowerCase());
+            const altRows = await client.query(
+              'SELECT character_name, class FROM guildies WHERE LOWER(character_name) = ANY($1)',
+              [altLower]
+            );
+            result[key] = { characterName: charRow.character_name, alts: altRows.rows.map(r => ({ character_name: r.character_name, class: r.class })) };
+          } else {
+            result[key] = { characterName: charRow.character_name, alts: [] };
+          }
+        }
+      }
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('❌ [GUILDIES] Error in alts-batch:', error.message);
+    res.status(500).json({ success: false, message: 'Error fetching alt data' });
+  } finally {
+    if (client) client.release();
+  }
 });
 
 // Get player list for dropdown (from current raid participants)
