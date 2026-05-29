@@ -685,6 +685,14 @@ initializeRaidDurationsTable();
       console.error('⚠️ [4H EXP] Auto-seed failed (non-blocking):', err.message);
     });
 
+    // Initialize Razuvious MC experience cache table
+    initializeRazuviousMcExperienceTable();
+
+    // Seed Razuvious MC experience from historical data (non-blocking)
+    seedRazuviousMcExperience().catch(err => {
+      console.error('⚠️ [RAZU EXP] Auto-seed failed (non-blocking):', err.message);
+    });
+
 // Migrate player confirmed logs table
 migratePlayerConfirmedLogsTable();
 
@@ -1701,6 +1709,156 @@ async function recomputeHorsemenExperience(client, characterName) {
     `, [name, count]);
   } catch (error) {
     console.error(`❌ [4H EXP] Error recomputing for ${name}:`, error.message);
+  }
+}
+
+// ─── Razuvious MC Experience Infrastructure ──────────────────────────────────
+
+/**
+ * Whitelist of manual reward descriptions that count as Razuvious
+ * mind control assignments. Compared case-insensitively.
+ */
+const RAZUVIOUS_MC_REWARD_WHITELIST = [
+  'razuvious mind control duty',
+  'razuvious mind control duty (double)',
+  'razuvious mind control duty (good job)'
+];
+
+/**
+ * Checks whether a manual reward description matches the Razuvious
+ * mind control duty whitelist (case-insensitive).
+ *
+ * @param {string} description - The reward description to check
+ * @returns {boolean} True if the description is whitelisted
+ */
+function isRazuviousWhitelistedDescription(description) {
+  if (!description) return false;
+  return RAZUVIOUS_MC_REWARD_WHITELIST.includes(String(description).trim().toLowerCase());
+}
+
+/**
+ * Creates the razuvious_mc_experience table if it does not exist.
+ * Schema mirrors four_horsemen_experience exactly.
+ */
+async function initializeRazuviousMcExperienceTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS razuvious_mc_experience (
+        character_name VARCHAR(255) PRIMARY KEY,
+        mc_count INT DEFAULT 0,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Razuvious MC experience table initialized');
+  } catch (error) {
+    console.error('❌ Error initializing razuvious_mc_experience table:', error);
+  }
+}
+
+/**
+ * Seeds the razuvious_mc_experience table by computing MC counts for ALL
+ * characters from historical data in assignment_confirmation_logs and
+ * manual_rewards_deductions. Uses UPSERT so it is idempotent and safe to
+ * call on every startup.
+ *
+ * @returns {Promise<{seeded: number, rows: Array<{character_name: string, mc_count: number}>}>}
+ */
+async function seedRazuviousMcExperience() {
+  let client;
+  try {
+    client = await pool.connect();
+
+    const whitelistParams = RAZUVIOUS_MC_REWARD_WHITELIST.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await client.query(`
+      WITH source_a AS (
+        SELECT l.event_id, LOWER(TRIM(elem->>'character_name')) AS character_name
+        FROM assignment_confirmation_logs l,
+             jsonb_array_elements(COALESCE(l.server_assignments, '[]'::jsonb)) AS elem
+        WHERE elem->>'boss' ILIKE '%razuv%'
+          AND elem->>'accept_status' = 'accept'
+          AND elem->>'character_name' IS NOT NULL
+      ),
+      source_b AS (
+        SELECT event_id, LOWER(TRIM(player_name)) AS character_name
+        FROM manual_rewards_deductions
+        WHERE LOWER(TRIM(description)) IN (${whitelistParams})
+          AND player_name IS NOT NULL
+      ),
+      combined AS (
+        SELECT event_id, character_name FROM source_a
+        UNION
+        SELECT event_id, character_name FROM source_b
+      ),
+      counts AS (
+        SELECT character_name, COUNT(DISTINCT event_id) AS cnt
+        FROM combined
+        WHERE character_name IS NOT NULL AND character_name != ''
+        GROUP BY character_name
+      )
+      INSERT INTO razuvious_mc_experience (character_name, mc_count, last_updated)
+      SELECT character_name, cnt, NOW() FROM counts
+      ON CONFLICT (character_name) DO UPDATE
+        SET mc_count = EXCLUDED.mc_count, last_updated = NOW()
+      RETURNING character_name, mc_count
+    `, RAZUVIOUS_MC_REWARD_WHITELIST);
+
+    const seeded = result.rows.length;
+    const total = result.rows.reduce((sum, r) => sum + r.mc_count, 0);
+    console.log(`✅ [RAZU EXP] Seeded ${seeded} characters (${total} total MC assignments)`);
+    return { seeded, rows: result.rows };
+  } finally {
+    if (client) client.release();
+  }
+}
+
+/**
+ * Recomputes the Razuvious MC experience count for a single character
+ * by querying both assignment_confirmation_logs and manual_rewards_deductions,
+ * then upserts the result into razuvious_mc_experience.
+ *
+ * @param {object} client - A pg client (from pool.connect())
+ * @param {string} characterName - The character name to recompute
+ */
+async function recomputeRazuviousMcExperience(client, characterName) {
+  if (!characterName) return;
+  const name = String(characterName).trim();
+  if (!name) return;
+
+  try {
+    const result = await client.query(`
+      WITH source_a AS (
+        SELECT DISTINCT l.event_id
+        FROM assignment_confirmation_logs l,
+             jsonb_array_elements(COALESCE(l.server_assignments, '[]'::jsonb)) AS elem
+        WHERE elem->>'boss' ILIKE '%razuv%'
+          AND elem->>'accept_status' = 'accept'
+          AND LOWER(elem->>'character_name') = LOWER($1)
+      ),
+      source_b AS (
+        SELECT DISTINCT event_id
+        FROM manual_rewards_deductions
+        WHERE LOWER(player_name) = LOWER($1)
+          AND LOWER(TRIM(description)) IN (${RAZUVIOUS_MC_REWARD_WHITELIST.map((_, i) => `$${i + 2}`).join(', ')})
+      ),
+      combined AS (
+        SELECT event_id FROM source_a
+        UNION
+        SELECT event_id FROM source_b
+      )
+      SELECT COUNT(*) AS cnt FROM combined
+    `, [name, ...RAZUVIOUS_MC_REWARD_WHITELIST]);
+
+    const count = parseInt(result.rows[0].cnt, 10) || 0;
+
+    await client.query(`
+      INSERT INTO razuvious_mc_experience (character_name, mc_count, last_updated)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (character_name) DO UPDATE
+        SET mc_count = $2, last_updated = NOW()
+    `, [name, count]);
+  } catch (error) {
+    console.error(`❌ [RAZU EXP] Error recomputing for ${name}:`, error.message);
   }
 }
 
@@ -18421,6 +18579,19 @@ app.post('/api/assignments/:eventId/verify-completion', async (req, res) => {
           }
         } catch (e) { console.error('❌ [4H EXP] Hook error on confirmation log:', e.message); }
 
+        // Recompute Razuvious MC experience for any accepted razuvious assignments
+        try {
+          const razuChars = new Set();
+          (Array.isArray(serverAccepts) ? serverAccepts : []).forEach(sa => {
+            if (sa.boss && String(sa.boss).toLowerCase().includes('razuv') && sa.accept_status === 'accept' && sa.character_name) {
+              razuChars.add(String(sa.character_name).trim());
+            }
+          });
+          for (const charName of razuChars) {
+            await recomputeRazuviousMcExperience(client, charName);
+          }
+        } catch (e) { console.error('❌ [RAZU EXP] Hook error on confirmation log:', e.message); }
+
         // Log to console for immediate visibility
         if (!isMatch) {
             console.warn(`⚠️ [ASSIGNMENT VERIFICATION MISMATCH] User: ${discordUsername} (${discordUserId}), Event: ${eventId}`);
@@ -21310,6 +21481,13 @@ app.post('/api/manual-rewards/:eventId', requireManagement, async (req, res) => 
           }
         } catch (e) { console.error('❌ [4H EXP] Hook error on manual reward create:', e.message); }
 
+        // Recompute Razuvious MC experience if this reward matches the whitelist
+        try {
+          if (isRazuviousWhitelistedDescription(description)) {
+            await recomputeRazuviousMcExperience(client, player_name);
+          }
+        } catch (e) { console.error('❌ [RAZU EXP] Hook error on manual reward create:', e.message); }
+
         res.json({ 
             success: true, 
             data: newEntry,
@@ -21453,6 +21631,13 @@ app.delete('/api/manual-rewards/:eventId/:entryId', requireManagement, async (re
           }
         } catch (e) { console.error('❌ [4H EXP] Hook error on manual reward delete:', e.message); }
 
+        // Recompute Razuvious MC experience if the deleted reward matched the whitelist
+        try {
+          if (isRazuviousWhitelistedDescription(deletedEntry.description)) {
+            await recomputeRazuviousMcExperience(client, deletedEntry.player_name);
+          }
+        } catch (e) { console.error('❌ [RAZU EXP] Hook error on manual reward delete:', e.message); }
+
         res.json({ 
             success: true, 
             data: deletedEntry,
@@ -21488,6 +21673,29 @@ app.get('/api/four-horsemen-experience', async (req, res) => {
     res.json({ success: true, data: result.rows });
   } catch (error) {
     console.error('❌ [4H EXP] Error fetching experience data:', error.message);
+    res.status(500).json({ success: false, message: 'Error fetching experience data' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// ─── Razuvious MC Experience Endpoints ────────────────────────────────
+
+/**
+ * GET /api/razuvious-mc-experience
+ * Returns all characters with their Razuvious MC counts, sorted by mc_count DESC.
+ * No auth required (consistent with roster endpoints being public).
+ */
+app.get('/api/razuvious-mc-experience', async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query(
+      'SELECT character_name, mc_count FROM razuvious_mc_experience ORDER BY mc_count DESC, character_name ASC'
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error('❌ [RAZU EXP] Error fetching experience data:', error.message);
     res.status(500).json({ success: false, message: 'Error fetching experience data' });
   } finally {
     if (client) client.release();

@@ -2671,10 +2671,11 @@
               if (shamansAsc[0]) toAdd.push({ r: shamansAsc[0], icon: null, text: 'Keep poison cleansing totem up for the tank before webspray.' });
             } else if (bossKey.includes("razu")) {
               // Instructor Razuvious defaults
+              let panelsAll = [];
               try {
                 const resAll = await fetch(`/api/assignments/${eventId}`);
                 const dataAll = await resAll.json();
-                const panelsAll = Array.isArray(dataAll.panels) ? dataAll.panels : [];
+                panelsAll = Array.isArray(dataAll.panels) ? dataAll.panels : [];
                 const tankPanel = panelsAll.find(p => String(p.boss||'').toLowerCase()==='tanking');
                 const pickTankByIndex = (idx) => {
                   const en = tankPanel?.entries?.[idx-1];
@@ -2689,13 +2690,47 @@
                 if (t3) toAdd.push({ r: t3, icon: icons.moon, text: 'Tank the right 2 adds (near but not on top of the priests)' });
                 if (t4) toAdd.push({ r: t4, icon: icons.diamond, text: 'Tank the right 2 adds (near but not on top of the priests)' });
               } catch {}
-              // Priests: two lowest
-              const priestsAsc = filterAssignable(roster.filter(r=>String(r.class_name||'').toLowerCase()==='priest'))
-                .sort((a,b)=> ((Number(a.party_id)||99)-(Number(b.party_id)||99)) || ((Number(a.slot_id)||99)-(Number(b.slot_id)||99)));
-              if (priestsAsc[0]) toAdd.push({ r: priestsAsc[0], icon: icons.cross, text: 'Mind control duty (You pull)' });
-              if (priestsAsc[0]) toAdd.push({ r: priestsAsc[0], icon: icons.square, text: 'Mind control duty' });
-              if (priestsAsc[1]) toAdd.push({ r: priestsAsc[1], icon: icons.moon, text: 'Mind control duty' });
-              if (priestsAsc[1]) toAdd.push({ r: priestsAsc[1], icon: icons.diamond, text: 'Mind control duty' });
+              // Priests: sourced from Healing panel, ranked by MC experience
+              {
+                // Find the Healing panel (Main page) — same pattern as Four Horsemen healer sourcing
+                const healingPanel = panelsAll.find(p => String(p.boss||'').toLowerCase() === 'healing' && (!p.wing || String(p.wing).trim() === '' || String(p.wing).toLowerCase() === 'main'));
+                const healerNames = (healingPanel && Array.isArray(healingPanel.entries) ? healingPanel.entries : [])
+                  .map(e => (e.character_name || '').trim())
+                  .filter(n => n.length > 0);
+                // Match healing panel names against roster for full character data, filter to priests only
+                const healPanelPriests = filterAssignable(
+                  healerNames
+                    .map(name => roster.find(r => String(r.character_name || '').toLowerCase() === name.toLowerCase()))
+                    .filter(r => r && String(r.class_name || '').toLowerCase() === 'priest')
+                );
+
+                // Fetch experience data and sort by mc_count DESC, with group/slot as tiebreaker
+                let sortedPriests;
+                try {
+                  const expRes = await fetch('/api/razuvious-mc-experience');
+                  const expData = await expRes.json();
+                  const expMap = {};
+                  if (expData.success && Array.isArray(expData.data)) {
+                    expData.data.forEach(row => { expMap[row.character_name] = row.mc_count || 0; });
+                  }
+                  sortedPriests = healPanelPriests.sort((a, b) => {
+                    const expA = expMap[String(a.character_name || '').toLowerCase()] || 0;
+                    const expB = expMap[String(b.character_name || '').toLowerCase()] || 0;
+                    if (expB !== expA) return expB - expA; // DESC by experience
+                    return ((Number(a.party_id)||99)-(Number(b.party_id)||99)) || ((Number(a.slot_id)||99)-(Number(b.slot_id)||99));
+                  });
+                } catch {
+                  // Fallback to group/slot order on API failure
+                  sortedPriests = healPanelPriests.sort((a, b) =>
+                    ((Number(a.party_id)||99)-(Number(b.party_id)||99)) || ((Number(a.slot_id)||99)-(Number(b.slot_id)||99))
+                  );
+                }
+
+                if (sortedPriests[0]) toAdd.push({ r: sortedPriests[0], icon: icons.cross, text: 'Mind control duty (You pull)' });
+                if (sortedPriests[0]) toAdd.push({ r: sortedPriests[0], icon: icons.square, text: 'Mind control duty' });
+                if (sortedPriests[1]) toAdd.push({ r: sortedPriests[1], icon: icons.moon, text: 'Mind control duty' });
+                if (sortedPriests[1]) toAdd.push({ r: sortedPriests[1], icon: icons.diamond, text: 'Mind control duty' });
+              }
               // Warriors target dummies
               const crate = 'https://wow.zamimg.com/images/wow/icons/large/inv_crate_06.jpg';
               const warriorsG2 = filterAssignable(roster.filter(r=>String(r.class_name||'').toLowerCase()==='warrior' && Number(r.party_id)===2))
