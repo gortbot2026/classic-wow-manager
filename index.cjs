@@ -696,6 +696,9 @@ initializeRaidDurationsTable();
 // Migrate player confirmed logs table
 migratePlayerConfirmedLogsTable();
 
+    // Initialize character claims table and guildies profile columns
+    initializeCharacterClaimsTable();
+
     // Initialize rewards snapshot tables (entries + event header)
     initializeRewardsSnapshotTablesOnStartup();
 
@@ -718,6 +721,9 @@ migratePlayerConfirmedLogsTable();
 
     // Initialize Maya persona bot tables
     await initializeMayaTables();
+
+    // Initialize character claims table and guildies profile columns
+    await initializeCharacterClaimsTable();
 
     // Initialize WCL ingest tables (including wcl_event_summaries) at startup
     // Required before auto-backfill runs and for admin backfill endpoint
@@ -1361,6 +1367,42 @@ Important guidelines:
     console.log('✅ Maya persona bot tables initialized');
   } catch (error) {
     console.error('❌ Error initializing Maya tables:', error?.message || error);
+  }
+}
+
+/**
+ * Initialize character_claims table and add profile columns to guildies.
+ * Runs at startup to ensure schema is ready before any API routes use these tables.
+ */
+async function initializeCharacterClaimsTable() {
+  try {
+    // Add profile columns to guildies table for player-editable profile data
+    await pool.query(`ALTER TABLE guildies ADD COLUMN IF NOT EXISTS profile_spec VARCHAR(50)`);
+    await pool.query(`ALTER TABLE guildies ADD COLUMN IF NOT EXISTS profile_contact TEXT`);
+    await pool.query(`ALTER TABLE guildies ADD COLUMN IF NOT EXISTS profile_notes TEXT`);
+
+    // Create character_claims table for tracking character claim requests
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS character_claims (
+        id SERIAL PRIMARY KEY,
+        claimant_discord_id VARCHAR(255) NOT NULL,
+        claimant_discord_username VARCHAR(255) NOT NULL,
+        character_name VARCHAR(255) NOT NULL,
+        realm VARCHAR(100),
+        character_class VARCHAR(50),
+        existing_discord_id VARCHAR(255),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        decided_by VARCHAR(255),
+        created_at TIMESTAMP DEFAULT NOW(),
+        decided_at TIMESTAMP
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_character_claims_claimant ON character_claims (claimant_discord_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_character_claims_status ON character_claims (status)`);
+
+    console.log('[startup] Character claims table and guildies profile columns initialized');
+  } catch (error) {
+    console.error('❌ Error initializing character claims table:', error?.message || error);
   }
 }
 
