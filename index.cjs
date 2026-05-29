@@ -13274,11 +13274,118 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
             (sum, item) => sum + (parseInt(item.gold_amount, 10) || 0), 0
         );
 
-        // ── Compute gold summary ──
-        // Gold earned: sum of positive manual_rewards_deductions where is_gold = true
-        const goldEarned = manualRewardsRes.rows
-            .filter(r => r.is_gold && r.points > 0)
-            .reduce((sum, r) => sum + parseFloat(r.points || 0), 0);
+        // ── Compute gold earned using same 6-step formula as admin player page ──
+        // (mirrors computeTotalsFromSnapshot / goldEarnedResult logic from /api/admin/player/:discordId)
+        let goldEarned = 0;
+        try {
+            const charNameLower = actualName.toLowerCase();
+            const normalizeSnapshotName = (name) => {
+                let s = String(name || '').trim();
+                s = s.replace(/^[\s•\u2022\u00B7\-\u2013\u2014]+/, '');
+                s = s.replace(/\s*\((?:tank\s*)?gr(?:ou)?p\s*\d*\)\s*$/i, '');
+                return s.trim();
+            };
+            const isValidWoWName = (name) => {
+                const s = String(name || '');
+                return !/\d/.test(s) && !/\s/.test(s);
+            };
+            const lower = s => String(s || '').toLowerCase();
+
+            // Get all published raids this character attended
+            const attendedRes = await client.query(
+                `SELECT DISTINCT pcl.raid_id AS event_id, rse.shared_gold_pot
+                 FROM player_confirmed_logs pcl
+                 JOIN rewards_snapshot_events rse ON rse.event_id = pcl.raid_id
+                   AND rse.published = TRUE
+                   AND rse.shared_gold_pot IS NOT NULL AND rse.shared_gold_pot > 0
+                 WHERE LOWER(pcl.character_name) = $1`,
+                [charNameLower]
+            );
+
+            if (attendedRes.rows.length > 0) {
+                const eventIds = attendedRes.rows.map(r => r.event_id);
+                const sharedPotByEvent = new Map(attendedRes.rows.map(r => [r.event_id, Number(r.shared_gold_pot) || 0]));
+
+                const [snapshotRes2, confirmedRes2] = await Promise.all([
+                    client.query(
+                        `SELECT event_id, character_name, panel_key,
+                                COALESCE(point_value_edited, point_value_original) AS point_value, aux_json
+                         FROM rewards_and_deductions_points WHERE event_id = ANY($1)`,
+                        [eventIds]
+                    ),
+                    client.query(
+                        `SELECT DISTINCT raid_id AS event_id, character_name FROM player_confirmed_logs WHERE raid_id = ANY($1)`,
+                        [eventIds]
+                    ),
+                ]);
+
+                const snapshotByEvent = new Map();
+                for (const r of snapshotRes2.rows) {
+                    if (!snapshotByEvent.has(r.event_id)) snapshotByEvent.set(r.event_id, []);
+                    snapshotByEvent.get(r.event_id).push(r);
+                }
+                const confirmedByEvent = new Map();
+                for (const r of confirmedRes2.rows) {
+                    if (!confirmedByEvent.has(r.event_id)) confirmedByEvent.set(r.event_id, []);
+                    confirmedByEvent.get(r.event_id).push(r);
+                }
+
+                for (const eventId of eventIds) {
+                    const sharedPot = sharedPotByEvent.get(eventId) || 0;
+                    const entries = snapshotByEvent.get(eventId) || [];
+                    const confirmed = confirmedByEvent.get(eventId) || [];
+
+                    const nameToPlayer = new Map();
+                    for (const p of confirmed) {
+                        const norm = normalizeSnapshotName(p.character_name);
+                        if (!isValidWoWName(norm)) continue;
+                        const k = lower(norm);
+                        if (!nameToPlayer.has(k)) nameToPlayer.set(k, { points: 0, gold: 0 });
+                    }
+
+                    for (const r of entries) {
+                        const norm = normalizeSnapshotName(r.character_name || '');
+                        if (!isValidWoWName(norm)) continue;
+                        const k = lower(norm);
+                        const v = nameToPlayer.get(k);
+                        if (!v || String(r.panel_key || '') === 'manual_points') continue;
+                        v.points += (Number(r.point_value) || 0);
+                    }
+
+                    const hasBase = entries.some(r => String(r.panel_key || '') === 'base');
+                    if (!hasBase) nameToPlayer.forEach(v => { v.points += 100; });
+
+                    let manualGoldTotal = 0;
+                    for (const r of entries) {
+                        if (String(r.panel_key || '') !== 'manual_points') continue;
+                        const norm = normalizeSnapshotName(r.character_name || '');
+                        if (!isValidWoWName(norm)) continue;
+                        const k = lower(norm);
+                        const v = nameToPlayer.get(k);
+                        if (!v) continue;
+                        const aux = r.aux_json || {};
+                        const isGold = !!(aux.is_gold === true || aux.is_gold === 'true');
+                        const amt = Number(r.point_value) || 0;
+                        if (isGold && amt > 0) { manualGoldTotal += amt; v.gold = Math.max(0, (Number(v.gold) || 0) + amt); }
+                        else if (!isGold) v.points += amt;
+                    }
+
+                    const adjustedPot = Math.max(0, sharedPot - manualGoldTotal);
+                    let totalPts = 0;
+                    nameToPlayer.forEach(v => { totalPts += Math.max(0, Number(v.points) || 0); });
+                    const goldPerPt = (adjustedPot > 0 && totalPts > 0) ? adjustedPot / totalPts : 0;
+                    nameToPlayer.forEach(v => {
+                        v.gold = Math.max(0, Math.floor(Math.max(0, Number(v.points) || 0) * goldPerPt) + (Number(v.gold) || 0));
+                    });
+
+                    const playerData = nameToPlayer.get(charNameLower);
+                    if (playerData) goldEarned += playerData.gold;
+                }
+            }
+        } catch (goldErr) {
+            console.error('[character-profile] Gold earned calculation error:', goldErr.message);
+            goldEarned = 0;
+        }
 
         // ── Extract event name/date from raid_helper_events_cache.event_data JSON ──
         // Same pattern as admin endpoint (index.cjs ~line 12092–12096)
