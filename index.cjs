@@ -4276,6 +4276,14 @@ app.get('/user-settings', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'user-settings.html'));
 });
 
+/**
+ * GET /user-settings/character/:characterName
+ * Serves the character profile sub-page.
+ */
+app.get('/user-settings/character/:characterName', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'character-profile.html'));
+});
+
 app.get('/logs', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'logs.html'));
 });
@@ -13156,6 +13164,188 @@ app.patch('/api/my-characters/:name/profile', async (req, res) => {
     } catch (error) {
         console.error('Error updating character profile:', error.stack);
         res.status(500).json({ message: 'Error updating profile.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * GET /api/my-characters/:characterName/profile
+ * Returns full character profile data: header, loot history, gold summary, raid history.
+ * Auth: must be logged in; must own the character OR have management role.
+ *
+ * Query reuse: follows the same parallel Promise.all pattern from /api/admin/player/:discordId
+ * but filtered to a single character by name.
+ *
+ * Note: Gold earned uses the simpler sum of positive manual_rewards_deductions (is_gold=true)
+ * rather than the complex points-weighted GDKP calculation, which is player-level and cannot
+ * be cleanly attributed to a single character.
+ */
+app.get('/api/my-characters/:characterName/profile', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: 'User not authenticated.' });
+    }
+
+    const characterName = req.params.characterName;
+
+    // Basic input validation — character names are alphanumeric, max 12 chars in WoW
+    if (!characterName || characterName.length > 50) {
+        return res.status(400).json({ message: 'Invalid character name.' });
+    }
+
+    let client;
+    try {
+        client = await pool.connect();
+
+        // Look up character and verify ownership
+        const charRes = await client.query({
+            text: `SELECT g.character_name, g.class, g.race, g.level, g.rank_name,
+                          g.profile_spec, g.profile_contact, g.profile_notes,
+                          g.discord_id,
+                          csm.class_color_hex
+                   FROM guildies g
+                   LEFT JOIN LATERAL (
+                     SELECT class_color_hex FROM class_spec_mappings
+                     WHERE LOWER(class_name) = LOWER(g.class)
+                     LIMIT 1
+                   ) csm ON true
+                   WHERE LOWER(g.character_name) = LOWER($1)
+                   LIMIT 1`,
+            values: [characterName],
+        });
+
+        if (charRes.rows.length === 0) {
+            return res.status(404).json({ message: 'Character not found.' });
+        }
+
+        const charRow = charRes.rows[0];
+        const isOwner = charRow.discord_id === req.user.id;
+        const isAdmin = await hasManagementRoleById(req.user.id);
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ message: 'You do not have access to this character.' });
+        }
+
+        const actualName = charRow.character_name;
+        const discordId = charRow.discord_id;
+
+        // ── Parallel queries (reusing patterns from /api/admin/player/:discordId) ──
+        const [lootRes, manualRewardsRes, raidHistoryRes] = await Promise.all([
+            // Loot items filtered by character name (adapted from admin loot query)
+            client.query(
+                `SELECT li.item_name, li.gold_amount, li.wowhead_link, li.icon_link,
+                        li.event_id, li.created_at
+                 FROM loot_items li
+                 WHERE LOWER(li.player_name) = LOWER($1)
+                 ORDER BY li.created_at DESC`,
+                [actualName]
+            ),
+            // Manual rewards/deductions for the player (adapted from admin query)
+            discordId
+                ? client.query(
+                    `SELECT description, points, is_gold, created_by, event_id, created_at
+                     FROM manual_rewards_deductions WHERE discord_id = $1
+                     ORDER BY created_at DESC`,
+                    [discordId]
+                  )
+                : Promise.resolve({ rows: [] }),
+            // Raid history from roster_overrides + event cache (adapted from admin raid history query)
+            client.query(
+                `SELECT
+                   ro.event_id,
+                   ro.assigned_char_name AS character_used,
+                   ro.assigned_char_class AS character_class,
+                   ro.assigned_char_spec AS spec_name,
+                   rhec.event_data
+                 FROM roster_overrides ro
+                 LEFT JOIN raid_helper_events_cache rhec ON rhec.event_id = ro.event_id
+                 WHERE LOWER(ro.assigned_char_name) = LOWER($1)
+                   AND ro.in_raid = true
+                   AND ro.is_placeholder = false
+                 ORDER BY ro.event_id DESC`,
+                [actualName]
+            ),
+        ]);
+
+        // ── Compute loot totals ──
+        const totalGoldSpent = lootRes.rows.reduce(
+            (sum, item) => sum + (parseInt(item.gold_amount, 10) || 0), 0
+        );
+
+        // ── Compute gold summary ──
+        // Gold earned: sum of positive manual_rewards_deductions where is_gold = true
+        const goldEarned = manualRewardsRes.rows
+            .filter(r => r.is_gold && r.points > 0)
+            .reduce((sum, r) => sum + r.points, 0);
+
+        // ── Extract event name/date from raid_helper_events_cache.event_data JSON ──
+        // Same pattern as admin endpoint (index.cjs ~line 12092–12096)
+        const raids = raidHistoryRes.rows.map(r => {
+            let eventName = null;
+            let eventDate = null;
+            if (r.event_data) {
+                try {
+                    const ed = typeof r.event_data === 'string'
+                        ? JSON.parse(r.event_data) : r.event_data;
+                    eventName = ed.title || ed.name || null;
+                    eventDate = ed.startTime
+                        ? new Date(ed.startTime * 1000).toISOString() : null;
+                } catch (_) { /* ignore parse errors */ }
+            }
+            return {
+                eventId: r.event_id,
+                eventName,
+                eventDate,
+                specName: r.spec_name,
+                characterUsed: r.character_used,
+            };
+        });
+
+        // ── Build response ──
+        res.json({
+            character: {
+                name: charRow.character_name,
+                class: charRow.class,
+                classColorHex: charRow.class_color_hex || null,
+                race: charRow.race,
+                level: charRow.level,
+                rankName: charRow.rank_name,
+                profileSpec: charRow.profile_spec,
+                profileContact: charRow.profile_contact,
+                profileNotes: charRow.profile_notes,
+            },
+            loot: {
+                totalGoldSpent,
+                items: lootRes.rows.map(li => ({
+                    itemName: li.item_name,
+                    goldAmount: parseInt(li.gold_amount, 10) || 0,
+                    wowheadLink: li.wowhead_link,
+                    iconLink: li.icon_link,
+                    eventId: li.event_id,
+                    createdAt: li.created_at,
+                })),
+            },
+            gold: {
+                earned: goldEarned,
+                spent: totalGoldSpent,
+                net: goldEarned - totalGoldSpent,
+                manualRewards: manualRewardsRes.rows.map(r => ({
+                    description: r.description,
+                    points: r.points,
+                    isGold: r.is_gold,
+                    createdBy: r.created_by,
+                    eventId: r.event_id,
+                    createdAt: r.created_at,
+                })),
+            },
+            raidHistory: {
+                totalCount: raids.length,
+                raids,
+            },
+        });
+    } catch (error) {
+        console.error('Error fetching character profile:', error.stack);
+        res.status(500).json({ message: 'Error fetching character profile.' });
     } finally {
         if (client) client.release();
     }

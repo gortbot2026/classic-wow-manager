@@ -110,85 +110,32 @@ async function loadUserCharacters() {
   }
 }
 
-/** Build a single expandable character card */
+/** Build a clickable character card that links to the character sub-page */
 function createCharacterCard(char, color) {
+  const link = document.createElement('a');
+  link.classList.add('character-card-link');
+  link.href = `/user-settings/character/${encodeURIComponent(char.character_name)}`;
+
   const card = document.createElement('div');
   card.classList.add('character-card');
   card.style.borderLeftColor = color;
   card.style.background = `linear-gradient(135deg, ${hexToRgba(color, 0.08)} 0%, ${hexToRgba(color, 0.03)} 100%)`;
 
-  const classSlug = (char.class || '').toLowerCase().replace(/\s+/g, '-');
-
   card.innerHTML = `
-    <div class="card-header" data-expanded="false">
+    <div class="card-header">
       <div class="card-header-left">
         <span class="char-name" style="color: ${color}">${escapeHtml(char.character_name)}</span>
         <span class="char-info">${escapeHtml(char.class)} · Level ${char.level || '?'}</span>
       </div>
       <div class="card-header-right">
         ${char.rank_name ? `<span class="char-rank">${escapeHtml(char.rank_name)}</span>` : ''}
-        <i class="fas fa-chevron-down expand-icon"></i>
-      </div>
-    </div>
-    <div class="card-body" style="display: none;">
-      <div class="char-details-row">
-        ${char.race ? `<span class="char-detail"><strong>Race:</strong> ${escapeHtml(char.race)}</span>` : ''}
-      </div>
-      <div class="profile-fields">
-        <div class="form-group">
-          <label>Spec / Role</label>
-          <input type="text" class="profile-input" data-field="profile_spec"
-                 value="${escapeHtml(char.profile_spec || '')}" placeholder="e.g. Fury, Tank, Holy"
-                 maxlength="50">
-        </div>
-        <div class="form-group">
-          <label>Contact Info</label>
-          <input type="text" class="profile-input" data-field="profile_contact"
-                 value="${escapeHtml(char.profile_contact || '')}" placeholder="Phone or other contact">
-        </div>
-        <div class="form-group">
-          <label>Notes</label>
-          <textarea class="profile-input" data-field="profile_notes"
-                    placeholder="e.g. Can tank 4H, MC priest for Razuvious">${escapeHtml(char.profile_notes || '')}</textarea>
-        </div>
-      </div>
-      <div class="card-actions">
-        <button class="btn btn-danger btn-sm unlink-btn" data-name="${escapeHtml(char.character_name)}" data-class="${escapeHtml(char.class)}">
-          <i class="fas fa-unlink"></i> Unlink Character
-        </button>
+        <i class="fas fa-chevron-right expand-icon"></i>
       </div>
     </div>
   `;
 
-  // Toggle expand/collapse
-  const header = card.querySelector('.card-header');
-  const body = card.querySelector('.card-body');
-  const icon = card.querySelector('.expand-icon');
-
-  header.addEventListener('click', () => {
-    const expanded = header.dataset.expanded === 'true';
-    header.dataset.expanded = String(!expanded);
-    body.style.display = expanded ? 'none' : 'block';
-    icon.classList.toggle('fa-chevron-down', expanded);
-    icon.classList.toggle('fa-chevron-up', !expanded);
-  });
-
-  // Profile field auto-save on blur
-  const inputs = card.querySelectorAll('.profile-input');
-  inputs.forEach(input => {
-    input.addEventListener('blur', () => {
-      saveProfileField(char.character_name, input.dataset.field, input.value);
-    });
-  });
-
-  // Unlink button
-  const unlinkBtn = card.querySelector('.unlink-btn');
-  unlinkBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openUnlinkModal(char.character_name, char.class);
-  });
-
-  return card;
+  link.appendChild(card);
+  return link;
 }
 
 /** Save a single profile field via PATCH */

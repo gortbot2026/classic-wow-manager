@@ -1,0 +1,230 @@
+/**
+ * Character Profile Sub-Page Styles
+ *
+ * Dark theme — inherits base dark theme from body.user-settings in style.css.
+ * Adds: header layout, stat cards, tables, responsive design.
+ */
+
+/* ── Back Link ────────────────────────────────────────────────────────────── */
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #a0aec0;
+  text-decoration: none;
+  font-size: 0.9em;
+  margin-bottom: 16px;
+  padding: 4px 0;
+  transition: color 0.2s;
+}
+
+.back-link:hover {
+  color: #e2e8f0;
+}
+
+/* ── Character Header ─────────────────────────────────────────────────────── */
+
+.char-profile-header {
+  margin-bottom: 16px;
+}
+
+.char-profile-name-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.char-profile-name {
+  font-size: 1.8em;
+  font-weight: 700;
+  margin: 0;
+}
+
+.char-profile-info {
+  font-size: 0.95em;
+  color: #a0aec0;
+  margin-top: 4px;
+}
+
+.char-profile-info .info-sep {
+  margin: 0 4px;
+  color: #4a5568;
+}
+
+.char-profile-actions {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ── Stat Cards (Gold Summary) ────────────────────────────────────────────── */
+
+.gold-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.gold-card {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.gold-card-label {
+  font-size: 0.8em;
+  color: #a0aec0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.gold-card-value {
+  font-size: 1.4em;
+  font-weight: 700;
+}
+
+.gold-earned .gold-card-value {
+  color: #48bb78;
+}
+
+.gold-spent .gold-card-value {
+  color: #f6ad55;
+}
+
+.gold-net.positive .gold-card-value {
+  color: #48bb78;
+}
+
+.gold-net.negative .gold-card-value {
+  color: #fc8181;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.cp-table th {
+  text-align: left;
+  padding: 10px 12px;
+  color: #a0aec0;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.cp-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.cp-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── Item Icons & Links ───────────────────────────────────────────────────── */
+
+.item-icon {
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
+  margin-right: 6px;
+  border-radius: 3px;
+}
+
+.item-link {
+  color: #a78bfa;
+  text-decoration: none;
+}
+
+.item-link:hover {
+  text-decoration: underline;
+  color: #c4b5fd;
+}
+
+/* ── Text Colors ──────────────────────────────────────────────────────────── */
+
+.gold-text {
+  color: #f6ad55;
+  font-weight: 600;
+}
+
+.positive {
+  color: #48bb78;
+  font-weight: 600;
+}
+
+.negative {
+  color: #fc8181;
+  font-weight: 600;
+}
+
+/* ── Totals Row ───────────────────────────────────────────────────────────── */
+
+.cp-total {
+  margin-bottom: 12px;
+  font-size: 1.05em;
+}
+
+/* ── Sub-headings ─────────────────────────────────────────────────────────── */
+
+.cp-sub-heading {
+  font-size: 1em;
+  color: #cbd5e0;
+  margin: 20px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ── No-Data State ────────────────────────────────────────────────────────── */
+
+.no-data {
+  text-align: center;
+  padding: 24px;
+  color: #718096;
+  font-style: italic;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .char-profile-name {
+    font-size: 1.4em;
+  }
+
+  .gold-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .cp-table {
+    font-size: 0.85em;
+  }
+
+  .cp-table th,
+  .cp-table td {
+    padding: 8px 8px;
+  }
+}
+
+@media (max-width: 480px) {
+  .char-profile-name-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}

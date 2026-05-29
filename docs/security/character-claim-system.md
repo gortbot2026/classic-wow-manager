@@ -112,6 +112,14 @@ Applied to: `character_name`, `class`, `race`, `rank_name`, `profile_spec`, `pro
 
 ---
 
+## Schema Initialization (Updated 2026-05-29)
+
+`initializeCharacterClaimsTable()` runs at startup in the `pool.connect().then()` block, matching the pattern of all other `initialize*` functions. Uses `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — fully idempotent; safe to run on repeat deploys.
+
+**Note:** The function is called twice in the startup block (once without `await`, once with `await`). Harmless due to idempotent queries, but the first call is redundant.
+
+---
+
 ## Known Notes (LOW Risk)
 
 1. **No rate limiting on `/api/claim-character`** — the 1-pending-claim-per-user check provides practical protection. Consider express-rate-limit in a future sprint.

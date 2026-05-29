@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Character Profile - Classic WoW Manager</title>
+    <link rel="stylesheet" href="/style.css?v=sandbox-fix-3">
+    <link rel="stylesheet" href="/roster.css">
+    <link rel="stylesheet" href="/user-settings.css?v=char-profile-1">
+    <link rel="stylesheet" href="/character-profile.css?v=char-profile-1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="user-settings">
+    <!-- Universal Top Bar -->
+    <div class="top-bar">
+        <div class="top-bar-left">
+            <img src="/images/1p_logo.png" alt="1Principles" class="app-logo" width="110" height="30">
+            <nav class="top-nav">
+                <a href="/" class="top-nav-link">Home</a>
+                <div class="top-nav-dropdown">
+                    <button class="top-nav-link dropdown-toggle" id="upcoming-raids-dropdown">
+                        Raids <i class="fas fa-chevron-down"></i>
+                    </button>
+                    <div class="dropdown-menu" id="upcoming-raids-menu">
+                        <div class="dropdown-loading">Loading raids...</div>
+                    </div>
+                </div>
+                <a href="/guild-members" class="top-nav-link">Members</a>
+                <a href="/attendance" class="top-nav-link">Attendance</a>
+            </nav>
+        </div>
+        <div id="auth-container"></div>
+    </div>
+
+    <!-- Active Raid Bar -->
+    <div class="raid-bar" id="raid-bar" style="display: none;">
+        <div class="raid-bar-left">
+            <span class="raid-title" id="raid-title">Loading...</span>
+            <nav class="raid-nav">
+                <a href="#" class="raid-nav-link" id="raid-roster-link"><i class="fas fa-users"></i> Roster</a>
+                <a href="#" class="raid-nav-link" id="raid-assignments-link"><i class="fas fa-tasks"></i> Assignments</a>
+                <a href="/raidlogs" class="raid-nav-link" id="raid-logs-link"><i class="fas fa-chart-line"></i> Raid Logs</a>
+                <a href="/gold" class="raid-nav-link" id="raid-goldpot-link"><i class="fas fa-coins"></i> Gold Pot</a>
+                <a href="/loot" class="raid-nav-link" id="raid-loot-link"><i class="fas fa-shield-alt"></i> Loot</a>
+            </nav>
+        </div>
+        <div class="raid-bar-right">
+            <button class="raid-close-btn" onclick="localStorage.removeItem('activeEventSession'); location.reload();">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="settings-container">
+            <!-- Back link -->
+            <a href="/user-settings" class="back-link">
+                <i class="fas fa-arrow-left"></i> Back to My Characters
+            </a>
+
+            <!-- Character Header -->
+            <div id="char-header" class="settings-section">
+                <p>Loading character profile...</p>
+            </div>
+
+            <!-- Loot History -->
+            <div id="loot-section" class="settings-section">
+                <h2><i class="fas fa-shield-alt"></i> Loot History</h2>
+                <div id="loot-body"><p>Loading...</p></div>
+            </div>
+
+            <!-- Gold Summary -->
+            <div id="gold-section" class="settings-section">
+                <h2><i class="fas fa-coins"></i> Gold Summary</h2>
+                <div id="gold-body"><p>Loading...</p></div>
+            </div>
+
+            <!-- Raid History -->
+            <div id="raid-section" class="settings-section">
+                <h2><i class="fas fa-dungeon"></i> Raid History</h2>
+                <div id="raid-body"><p>Loading...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unlink Confirmation Modal -->
+    <div id="unlink-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3><i class="fas fa-unlink"></i> Unlink Character</h3>
+                <button class="modal-close" id="unlink-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="unlink-confirm-text">Are you sure you want to unlink this character?</p>
+                <p class="unlink-note">This won't delete the character from the guild roster — it only removes the link to your profile.</p>
+                <div class="modal-actions">
+                    <button id="unlink-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="unlink-confirm" class="btn btn-danger">Unlink</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast" style="display: none;"></div>
+
+    <script src="top-bar.js?v=sandbox-fix-3"></script>
+    <script src="character-profile.js?v=char-profile-1"></script>
+</body>
+</html>
