@@ -1,76 +1,62 @@
-# Security: Character Profile Sub-Page
+# Security: Character Profile Feature
 
-**Feature:** `/user-settings/character/:characterName`  
-**API:** `GET /api/my-characters/:characterName/profile`  
-**Reviewed:** 2026-05-29  
-**Reviewer:** Security Gort  
+**Feature:** `/user-settings/character/:characterName` — character sub-page with loot/gold/raid history  
+**Files:** `index.cjs`, `public/character-profile.js`, `public/character-profile.html`, `public/user-settings.css`, `public/user-settings.js`  
+**Review date:** 2026-05-29 (Round 1 + Round 2 QA fix)
 
 ---
 
 ## Authentication Requirements
 
-- User must be authenticated (`req.isAuthenticated()`).
-- Unauthenticated requests return `401`.
+- All API calls require `req.isAuthenticated()` (session-based, passport-discord)
+- Unauthenticated requests → 401
 
 ## Authorization Rules
 
-- Only the **character owner** (matched via `discord_id = req.user.id`) may view the profile.
-- Users with **management role** (`hasManagementRoleById`) may view any character profile.
-- All other users receive `403`.
-- The ownership check is performed server-side only — the client renders only after the API confirms access.
+- Endpoint: `GET /api/my-characters/:characterName/profile`
+- Authorization check: `charRow.discord_id === req.user.id` (ownership) OR `hasManagementRoleById(req.user.id)` (admin)
+- Unauthorized requests → 403
+- Character not found → 404
 
 ## Input Validation
 
-| Input | Validation |
-|---|---|
-| `characterName` URL param | `!characterName \|\| length > 50` → 400 Bad Request |
-| Profile fields (spec/contact/notes) | Handled by existing PATCH endpoint (pre-reviewed) |
-
-Note: WoW character names are 2–12 alphanumeric characters, but the server allows up to 50 to be permissive. All DB lookups use `LOWER($1)` parameterized queries — no injection risk regardless of input format.
+- `characterName` URL param: max 50 chars, otherwise 400
+- All DB lookups use `LOWER()` for case-insensitive matching
+- All queries use parameterized `$1` placeholders — no raw concatenation
 
 ## SQL Injection Prevention
 
-All queries in the new endpoint use `pg` parameterized queries (`$1` placeholders):
-
-- `WHERE LOWER(g.character_name) = LOWER($1)` — character lookup
-- `WHERE LOWER(li.player_name) = LOWER($1)` — loot items
-- `WHERE discord_id = $1` — manual rewards
-- `WHERE LOWER(ro.assigned_char_name) = LOWER($1)` — raid history
-
-No raw string concatenation in any query.
+- `loot_items` query: `WHERE LOWER(li.player_name) = LOWER($1)` — parameterized
+- `manual_rewards_deductions` query: `WHERE discord_id = $1` — parameterized
+- `roster_overrides` query: `WHERE LOWER(ro.assigned_char_name) = LOWER($1)` — parameterized
+- `LEFT JOIN raid_helper_events_cache` (Round 2 fix): joins on `event_id` column — no user input involved
 
 ## XSS Prevention
 
-Client-side rendering uses `escapeHtml()` consistently via `document.createElement('div').textContent` pattern. Applied to:
-- Character name, class, race, rank
-- Item names, event names, spec names
-- Wowhead links and icon URLs
+- All user-facing output in `character-profile.js` uses `escapeHtml()` before inserting into DOM
+- `raidName` (extracted from `event_data` JSON, Round 2 fix) rendered via `escapeHtml(item.raidName || item.eventId || '-')`
+- `wowheadLink`/`iconLink` are admin-set DB values, still wrapped in `escapeHtml()`
 
-Note: `wowheadLink`/`iconLink` are database values (set by admins), not user input — XSS risk is negligible, but `escapeHtml()` is applied anyway as a defence-in-depth measure.
+## Data Exposure
 
-## Data Scope & Leakage Prevention
+- `manual_rewards_deductions` returns ALL rewards for the player's `discord_id` (not scoped to one character) — this is intentional per spec; players may have multiple characters
+- `classColorHex` sourced from `class_spec_mappings` (admin-controlled, not user input)
 
-- Loot history filtered to `LOWER(player_name) = LOWER(characterName)` — character-scoped.
-- Manual rewards returned by `discord_id` (player-level, not character-scoped). This is intentional per spec: gold rewards are player-level. All rewards belong to the same owner.
-- Raid history filtered to `LOWER(assigned_char_name) = LOWER(characterName)` — character-scoped.
-- Generic error messages returned on 500 (`'Error fetching character profile.'`) — no stack traces exposed.
-- `created_by` field in manual rewards exposes admin username who created the reward. Considered acceptable since the user sees their own rewards only.
+## JSON Parsing Safety (Round 2 Fix)
 
-## Route Ordering
+- `event_data` JSON from `raid_helper_events_cache` parsed with `try-catch` + fallback to `null`
+- Applied to both loot section and raid history section — no crash risk on malformed data
 
-`PATCH /api/my-characters/:name/profile` is registered at line ~13111 in `index.cjs`, **before** `GET /api/my-characters/:characterName/profile` at line ~13184. Express matches routes in order — no conflict.
+## Route Order Safety
 
-## Known Pre-Existing Dependency Issues (Not Introduced by This Feature)
+- `PATCH /api/my-characters/:name/profile` registered BEFORE `GET /api/my-characters/:characterName/profile` — no route conflict
 
-| Package | Severity | Used In | Notes |
-|---|---|---|---|
-| `fast-xml-parser` | Critical | AWS SDK S3 (indirect) | Not in HTTP request path for this endpoint; upgrade via `npm audit fix` |
-| `multer` | High | File uploads | Pre-existing; not used in character profile endpoint |
-| `path-to-regexp` | High | Express routing | Pre-existing; update recommended |
-| `lodash` | High | Various | Pre-existing; update recommended |
+## Known Limitations
 
-These are pre-existing issues. No new vulnerable dependencies introduced by this feature.
+- No rate limiting on the profile endpoint — acceptable given auth requirement and internal use
+- `characterName` max length is 50 (WoW limit is 12) — slightly permissive but harmless
 
-## Audit Logging
+## Dependency Status (2026-05-29)
 
-No dedicated audit log for character profile views. Profile field edits (`PATCH`) follow the existing pattern. Consider adding audit logging for profile access in a future sprint if compliance requirements emerge.
+- 39 pre-existing vulnerabilities (30 moderate, 8 high, 1 critical) — not introduced by this feature
+- No new packages added

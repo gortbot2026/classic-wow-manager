@@ -13277,6 +13277,7 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
         // ── Compute gold earned using same 6-step formula as admin player page ──
         // (mirrors computeTotalsFromSnapshot / goldEarnedResult logic from /api/admin/player/:discordId)
         let goldEarned = 0;
+        const goldByEventMap = {}; // { [event_id]: goldEarned } per-raid gold breakdown
         try {
             const charNameLower = actualName.toLowerCase();
             const normalizeSnapshotName = (name) => {
@@ -13379,13 +13380,186 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
                     });
 
                     const playerData = nameToPlayer.get(charNameLower);
-                    if (playerData) goldEarned += playerData.gold;
+                    if (playerData) {
+                        goldEarned += playerData.gold;
+                        goldByEventMap[eventId] = playerData.gold;
+                    }
                 }
             }
         } catch (goldErr) {
             console.error('[character-profile] Gold earned calculation error:', goldErr.message);
             goldEarned = 0;
         }
+
+        // ── Additional queries for enhanced profile panels ──
+        // lootGoldByEvent, topRankWins, performance stats (avgDps/avgHps, rankVsRole, rankVsClass)
+        const charClass = (charRow.class || '').toLowerCase();
+        const damageClasses = ['warrior', 'rogue', 'hunter', 'mage', 'warlock'];
+        const healingClasses = ['priest', 'druid', 'shaman'];
+        const isDamage = damageClasses.includes(charClass);
+        const isHealing = healingClasses.includes(charClass);
+        const roleClasses = isDamage ? damageClasses : isHealing ? healingClasses : [];
+        const roleMetric = isDamage ? 'dps_value' : isHealing ? 'hps_value' : null;
+        const roleLabel = isDamage ? 'damage dealers' : isHealing ? 'healers' : null;
+
+        // Build parallel queries for the new data
+        const additionalQueries = [
+            // lootGoldByEvent — SUM(gold_amount) grouped by event_id
+            client.query(
+                `SELECT event_id, SUM(gold_amount::int) AS total_gold
+                 FROM loot_items
+                 WHERE LOWER(player_name) = LOWER($1)
+                 GROUP BY event_id`,
+                [actualName]
+            ),
+            // topRankWins — raids where character ranked #1 in key panels
+            client.query(
+                `SELECT rdp.event_id, rdp.panel_name,
+                        COALESCE(rdp.point_value_edited, rdp.point_value_original) AS point_value,
+                        rhec.event_data
+                 FROM rewards_and_deductions_points rdp
+                 LEFT JOIN raid_helper_events_cache rhec ON rhec.event_id = rdp.event_id
+                 WHERE LOWER(rdp.character_name) = LOWER($1)
+                   AND rdp.panel_name IN ('God Gamer DPS', 'God Gamer Healer', 'Damage Dealers', 'Healers')
+                   AND rdp.ranking_number_original = 1
+                 ORDER BY rdp.event_id DESC`,
+                [actualName]
+            ),
+        ];
+
+        // avgDps/avgHps — only query if character is in a known role group
+        if (isDamage) {
+            additionalQueries.push(
+                client.query(
+                    `SELECT ROUND(AVG(dps_value))::int AS avg_dps
+                     FROM log_data
+                     WHERE LOWER(character_name) = LOWER($1)
+                       AND dps_value > 0
+                       AND LOWER(character_class) IN ('warrior','rogue','hunter','mage','warlock')`,
+                    [actualName]
+                )
+            );
+        } else {
+            additionalQueries.push(Promise.resolve({ rows: [{ avg_dps: null }] }));
+        }
+
+        if (isHealing) {
+            additionalQueries.push(
+                client.query(
+                    `SELECT ROUND(AVG(hps_value))::int AS avg_hps
+                     FROM log_data
+                     WHERE LOWER(character_name) = LOWER($1)
+                       AND hps_value > 0
+                       AND LOWER(character_class) IN ('priest','druid','shaman')`,
+                    [actualName]
+                )
+            );
+        } else {
+            additionalQueries.push(Promise.resolve({ rows: [{ avg_hps: null }] }));
+        }
+
+        // rankVsRole — RANK() window function over same role group
+        if (roleMetric && roleClasses.length > 0) {
+            const classPlaceholders = roleClasses.map((_, i) => `$${i + 2}`).join(',');
+            additionalQueries.push(
+                client.query(
+                    `WITH char_avgs AS (
+                       SELECT character_name, AVG(${roleMetric}) AS avg_val
+                       FROM log_data
+                       WHERE ${roleMetric} > 0
+                         AND LOWER(character_class) IN (${classPlaceholders})
+                       GROUP BY character_name
+                     )
+                     SELECT rank, total, avg_val FROM (
+                       SELECT character_name, avg_val,
+                         RANK() OVER (ORDER BY avg_val DESC) AS rank,
+                         COUNT(*) OVER () AS total
+                       FROM char_avgs
+                     ) ranked
+                     WHERE LOWER(character_name) = LOWER($1)`,
+                    [actualName, ...roleClasses]
+                )
+            );
+        } else {
+            additionalQueries.push(Promise.resolve({ rows: [] }));
+        }
+
+        // rankVsClass — same but filtered to exact class
+        if (roleMetric && charClass) {
+            additionalQueries.push(
+                client.query(
+                    `WITH char_avgs AS (
+                       SELECT character_name, AVG(${roleMetric}) AS avg_val
+                       FROM log_data
+                       WHERE ${roleMetric} > 0
+                         AND LOWER(character_class) = LOWER($2)
+                       GROUP BY character_name
+                     )
+                     SELECT rank, total, avg_val FROM (
+                       SELECT character_name, avg_val,
+                         RANK() OVER (ORDER BY avg_val DESC) AS rank,
+                         COUNT(*) OVER () AS total
+                       FROM char_avgs
+                     ) ranked
+                     WHERE LOWER(character_name) = LOWER($1)`,
+                    [actualName, charClass]
+                )
+            );
+        } else {
+            additionalQueries.push(Promise.resolve({ rows: [] }));
+        }
+
+        const [lootGoldByEventRes, topRankWinsRes, avgDpsRes, avgHpsRes, rankVsRoleRes, rankVsClassRes] =
+            await Promise.all(additionalQueries);
+
+        // Build lootGoldByEvent map
+        const lootGoldByEvent = {};
+        for (const r of lootGoldByEventRes.rows) {
+            lootGoldByEvent[r.event_id] = parseInt(r.total_gold, 10) || 0;
+        }
+
+        // Build topRankWins array
+        const topRankWins = topRankWinsRes.rows.map(r => {
+            let eventName = null;
+            let eventDate = null;
+            if (r.event_data) {
+                try {
+                    const ed = typeof r.event_data === 'string'
+                        ? JSON.parse(r.event_data) : r.event_data;
+                    eventName = ed.title || ed.name || null;
+                    eventDate = ed.startTime
+                        ? new Date(ed.startTime * 1000).toISOString() : null;
+                } catch (_) { /* ignore parse errors */ }
+            }
+            return {
+                eventId: r.event_id,
+                panelName: r.panel_name,
+                pointValue: Number(r.point_value) || 0,
+                eventName,
+                eventDate,
+            };
+        });
+
+        // Build performance stats
+        const avgDps = avgDpsRes.rows[0]?.avg_dps ?? null;
+        const avgHps = avgHpsRes.rows[0]?.avg_hps ?? null;
+        const rankVsRoleRow = rankVsRoleRes.rows[0] || null;
+        const rankVsClassRow = rankVsClassRes.rows[0] || null;
+
+        const performance = {
+            avgDps: avgDps !== null ? Number(avgDps) : null,
+            avgHps: avgHps !== null ? Number(avgHps) : null,
+            rankVsRole: rankVsRoleRow ? {
+                rank: Number(rankVsRoleRow.rank),
+                total: Number(rankVsRoleRow.total),
+                label: roleLabel,
+            } : null,
+            rankVsClass: rankVsClassRow ? {
+                rank: Number(rankVsClassRow.rank),
+                total: Number(rankVsClassRow.total),
+                className: charRow.class,
+            } : null,
+        };
 
         // ── Extract event name/date from raid_helper_events_cache.event_data JSON ──
         // Same pattern as admin endpoint (index.cjs ~line 12092–12096)
@@ -13450,6 +13624,8 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
                 earned: goldEarned,
                 spent: totalGoldSpent,
                 net: goldEarned - totalGoldSpent,
+                goldByEvent: goldByEventMap,
+                lootGoldByEvent,
                 manualRewards: manualRewardsRes.rows.map(r => ({
                     description: r.description,
                     points: r.points,
@@ -13459,6 +13635,11 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
                     createdAt: r.created_at,
                 })),
             },
+            topRankWins: {
+                totalCount: topRankWins.length,
+                wins: topRankWins,
+            },
+            performance,
             raidHistory: {
                 totalCount: raids.length,
                 raids,

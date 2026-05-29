@@ -203,6 +203,68 @@
   font-style: italic;
 }
 
+/* ── Top Wins Badge ───────────────────────────────────────────────────────── */
+
+.top-wins-badge {
+  display: inline-block;
+  background: rgba(245, 158, 11, 0.15);
+  color: #f6ad55;
+  font-weight: 600;
+  font-size: 1.05em;
+  padding: 8px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+/* ── Performance Stats Cards ──────────────────────────────────────────────── */
+
+.perf-cards {
+  /* Inherits .gold-cards grid layout */
+}
+
+.perf-card {
+  /* Inherits .gold-card base styles */
+}
+
+.perf-dps .gold-card-value {
+  color: #63b3ed; /* blue accent for DPS */
+}
+
+.perf-hps .gold-card-value {
+  color: #68d391; /* green accent for HPS */
+}
+
+.perf-rank .gold-card-value {
+  color: #b794f4; /* purple accent for rank */
+}
+
+.perf-card-sub {
+  font-size: 0.75em;
+  color: #a0aec0;
+  text-transform: capitalize;
+  margin-top: 4px;
+}
+
+/* ── Show All Button (Manual Rewards Pagination) ──────────────────────────── */
+
+.btn-show-all {
+  display: block;
+  margin: 12px auto 0;
+  padding: 6px 16px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #a0aec0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-size: 0.85em;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.btn-show-all:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #e2e8f0;
+}
+
 /* ── Responsive ───────────────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {

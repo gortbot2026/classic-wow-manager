@@ -99,7 +99,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderCharacterHeader(data.character);
     renderLootHistory(data.loot);
     renderGoldSummary(data.gold);
-    renderRaidHistory(data.raidHistory);
+    renderTopWins(data.topRankWins);
+    renderPerformanceStats(data);
+    renderRaidHistory(data.raidHistory, data.gold);
     setupUnlinkModal(data.character.name);
   } catch (error) {
     document.getElementById('char-header').innerHTML =
@@ -255,20 +257,26 @@ function renderGoldSummary(gold) {
     '<div class="gold-card-value">' + netSign + fmtNum(gold.net) + 'g</div></div>';
   html += '</div>';
 
-  // Manual rewards/deductions table
+  // Manual rewards/deductions table with pagination (show first 10, toggle to show all)
   if (gold.manualRewards && gold.manualRewards.length > 0) {
+    const PAGE_SIZE = 10;
+    const total = gold.manualRewards.length;
+    const showPagination = total > PAGE_SIZE;
+
     html += '<h3 class="cp-sub-heading">Manual Rewards & Deductions</h3>';
-    html += '<div class="table-scroll"><table class="cp-table"><thead><tr>' +
+    html += '<div class="table-scroll"><table class="cp-table" id="manual-rewards-table"><thead><tr>' +
       '<th>Description</th><th>Amount</th><th>Type</th><th>Date</th>' +
       '</tr></thead><tbody>';
 
-    gold.manualRewards.forEach(function (r) {
+    gold.manualRewards.forEach(function (r, idx) {
       const amtClass = r.points >= 0 ? 'positive' : 'negative';
       const typeIcon = r.isGold
         ? '<i class="fas fa-coins" style="color:#f6ad55"></i> Gold'
         : 'Points';
+      // Hide rows beyond PAGE_SIZE initially
+      const hiddenAttr = showPagination && idx >= PAGE_SIZE ? ' class="mr-hidden" style="display:none"' : '';
 
-      html += '<tr>' +
+      html += '<tr' + hiddenAttr + '>' +
         '<td>' + escapeHtml(r.description) + '</td>' +
         '<td class="' + amtClass + '">' + r.points + '</td>' +
         '<td>' + typeIcon + '</td>' +
@@ -277,17 +285,35 @@ function renderGoldSummary(gold) {
     });
 
     html += '</tbody></table></div>';
+
+    if (showPagination) {
+      html += '<button class="btn-show-all" id="mr-show-all">Show all (' + total + ')</button>';
+    }
   } else {
     html += '<div class="no-data">No manual rewards or deductions</div>';
   }
 
   container.innerHTML = html;
+
+  // Wire up "Show all" button for manual rewards pagination
+  const showAllBtn = document.getElementById('mr-show-all');
+  if (showAllBtn) {
+    showAllBtn.addEventListener('click', function () {
+      const hiddenRows = document.querySelectorAll('#manual-rewards-table .mr-hidden');
+      hiddenRows.forEach(function (row) { row.style.display = ''; });
+      showAllBtn.style.display = 'none';
+    });
+  }
 }
 
 // ── Section D: Raid History ─────────────────────────────────────────────────
 
-/** Render raid history table */
-function renderRaidHistory(raidHistory) {
+/**
+ * Render raid history table with gold earned/spent columns.
+ * @param {object} raidHistory - Raid history data from API
+ * @param {object} gold - Gold data containing goldByEvent and lootGoldByEvent maps
+ */
+function renderRaidHistory(raidHistory, gold) {
   const container = document.getElementById('raid-body');
 
   if (!raidHistory || !raidHistory.raids || raidHistory.raids.length === 0) {
@@ -297,23 +323,133 @@ function renderRaidHistory(raidHistory) {
     return;
   }
 
+  const goldByEvent = (gold && gold.goldByEvent) || {};
+  const lootGoldByEvent = (gold && gold.lootGoldByEvent) || {};
+
   let html = '<div class="cp-total">Total Raids: <strong>' +
     raidHistory.totalCount + '</strong></div>';
 
   html += '<div class="table-scroll"><table class="cp-table"><thead><tr>' +
-    '<th>Raid Name</th><th>Date</th><th>Spec</th><th>Character</th>' +
+    '<th>Raid Name</th><th>Date</th><th>Gold Earned</th><th>Gold Spent</th><th>Spec</th><th>Character</th>' +
     '</tr></thead><tbody>';
 
   raidHistory.raids.forEach(function (raid) {
+    const earned = goldByEvent[raid.eventId] || 0;
+    const spent = lootGoldByEvent[raid.eventId] || 0;
+
     html += '<tr>' +
       '<td>' + escapeHtml(raid.eventName || raid.eventId || '-') + '</td>' +
       '<td>' + fmtDate(raid.eventDate) + '</td>' +
+      '<td class="gold-text">' + fmtNum(earned) + 'g</td>' +
+      '<td class="gold-text">' + fmtNum(spent) + 'g</td>' +
       '<td>' + escapeHtml(raid.specName || '-') + '</td>' +
       '<td>' + escapeHtml(raid.characterUsed || '-') + '</td>' +
       '</tr>';
   });
 
   html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+// ── Section E: Top DPS/Healer Wins ──────────────────────────────────────────
+
+/**
+ * Render the Top DPS/Healer Wins panel showing raids where the character ranked #1.
+ * @param {object} topRankWins - { totalCount, wins: [{ eventId, panelName, pointValue, eventName, eventDate }] }
+ */
+function renderTopWins(topRankWins) {
+  const container = document.getElementById('top-wins-body');
+  if (!container) return;
+
+  if (!topRankWins || !topRankWins.wins || topRankWins.wins.length === 0) {
+    container.innerHTML = '<div class="no-data">No top rankings yet</div>';
+    return;
+  }
+
+  let html = '<div class="top-wins-badge">🏆 ' + topRankWins.totalCount +
+    ' time' + (topRankWins.totalCount !== 1 ? 's' : '') + ' top ranked</div>';
+
+  html += '<div class="table-scroll"><table class="cp-table"><thead><tr>' +
+    '<th>Raid Name</th><th>Date</th><th>Category</th><th>Points Earned</th>' +
+    '</tr></thead><tbody>';
+
+  topRankWins.wins.forEach(function (win) {
+    html += '<tr>' +
+      '<td>' + escapeHtml(win.eventName || win.eventId || '-') + '</td>' +
+      '<td>' + fmtDate(win.eventDate) + '</td>' +
+      '<td>' + escapeHtml(win.panelName) + '</td>' +
+      '<td class="positive">' + fmtNum(win.pointValue) + '</td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+// ── Section F: Performance Stats ────────────────────────────────────────────
+
+/**
+ * Render performance stats hero cards: Average DPS/HPS and rank vs role/class.
+ * Only shows cards relevant to the character's role group.
+ * @param {object} data - Full API response containing performance and character fields
+ */
+function renderPerformanceStats(data) {
+  const container = document.getElementById('perf-stats-body');
+  if (!container) return;
+
+  const perf = data.performance;
+  if (!perf) {
+    container.innerHTML = '<div class="no-data">No performance data available</div>';
+    return;
+  }
+
+  // Check if there's any data to show
+  const hasAnyData = perf.avgDps !== null || perf.avgHps !== null ||
+                     perf.rankVsRole !== null || perf.rankVsClass !== null;
+  if (!hasAnyData) {
+    container.innerHTML = '<div class="no-data">No performance data available</div>';
+    return;
+  }
+
+  let html = '<div class="gold-cards perf-cards">';
+
+  // Average DPS card (damage classes only)
+  if (perf.avgDps !== null) {
+    html += '<div class="gold-card perf-card perf-dps">' +
+      '<div class="gold-card-label">Average DPS</div>' +
+      '<div class="gold-card-value">' + fmtNum(perf.avgDps) + '</div>' +
+      '</div>';
+  }
+
+  // Average HPS card (healing classes only)
+  if (perf.avgHps !== null) {
+    html += '<div class="gold-card perf-card perf-hps">' +
+      '<div class="gold-card-label">Average HPS</div>' +
+      '<div class="gold-card-value">' + fmtNum(perf.avgHps) + '</div>' +
+      '</div>';
+  }
+
+  // Rank vs Role card
+  if (perf.rankVsRole) {
+    html += '<div class="gold-card perf-card perf-rank">' +
+      '<div class="gold-card-label">Rank vs Role</div>' +
+      '<div class="gold-card-value">Rank #' + perf.rankVsRole.rank +
+      ' of ' + perf.rankVsRole.total + '</div>' +
+      '<div class="perf-card-sub">' + escapeHtml(perf.rankVsRole.label) + '</div>' +
+      '</div>';
+  }
+
+  // Rank vs Class card
+  if (perf.rankVsClass) {
+    html += '<div class="gold-card perf-card perf-rank">' +
+      '<div class="gold-card-label">Rank vs Class</div>' +
+      '<div class="gold-card-value">Rank #' + perf.rankVsClass.rank +
+      ' of ' + perf.rankVsClass.total + '</div>' +
+      '<div class="perf-card-sub">' + escapeHtml(perf.rankVsClass.className) + '</div>' +
+      '</div>';
+  }
+
+  html += '</div>';
   container.innerHTML = html;
 }
 
