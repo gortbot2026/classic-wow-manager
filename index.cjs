@@ -12999,18 +12999,390 @@ app.get('/api/my-characters', async (req, res) => {
     }
 
     const discordId = req.user.id;
+    let client;
 
     try {
-        const client = await pool.connect();
+        client = await pool.connect();
         const result = await client.query({
-            text: 'SELECT character_name, class FROM players WHERE discord_id = $1 ORDER BY character_name',
+            text: `SELECT g.character_name, g.class, g.race, g.level, g.rank_name,
+                          g.profile_spec, g.profile_contact, g.profile_notes,
+                          csm.class_color_hex
+                   FROM guildies g
+                   LEFT JOIN LATERAL (
+                     SELECT class_color_hex FROM class_spec_mappings
+                     WHERE LOWER(class_name) = LOWER(g.class)
+                     LIMIT 1
+                   ) csm ON true
+                   WHERE g.discord_id = $1
+                   ORDER BY g.character_name`,
             values: [discordId],
         });
-        client.release();
         res.json(result.rows);
     } catch (error) {
         console.error('Error fetching user characters:', error.stack);
         res.status(500).json({ message: 'Error fetching characters from the database.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * GET /api/my-characters/pending-claim
+ * Returns the authenticated user's pending character claim, or null.
+ */
+app.get('/api/my-characters/pending-claim', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: 'User not authenticated.' });
+    }
+
+    let client;
+    try {
+        client = await pool.connect();
+        const result = await client.query({
+            text: `SELECT id, character_name, realm, character_class, existing_discord_id, status, created_at
+                   FROM character_claims
+                   WHERE claimant_discord_id = $1 AND status = 'pending'
+                   ORDER BY created_at DESC LIMIT 1`,
+            values: [req.user.id],
+        });
+        res.json(result.rows.length > 0 ? result.rows[0] : null);
+    } catch (error) {
+        console.error('Error fetching pending claim:', error.stack);
+        res.status(500).json({ message: 'Error fetching pending claim.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * PATCH /api/my-characters/:name/profile
+ * Update profile fields (spec, contact, notes) on a character owned by the user.
+ */
+app.patch('/api/my-characters/:name/profile', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: 'User not authenticated.' });
+    }
+
+    const characterName = req.params.name;
+    const discordId = req.user.id;
+    const { profile_spec, profile_contact, profile_notes } = req.body || {};
+
+    let client;
+    try {
+        client = await pool.connect();
+
+        // Verify ownership
+        const ownership = await client.query({
+            text: `SELECT character_name FROM guildies WHERE LOWER(character_name) = LOWER($1) AND discord_id = $2 LIMIT 1`,
+            values: [characterName, discordId],
+        });
+        if (ownership.rows.length === 0) {
+            return res.status(403).json({ message: 'You do not own this character.' });
+        }
+
+        const actualName = ownership.rows[0].character_name;
+
+        // Update profile fields — only update provided fields
+        const updates = [];
+        const values = [];
+        let paramIndex = 1;
+
+        if (profile_spec !== undefined) {
+            updates.push(`profile_spec = $${paramIndex++}`);
+            values.push(profile_spec ? String(profile_spec).substring(0, 50) : null);
+        }
+        if (profile_contact !== undefined) {
+            updates.push(`profile_contact = $${paramIndex++}`);
+            values.push(profile_contact || null);
+        }
+        if (profile_notes !== undefined) {
+            updates.push(`profile_notes = $${paramIndex++}`);
+            values.push(profile_notes || null);
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({ message: 'No profile fields provided.' });
+        }
+
+        values.push(actualName, discordId);
+        await client.query({
+            text: `UPDATE guildies SET ${updates.join(', ')} WHERE character_name = $${paramIndex++} AND discord_id = $${paramIndex}`,
+            values,
+        });
+
+        res.json({ success: true, message: 'Profile updated.' });
+    } catch (error) {
+        console.error('Error updating character profile:', error.stack);
+        res.status(500).json({ message: 'Error updating profile.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * DELETE /api/my-characters/:name
+ * Unlink a character from the user's profile (sets discord_id = NULL).
+ * Posts an informational notification to Discord.
+ */
+app.delete('/api/my-characters/:name', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: 'User not authenticated.' });
+    }
+
+    const characterName = req.params.name;
+    const discordId = req.user.id;
+
+    let client;
+    try {
+        client = await pool.connect();
+
+        // Verify ownership and get class for notification
+        const ownership = await client.query({
+            text: `SELECT character_name, class FROM guildies WHERE LOWER(character_name) = LOWER($1) AND discord_id = $2 LIMIT 1`,
+            values: [characterName, discordId],
+        });
+        if (ownership.rows.length === 0) {
+            return res.status(403).json({ message: 'You do not own this character.' });
+        }
+
+        const { character_name: actualName, class: charClass } = ownership.rows[0];
+
+        // Unlink — set discord_id to NULL
+        await client.query({
+            text: `UPDATE guildies SET discord_id = NULL WHERE character_name = $1 AND discord_id = $2`,
+            values: [actualName, discordId],
+        });
+
+        // Post notification to Discord
+        try {
+            if (personaBotInstance) {
+                const discordClient = personaBotInstance.getClient();
+                if (discordClient) {
+                    const channel = await discordClient.channels.fetch('1479091461982126181');
+                    if (channel) {
+                        await channel.send(`${req.user.username} removed **${actualName}** (${charClass}) from their profile.`);
+                    }
+                }
+            }
+        } catch (discordErr) {
+            console.error('Error sending unlink notification to Discord:', discordErr.message);
+            // Non-blocking — don't fail the request
+        }
+
+        res.json({ success: true, message: 'Character unlinked.' });
+    } catch (error) {
+        console.error('Error unlinking character:', error.stack);
+        res.status(500).json({ message: 'Error unlinking character.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * GET /api/class-specs
+ * Public endpoint returning class/spec mappings for frontend use.
+ */
+app.get('/api/class-specs', async (req, res) => {
+    let client;
+    try {
+        client = await pool.connect();
+        const result = await client.query(`
+            SELECT class_name, spec_name, role, class_color_hex
+            FROM class_spec_mappings
+            ORDER BY class_name, spec_name
+        `);
+        res.json({ success: true, mappings: result.rows });
+    } catch (error) {
+        console.error('Error fetching class specs:', error.stack);
+        res.status(500).json({ success: false, message: 'Error fetching class/spec data.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * GET /api/guildies/search?q=...
+ * Autocomplete endpoint for character claim modal.
+ * Returns up to 15 matches via case-insensitive prefix match.
+ */
+app.get('/api/guildies/search', async (req, res) => {
+    const query = (req.query.q || '').trim();
+    if (query.length < 2) {
+        return res.json([]);
+    }
+
+    let client;
+    try {
+        client = await pool.connect();
+        const result = await client.query({
+            text: `SELECT character_name, class, level, discord_id
+                   FROM guildies
+                   WHERE character_name ILIKE $1
+                   ORDER BY character_name
+                   LIMIT 15`,
+            values: [query + '%'],
+        });
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error searching guildies:', error.stack);
+        res.status(500).json({ message: 'Error searching characters.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+/**
+ * POST /api/claim-character
+ * Claim a character for the authenticated user.
+ * - Known + unclaimed → auto-approve
+ * - Known + owned by someone else → pending (conflict) + Discord notification
+ * - Unknown + class/level provided → insert into guildies + auto-approve
+ * - Unknown + missing fields → 404 with { found: false }
+ */
+app.post('/api/claim-character', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: 'User not authenticated.' });
+    }
+
+    const discordId = req.user.id;
+    const username = req.user.username;
+    let { character_name, realm, character_class, level } = req.body || {};
+
+    if (!character_name || typeof character_name !== 'string' || character_name.trim().length === 0) {
+        return res.status(400).json({ message: 'Character name is required.' });
+    }
+
+    character_name = character_name.trim();
+
+    // Parse "CharName-Realm" format
+    let parsedRealm = realm || null;
+    if (character_name.includes('-')) {
+        const parts = character_name.split('-');
+        character_name = parts[0];
+        if (!parsedRealm) {
+            parsedRealm = parts.slice(1).join('-');
+        }
+    }
+
+    let client;
+    try {
+        client = await pool.connect();
+
+        // Check for existing pending claim by this user
+        const pendingCheck = await client.query({
+            text: `SELECT id, character_name FROM character_claims WHERE claimant_discord_id = $1 AND status = 'pending' LIMIT 1`,
+            values: [discordId],
+        });
+        if (pendingCheck.rows.length > 0) {
+            return res.status(409).json({
+                message: `You already have a pending claim for "${pendingCheck.rows[0].character_name}". Please wait for it to be resolved.`
+            });
+        }
+
+        // Look up character in guildies (case-insensitive)
+        const existing = await client.query({
+            text: `SELECT character_name, class, level, discord_id FROM guildies WHERE LOWER(character_name) = LOWER($1) LIMIT 1`,
+            values: [character_name],
+        });
+
+        if (existing.rows.length > 0) {
+            // Known character path
+            const char = existing.rows[0];
+
+            if (char.discord_id === discordId) {
+                return res.status(409).json({ message: 'You already own this character.' });
+            }
+
+            if (!char.discord_id) {
+                // Auto-approve: unclaimed character
+                await client.query({
+                    text: `UPDATE guildies SET discord_id = $1 WHERE character_name = $2`,
+                    values: [discordId, char.character_name],
+                });
+                await client.query({
+                    text: `INSERT INTO character_claims (claimant_discord_id, claimant_discord_username, character_name, realm, character_class, status)
+                           VALUES ($1, $2, $3, $4, $5, 'approved')`,
+                    values: [discordId, username, char.character_name, parsedRealm, char.class],
+                });
+                return res.json({ success: true, message: `${char.character_name} has been added to your profile.` });
+            }
+
+            // Conflict: character owned by someone else
+            const claimResult = await client.query({
+                text: `INSERT INTO character_claims (claimant_discord_id, claimant_discord_username, character_name, realm, character_class, existing_discord_id, status)
+                       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                       RETURNING id`,
+                values: [discordId, username, char.character_name, parsedRealm, char.class, char.discord_id],
+            });
+
+            const claimId = claimResult.rows[0].id;
+
+            // Post notification to Discord
+            try {
+                if (personaBotInstance) {
+                    const discordClient = personaBotInstance.getClient();
+                    if (discordClient) {
+                        const channel = await discordClient.channels.fetch('1479091461982126181');
+                        if (channel) {
+                            await channel.send(
+                                `**Character Claim Request**\n${username} wants to claim **${char.character_name}** (${char.class})\nThis character is currently linked to <@${char.discord_id}>.\nReply 'approve ${claimId}' or 'decline ${claimId}' to action this.`
+                            );
+                        }
+                    }
+                }
+            } catch (discordErr) {
+                console.error('Error sending claim notification to Discord:', discordErr.message);
+            }
+
+            return res.status(202).json({
+                success: true,
+                pending: true,
+                message: `Claim submitted for ${char.character_name}. An officer will review it.`,
+                claim_id: claimId,
+            });
+        }
+
+        // Unknown character path
+        if (!character_class || level === undefined || level === null) {
+            return res.status(404).json({ found: false, message: 'Character not found in guild roster.' });
+        }
+
+        // Validate level === 60
+        const parsedLevel = parseInt(level, 10);
+        if (parsedLevel !== 60) {
+            return res.status(400).json({ message: 'Only level 60 characters can be claimed.' });
+        }
+
+        // Validate class exists in class_spec_mappings
+        const classCheck = await client.query({
+            text: `SELECT DISTINCT class_name FROM class_spec_mappings WHERE LOWER(class_name) = LOWER($1)`,
+            values: [character_class],
+        });
+        if (classCheck.rows.length === 0) {
+            return res.status(400).json({ message: `Invalid class: ${character_class}` });
+        }
+
+        const canonicalClass = classCheck.rows[0].class_name;
+
+        // Insert new character into guildies
+        await client.query({
+            text: `INSERT INTO guildies (character_name, class, level, discord_id) VALUES ($1, $2, 60, $3)`,
+            values: [character_name, canonicalClass, discordId],
+        });
+
+        // Record claim as approved
+        await client.query({
+            text: `INSERT INTO character_claims (claimant_discord_id, claimant_discord_username, character_name, realm, character_class, status)
+                   VALUES ($1, $2, $3, $4, $5, 'approved')`,
+            values: [discordId, username, character_name, parsedRealm, canonicalClass],
+        });
+
+        return res.json({ success: true, message: `${character_name} (${canonicalClass}) has been added to your profile.` });
+    } catch (error) {
+        console.error('Error claiming character:', error.stack);
+        res.status(500).json({ message: 'Error processing claim.' });
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -16443,6 +16815,30 @@ app.post('/api/admin/setup-database', async (req, res) => {
                 PRIMARY KEY (character_name, class)
             )
         `);
+
+        // Add profile columns to guildies table for player-editable profile data
+        await client.query(`ALTER TABLE guildies ADD COLUMN IF NOT EXISTS profile_spec VARCHAR(50)`);
+        await client.query(`ALTER TABLE guildies ADD COLUMN IF NOT EXISTS profile_contact TEXT`);
+        await client.query(`ALTER TABLE guildies ADD COLUMN IF NOT EXISTS profile_notes TEXT`);
+
+        // Create character_claims table for tracking character claim requests
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS character_claims (
+                id SERIAL PRIMARY KEY,
+                claimant_discord_id VARCHAR(255) NOT NULL,
+                claimant_discord_username VARCHAR(255) NOT NULL,
+                character_name VARCHAR(255) NOT NULL,
+                realm VARCHAR(100),
+                character_class VARCHAR(50),
+                existing_discord_id VARCHAR(255),
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                decided_by VARCHAR(255),
+                created_at TIMESTAMP DEFAULT NOW(),
+                decided_at TIMESTAMP
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_character_claims_claimant ON character_claims (claimant_discord_id)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_character_claims_status ON character_claims (status)`);
 
         // Create sheet_imports table for tracking Google Sheet imports
         await client.query(`

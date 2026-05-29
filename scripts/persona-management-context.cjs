@@ -1136,6 +1136,19 @@ const MANAGEMENT_TOOLS = [
       },
       required: ['event_id', 'discord_ids', 'class_name']
     }
+  },
+  {
+    name: 'resolve_character_claim',
+    description: 'Approve or decline a pending character claim. Updates the character_claims table, optionally re-links the character in guildies, and sends a DM to the claimant.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        claim_id: { type: 'string', description: 'The character claim ID to resolve' },
+        action: { type: 'string', enum: ['approve', 'decline'], description: 'Whether to approve or decline the claim' },
+        decided_by: { type: 'string', description: 'Discord username of the officer making the decision' }
+      },
+      required: ['claim_id', 'action', 'decided_by']
+    }
   }
 ];
 
@@ -2301,6 +2314,93 @@ async function sendOutreachTool(pool, input) {
 }
 
 /**
+ * Resolve a pending character claim (approve or decline).
+ * On approve: updates guildies discord_id and claim status, sends DM to claimant.
+ * On decline: updates claim status, sends DM to claimant.
+ *
+ * @param {import('pg').Pool} pool - PostgreSQL connection pool
+ * @param {object} input - { claim_id, action, decided_by }
+ * @param {object} options - { sendDM?: function }
+ * @returns {Promise<string>} Summary of the action taken
+ */
+async function resolveCharacterClaim(pool, input, options = {}) {
+  const { claim_id, action, decided_by } = input;
+
+  if (!claim_id || !action || !decided_by) {
+    return 'Missing required fields: claim_id, action, and decided_by are all required.';
+  }
+
+  if (action !== 'approve' && action !== 'decline') {
+    return `Invalid action "${action}". Must be "approve" or "decline".`;
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+
+    // Fetch the pending claim
+    const claimResult = await client.query({
+      text: `SELECT id, claimant_discord_id, claimant_discord_username, character_name, character_class, existing_discord_id
+             FROM character_claims WHERE id = $1 AND status = 'pending'`,
+      values: [parseInt(claim_id, 10)],
+    });
+
+    if (claimResult.rows.length === 0) {
+      return `No pending claim found with ID ${claim_id}. It may have already been resolved.`;
+    }
+
+    const claim = claimResult.rows[0];
+
+    if (action === 'approve') {
+      // Update guildies to assign the character to the claimant
+      await client.query({
+        text: `UPDATE guildies SET discord_id = $1 WHERE LOWER(character_name) = LOWER($2)`,
+        values: [claim.claimant_discord_id, claim.character_name],
+      });
+
+      // Update claim status
+      await client.query({
+        text: `UPDATE character_claims SET status = 'approved', decided_by = $1, decided_at = NOW() WHERE id = $2`,
+        values: [decided_by, claim.id],
+      });
+
+      // Send DM to claimant
+      if (options.sendDM) {
+        try {
+          await options.sendDM(claim.claimant_discord_id, `✅ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been approved by ${decided_by}. The character is now linked to your profile!`);
+        } catch (dmErr) {
+          console.error('[resolve_character_claim] Failed to send approval DM:', dmErr.message);
+        }
+      }
+
+      return `✅ Claim #${claim.id} approved. **${claim.character_name}** (${claim.character_class || 'Unknown'}) is now linked to ${claim.claimant_discord_username}.`;
+    }
+
+    // Decline
+    await client.query({
+      text: `UPDATE character_claims SET status = 'declined', decided_by = $1, decided_at = NOW() WHERE id = $2`,
+      values: [decided_by, claim.id],
+    });
+
+    // Send DM to claimant
+    if (options.sendDM) {
+      try {
+        await options.sendDM(claim.claimant_discord_id, `❌ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been declined by ${decided_by}.`);
+      } catch (dmErr) {
+        console.error('[resolve_character_claim] Failed to send decline DM:', dmErr.message);
+      }
+    }
+
+    return `❌ Claim #${claim.id} declined. ${claim.claimant_discord_username}'s claim for **${claim.character_name}** has been rejected.`;
+  } catch (err) {
+    console.error('[resolve_character_claim] Error:', err.message);
+    return `Error resolving claim: ${err.message}`;
+  } finally {
+    if (client) client.release();
+  }
+}
+
+/**
  * Catches all errors and returns a friendly error string instead of throwing.
  * Results are cached via the individual fetcher's caching mechanism.
  *
@@ -2364,6 +2464,9 @@ async function executeManagementTool(name, input, pool, options = {}) {
 
       case 'send_outreach':
         return await sendOutreachTool(pool, input);
+
+      case 'resolve_character_claim':
+        return await resolveCharacterClaim(pool, input, options);
 
       default:
         return `Unknown tool: ${name}`;

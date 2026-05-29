@@ -523,7 +523,7 @@ function createPersonaBot(options = {}) {
         const toolResults = [];
         for (const tb of toolUseBlocks) {
           console.log(`[persona-bot] Mgmt DM tool call: ${tb.name}(${JSON.stringify(tb.input)})`);
-          const result = await executeManagementTool(tb.name, tb.input, pool);
+          const result = await executeManagementTool(tb.name, tb.input, pool, { sendDM });
           toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result });
         }
         messages.push({ role: 'user', content: toolResults });
@@ -730,7 +730,7 @@ FORMATTING: Never use em-dashes or en-dashes. Use commas, hyphens, or semicolons
         const toolResults = [];
         for (const toolBlock of toolUseBlocks) {
           console.log(`[persona-bot] Management tool call: ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
-          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool);
+          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, { sendDM });
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolBlock.id,
@@ -895,7 +895,7 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         const toolResults = [];
         for (const toolBlock of toolUseBlocks) {
           console.log(`[persona-bot] Mention tool call (${tier}): ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
-          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, { tier });
+          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, { tier, sendDM });
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolBlock.id,

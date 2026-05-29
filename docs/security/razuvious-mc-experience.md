@@ -71,3 +71,13 @@ Razuvious MC experience recomputes are logged to the server console:
 - On hook error (reward create/delete): `❌ [RAZU EXP] Hook error on manual reward create/delete: {message}`
 
 No sensitive data is included in logs. Character names are game-data only.
+
+---
+
+## Re-review: 2026-05-29 (Post-QA Bug Fixes)
+
+**Dev changes reviewed:**
+1. `public/assignments.js` line ~2714: `expMap[String(row.character_name).toLowerCase()]` — added `.toLowerCase()` on expMap key construction. Matches 4H pattern. No security impact.
+2. `index.cjs` `recomputeRazuviousMcExperience()` line 1825: `const name = String(characterName).trim().toLowerCase()` — normalizes character name to lowercase before UPSERT, preventing duplicate DB rows. No security impact; still parameterized.
+
+**Verdict:** PASS — no new security issues introduced.
