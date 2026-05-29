@@ -13204,6 +13204,8 @@ app.delete('/api/my-characters/:name', async (req, res) => {
                     if (channel) {
                         await channel.send(`${req.user.username} removed **${actualName}** (${charClass}) from their profile.`);
                     }
+                } else {
+                    console.warn(`[persona-bot] Discord client unavailable — skipped removal notification: "${req.user.username} removed ${actualName} (${charClass}) from their profile."`);
                 }
             }
         } catch (discordErr) {
@@ -13370,6 +13372,8 @@ app.post('/api/claim-character', async (req, res) => {
                                 `**Character Claim Request**\n${username} wants to claim **${char.character_name}** (${char.class})\nThis character is currently linked to <@${char.discord_id}>.\nReply 'approve ${claimId}' or 'decline ${claimId}' to action this.`
                             );
                         }
+                    } else {
+                        console.warn(`[persona-bot] Discord client unavailable — skipped claim notification: "Character Claim Request: ${username} wants to claim ${char.character_name} (${char.class}), currently linked to ${char.discord_id}. Claim ID: ${claimId}"`);
                     }
                 }
             } catch (discordErr) {

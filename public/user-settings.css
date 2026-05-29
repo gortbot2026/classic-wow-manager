@@ -185,10 +185,10 @@ textarea.profile-input {
   justify-content: center;
   gap: 10px;
   padding: 14px 20px;
-  background: #fff3cd;
-  border: 1px solid #ffc107;
+  background: rgba(113, 63, 18, 0.2);
+  border: 1px solid #eab308;
   border-radius: 8px;
-  color: #856404;
+  color: #fef08a;
   font-size: 0.95em;
 }
 
