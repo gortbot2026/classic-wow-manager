@@ -13231,11 +13231,13 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
 
         // ── Parallel queries (reusing patterns from /api/admin/player/:discordId) ──
         const [lootRes, manualRewardsRes, raidHistoryRes] = await Promise.all([
-            // Loot items filtered by character name (adapted from admin loot query)
+            // Loot items filtered by character name, joined with event cache for raid names
+            // (adapted from admin loot query + raid history event name extraction pattern)
             client.query(
                 `SELECT li.item_name, li.gold_amount, li.wowhead_link, li.icon_link,
-                        li.event_id, li.created_at
+                        li.event_id, li.created_at, rhec.event_data
                  FROM loot_items li
+                 LEFT JOIN raid_helper_events_cache rhec ON rhec.event_id = li.event_id
                  WHERE LOWER(li.player_name) = LOWER($1)
                  ORDER BY li.created_at DESC`,
                 [actualName]
@@ -13316,14 +13318,26 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
             },
             loot: {
                 totalGoldSpent,
-                items: lootRes.rows.map(li => ({
-                    itemName: li.item_name,
-                    goldAmount: parseInt(li.gold_amount, 10) || 0,
-                    wowheadLink: li.wowhead_link,
-                    iconLink: li.icon_link,
-                    eventId: li.event_id,
-                    createdAt: li.created_at,
-                })),
+                items: lootRes.rows.map(li => {
+                    // Extract raid name from event_data JSON (same pattern as raid history)
+                    let raidName = null;
+                    if (li.event_data) {
+                        try {
+                            const ed = typeof li.event_data === 'string'
+                                ? JSON.parse(li.event_data) : li.event_data;
+                            raidName = ed.title || ed.name || null;
+                        } catch (_) { /* ignore parse errors */ }
+                    }
+                    return {
+                        itemName: li.item_name,
+                        goldAmount: parseInt(li.gold_amount, 10) || 0,
+                        wowheadLink: li.wowhead_link,
+                        iconLink: li.icon_link,
+                        eventId: li.event_id,
+                        raidName,
+                        createdAt: li.created_at,
+                    };
+                }),
             },
             gold: {
                 earned: goldEarned,

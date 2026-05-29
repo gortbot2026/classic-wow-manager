@@ -228,7 +228,7 @@ function renderLootHistory(loot) {
     html += '<tr>' +
       '<td>' + nameHtml + '</td>' +
       '<td class="gold-text">' + fmtNum(item.goldAmount) + 'g</td>' +
-      '<td>' + escapeHtml(item.eventId || '-') + '</td>' +
+      '<td>' + escapeHtml(item.raidName || item.eventId || '-') + '</td>' +
       '<td>' + fmtDate(item.createdAt) + '</td>' +
       '</tr>';
   });
