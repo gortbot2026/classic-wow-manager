@@ -86,6 +86,9 @@
 .gold-card-value {
   font-size: 1.4em;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gold-earned .gold-card-value {

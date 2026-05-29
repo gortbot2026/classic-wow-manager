@@ -13278,7 +13278,7 @@ app.get('/api/my-characters/:characterName/profile', async (req, res) => {
         // Gold earned: sum of positive manual_rewards_deductions where is_gold = true
         const goldEarned = manualRewardsRes.rows
             .filter(r => r.is_gold && r.points > 0)
-            .reduce((sum, r) => sum + r.points, 0);
+            .reduce((sum, r) => sum + parseFloat(r.points || 0), 0);
 
         // ── Extract event name/date from raid_helper_events_cache.event_data JSON ──
         // Same pattern as admin endpoint (index.cjs ~line 12092–12096)
