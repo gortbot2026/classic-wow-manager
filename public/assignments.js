@@ -3057,48 +3057,99 @@
               } catch {}
             } else if (bossKey.includes("horse")) {
               // The Four Horsemen – healer rotation
+              // Fetch all panels first (needed for both healer sourcing and tank grid)
+              let panelsAll = [];
+              try {
+                const resAll = await fetch(`/api/assignments/${eventId}`);
+                const dataAll = await resAll.json();
+                panelsAll = Array.isArray(dataAll.panels) ? dataAll.panels : [];
+              } catch {}
+
               const isCleaveAssign = bossKey.includes("cleave");
-              const isHealer = (r) => ['shaman','priest','druid'].includes(String(r.class_name||'').toLowerCase());
-              // Order: shamans, priests, druids; then take up to 12 by group/slot
               const sortByGS = (a,b) => ((Number(a.party_id)||99)-(Number(b.party_id)||99)) || ((Number(a.slot_id)||99)-(Number(b.slot_id)||99));
-              const shamans = filterAssignable(roster.filter(r=>isHealer(r) && String(r.class_name||'').toLowerCase()==='shaman')).sort(sortByGS);
-              const priests = filterAssignable(roster.filter(r=>isHealer(r) && String(r.class_name||'').toLowerCase()==='priest')).sort(sortByGS);
-              const druids  = filterAssignable(roster.filter(r=>isHealer(r) && String(r.class_name||'').toLowerCase()==='druid')).sort(sortByGS);
-              const ordered = [...shamans, ...priests, ...druids].slice(0,12);
+
+              // Source healers from the Healing panel (Main page) instead of full roster
+              const healingPanel = panelsAll.find(p => String(p.boss||'').toLowerCase() === 'healing' && (!p.wing || String(p.wing).trim() === '' || String(p.wing).toLowerCase() === 'main'));
+              const healerNames = (healingPanel && Array.isArray(healingPanel.entries) ? healingPanel.entries : [])
+                .map(e => (e.character_name || '').trim())
+                .filter(n => n.length > 0);
+              const healerClasses = ['shaman', 'priest', 'druid'];
+              // Match healing panel names against roster for full character data, filter for healer classes
+              const healPanelHealers = filterAssignable(
+                healerNames
+                  .map(name => roster.find(r => String(r.character_name || '').toLowerCase() === name.toLowerCase()))
+                  .filter(r => r && healerClasses.includes(String(r.class_name || '').toLowerCase()))
+              );
+
+              // Two-step distribution: anchors (Priests/Druids) first, then Shamans fill
+              const anchors = healPanelHealers.filter(r => ['priest', 'druid'].includes(String(r.class_name || '').toLowerCase())).sort(sortByGS);
+              const shamans = healPanelHealers.filter(r => String(r.class_name || '').toLowerCase() === 'shaman').sort(sortByGS);
+
               const raidOrder = [
                 { name: 'skull', icon: icons.skull },
                 { name: 'cross', icon: icons.cross },
                 { name: 'square', icon: icons.square },
                 { name: 'moon',  icon: icons.moon }
               ];
-              for (let i=0;i<ordered.length;i++) {
-                const block = Math.floor(i/3); // 0..3 (skull=0, cross=1, square=2, moon=3)
-                const posInBlock = (i%3)+1;    // 1..3
-                const raid = raidOrder[block] || raidOrder[raidOrder.length-1];
-                const r = ordered[i];
-                
-                // Different text for Cleave tactics
-                let text;
-                if (isCleaveAssign) {
-                  // For Cleave: Square and Moon marks get special instructions
-                  if (raid.name === 'square' || raid.name === 'moon') {
-                    text = `Start on ${raid.name} and stay until you get replaced by other healers, shadow pot if you need to`;
-                  } else {
-                    // Skull and Cross follow the tank
-                    text = `Start on ${raid.name} and follow the tank`;
-                  }
-                } else {
-                  // Classic rotation
-                  text = `Start on ${raid.name} rotate on ${posInBlock}`;
+
+              // Step 1: Assign one anchor per mark (up to 4)
+              const markHealers = raidOrder.map(() => ({ anchor: null, fillers: [] }));
+              const assignedAnchors = anchors.slice(0, 4);
+              const excessAnchors = anchors.slice(4);
+              assignedAnchors.forEach((r, i) => { markHealers[i].anchor = r; });
+
+              // Step 2: Fill remaining slots (target 3 per mark) from shamans + excess anchors
+              const fillPool = [...shamans, ...excessAnchors];
+              let fillIdx = 0;
+              for (let m = 0; m < 4 && fillIdx < fillPool.length; m++) {
+                const slotsUsed = markHealers[m].anchor ? 1 : 0;
+                const slotsNeeded = 3 - slotsUsed;
+                for (let s = 0; s < slotsNeeded && fillIdx < fillPool.length; s++) {
+                  markHealers[m].fillers.push(fillPool[fillIdx++]);
                 }
-                
-                toAdd.push({ r, icon: raid.icon, text });
               }
+
+              // Build toAdd entries: fillers get positions 1,2; anchor gets position 3 (last)
+              for (let m = 0; m < 4; m++) {
+                const raid = raidOrder[m];
+                const { anchor, fillers } = markHealers[m];
+                const hasAnchor = !!anchor;
+                let pos = 1;
+
+                // Add fillers first (positions 1, 2, ...)
+                for (const r of fillers) {
+                  let text;
+                  if (isCleaveAssign) {
+                    if (raid.name === 'square' || raid.name === 'moon') {
+                      text = `Start on ${raid.name} and stay until you get replaced by other healers, shadow pot if you need to`;
+                    } else {
+                      text = `Start on ${raid.name} and follow the tank`;
+                    }
+                  } else {
+                    text = `Start on ${raid.name} rotate on ${pos}`;
+                  }
+                  toAdd.push({ r, icon: raid.icon, text });
+                  pos++;
+                }
+
+                // Add anchor last (highest position)
+                if (hasAnchor) {
+                  let text;
+                  if (isCleaveAssign) {
+                    if (raid.name === 'square' || raid.name === 'moon') {
+                      text = `Start on ${raid.name} and stay until you get replaced by other healers, shadow pot if you need to`;
+                    } else {
+                      text = `Start on ${raid.name} and follow the tank`;
+                    }
+                  } else {
+                    text = `Start on ${raid.name} rotate on ${pos}`;
+                  }
+                  toAdd.push({ r: anchor, icon: raid.icon, text });
+                }
+              }
+
               // Also populate tank grid from Main->Tanking panel (rows 1..8 map to tank indices 1..8)
               try {
-                const resAll = await fetch(`/api/assignments/${eventId}`);
-                const dataAll = await resAll.json();
-                const panelsAll = Array.isArray(dataAll.panels) ? dataAll.panels : [];
                 const tankPanel = panelsAll.find(p => String(p.boss||'').toLowerCase()==='tanking');
                 const getTankByIndex = (idx) => {
                   const en = tankPanel?.entries?.[idx-1];

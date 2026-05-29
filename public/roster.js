@@ -4408,25 +4408,57 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const panel = byWingBoss('military', 'horse');
                 const toAdd = [];
-                const isHealer = (r) => ['shaman','priest','druid'].includes(String(r.class_name||'').toLowerCase());
                 const sortByGS = (a,b) => ((Number(a.party_id)||99)-(Number(b.party_id)||99)) || ((Number(a.slot_id)||99)-(Number(b.slot_id)||99));
-                const shamans = roster.filter(r=>isHealer(r) && String(r.class_name||'').toLowerCase()==='shaman').sort(sortByGS);
-                const priests = roster.filter(r=>isHealer(r) && String(r.class_name||'').toLowerCase()==='priest').sort(sortByGS);
-                const druids  = roster.filter(r=>isHealer(r) && String(r.class_name||'').toLowerCase()==='druid').sort(sortByGS);
-                const ordered = [...shamans, ...priests, ...druids].slice(0,12);
+
+                // Source healers from the Healing panel instead of full roster
+                const healerNames = (healPanel && Array.isArray(healPanel.entries) ? healPanel.entries : [])
+                    .map(e => (e.character_name || '').trim())
+                    .filter(n => n.length > 0);
+                const healerClasses = ['shaman', 'priest', 'druid'];
+                const healPanelHealers = healerNames
+                    .map(name => roster.find(r => String(r.character_name || '').toLowerCase() === name.toLowerCase()))
+                    .filter(r => r && healerClasses.includes(String(r.class_name || '').toLowerCase()));
+
+                // Two-step distribution: anchors (Priests/Druids) first, then Shamans fill
+                const anchors = healPanelHealers.filter(r => ['priest', 'druid'].includes(String(r.class_name || '').toLowerCase())).sort(sortByGS);
+                const shamans = healPanelHealers.filter(r => String(r.class_name || '').toLowerCase() === 'shaman').sort(sortByGS);
+
                 const raidOrder = [
                     { name: 'skull', icon: icons.skull },
                     { name: 'cross', icon: icons.cross },
                     { name: 'square', icon: icons.square },
                     { name: 'moon',  icon: icons.moon }
                 ];
-                for (let i=0;i<ordered.length;i++) {
-                    const block = Math.floor(i/3);
-                    const posInBlock = (i%3)+1;
-                    const raid = raidOrder[block] || raidOrder[raidOrder.length-1];
-                    const r = ordered[i];
-                    const text = `Start on ${raid.name} rotate on ${posInBlock}`;
-                    toAdd.push(makeEntry(r, raid.icon, text));
+
+                // Step 1: Assign one anchor per mark (up to 4)
+                const markHealers = raidOrder.map(() => ({ anchor: null, fillers: [] }));
+                const assignedAnchors = anchors.slice(0, 4);
+                const excessAnchors = anchors.slice(4);
+                assignedAnchors.forEach((r, i) => { markHealers[i].anchor = r; });
+
+                // Step 2: Fill remaining slots (target 3 per mark) from shamans + excess anchors
+                const fillPool = [...shamans, ...excessAnchors];
+                let fillIdx = 0;
+                for (let m = 0; m < 4 && fillIdx < fillPool.length; m++) {
+                    const slotsUsed = markHealers[m].anchor ? 1 : 0;
+                    const slotsNeeded = 3 - slotsUsed;
+                    for (let s = 0; s < slotsNeeded && fillIdx < fillPool.length; s++) {
+                        markHealers[m].fillers.push(fillPool[fillIdx++]);
+                    }
+                }
+
+                // Build entries: fillers get positions 1,2; anchor gets position 3 (last)
+                for (let m = 0; m < 4; m++) {
+                    const raid = raidOrder[m];
+                    const { anchor, fillers } = markHealers[m];
+                    let pos = 1;
+                    for (const r of fillers) {
+                        toAdd.push(makeEntry(r, raid.icon, `Start on ${raid.name} rotate on ${pos}`));
+                        pos++;
+                    }
+                    if (anchor) {
+                        toAdd.push(makeEntry(anchor, raid.icon, `Start on ${raid.name} rotate on ${pos}`));
+                    }
                 }
                 // Build Warriors / Marks (tanking rotation grid) from Main -> Tanking panel
                 const getTankByIndex = (idx) => {
