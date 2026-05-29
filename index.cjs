@@ -1822,7 +1822,7 @@ async function seedRazuviousMcExperience() {
  */
 async function recomputeRazuviousMcExperience(client, characterName) {
   if (!characterName) return;
-  const name = String(characterName).trim();
+  const name = String(characterName).trim().toLowerCase();
   if (!name) return;
 
   try {

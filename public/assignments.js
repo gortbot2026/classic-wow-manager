@@ -2711,7 +2711,7 @@
                   const expData = await expRes.json();
                   const expMap = {};
                   if (expData.success && Array.isArray(expData.data)) {
-                    expData.data.forEach(row => { expMap[row.character_name] = row.mc_count || 0; });
+                    expData.data.forEach(row => { expMap[String(row.character_name).toLowerCase()] = row.mc_count || 0; });
                   }
                   sortedPriests = healPanelPriests.sort((a, b) => {
                     const expA = expMap[String(a.character_name || '').toLowerCase()] || 0;
