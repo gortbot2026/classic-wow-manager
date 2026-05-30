@@ -14050,7 +14050,7 @@ app.post('/api/claim-character', async (req, res) => {
                         const channel = await discordClient.channels.fetch('1479091461982126181');
                         if (channel) {
                             await channel.send(
-                                `**Character Claim Request**\n${username} wants to claim **${char.character_name}** (${char.class})\nThis character is currently linked to <@${char.discord_id}>.\nReply 'approve ${claimId}' or 'decline ${claimId}' to action this.`
+                                `<@248439633271062529> **Character Claim Request**\n${username} wants to claim **${char.character_name}** (${char.class})\nThis character is currently linked to <@${char.discord_id}>.\nReply 'approve ${claimId}' or 'decline ${claimId}' to action this.`
                             );
                         }
                     } else {
