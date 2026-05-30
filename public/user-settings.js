@@ -163,9 +163,51 @@ async function saveProfileField(characterName, field, value) {
 
 // ── Claim Section ───────────────────────────────────────────────────────────
 
+/** Interval ID for pending claim polling — cleared on resolution or page teardown */
+let claimPollIntervalId = null;
+
+/** Polling interval for pending claim status checks (ms) */
+const CLAIM_POLL_INTERVAL_MS = 15000;
+
+/**
+ * Starts polling for pending claim status changes.
+ * Calls GET /api/my-characters/pending-claim every 15 seconds.
+ * Stops polling and re-renders when the claim is resolved (response is null).
+ */
+function startClaimPolling() {
+  stopClaimPolling();
+  claimPollIntervalId = setInterval(async () => {
+    try {
+      const response = await fetch('/api/my-characters/pending-claim');
+      if (!response.ok) return;
+
+      const pendingClaim = await response.json();
+      if (!pendingClaim) {
+        // Claim has been resolved — stop polling and re-render
+        stopClaimPolling();
+        showToast('Your claim has been resolved!', 'success');
+        loadClaimSection();
+      }
+    } catch (_) {
+      // Silently ignore polling errors — will retry on next interval
+    }
+  }, CLAIM_POLL_INTERVAL_MS);
+}
+
+/** Stops the pending claim polling loop */
+function stopClaimPolling() {
+  if (claimPollIntervalId !== null) {
+    clearInterval(claimPollIntervalId);
+    claimPollIntervalId = null;
+  }
+}
+
 async function loadClaimSection() {
   const section = document.getElementById('claim-section');
   if (!section) return;
+
+  // Always stop any existing poll before re-evaluating
+  stopClaimPolling();
 
   try {
     const response = await fetch('/api/my-characters/pending-claim');
@@ -187,6 +229,8 @@ async function loadClaimSection() {
           <span>Pending claim for <strong>${escapeHtml(pendingClaim.character_name)}</strong> — waiting for officer review.</span>
         </div>
       `;
+      // Start polling for status changes while claim is pending
+      startClaimPolling();
     } else {
       section.innerHTML = `
         <button id="open-claim-modal" class="btn btn-primary btn-claim">

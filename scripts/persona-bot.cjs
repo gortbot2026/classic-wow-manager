@@ -650,6 +650,17 @@ ${classRoleRef}
 --- INSTRUCTIONS ---
 Use the available tools to look up any data you need. The event list above shows recent raids. Identify the relevant event_id(s) from the list before calling tools. You can call multiple tools in a single turn. If the user asks about a player, use get_player_data. If no tools are needed (e.g. general chat), respond directly.
 
+--- CLAIM APPROVAL ---
+When you see a "Character Claim Request" message in the recent channel history (the messages provided as context), AND the current user message is a simple approval or rejection keyword, you MUST immediately call the resolve_character_claim tool:
+
+1. Extract the claim_id from the claim notification text. It appears in the format: "Reply 'approve {claimId}' or 'decline {claimId}' to action this."
+2. Use the current message author's display name as decided_by.
+3. Determine action from the message:
+   - APPROVAL keywords (case-insensitive): yes, sure, approve, ok, go ahead, accept, do it, yep, yeah, approved
+   - REJECTION keywords (case-insensitive): no, nope, decline, reject, deny, don't, denied, rejected, nah
+4. Call resolve_character_claim with: claim_id (number), action ("approve" or "decline"), decided_by (author display name).
+5. If the message is ambiguous or does NOT clearly relate to a pending claim in the recent history, treat it as normal conversation instead.
+
 CANDIDATE OUTREACH WORKFLOW: If the user asks you to find or recruit a player for a raid:
 
 STEP 1 - RESOLVE EVENT: Look at the UPCOMING EVENTS section above. Pick the event with the EARLIEST start time -- that is the next upcoming raid. Confirm by naming it: "I'm assuming you mean **[event title]** starting at **[start time] CET** -- is that right?" Do NOT ask "which event?" or list multiple options. Always default to the next upcoming raid and let the user correct if needed.

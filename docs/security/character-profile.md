@@ -1,62 +1,71 @@
-# Security: Character Profile Feature
+# Security: Character Profile Endpoint
 
-**Feature:** `/user-settings/character/:characterName` — character sub-page with loot/gold/raid history  
-**Files:** `index.cjs`, `public/character-profile.js`, `public/character-profile.html`, `public/user-settings.css`, `public/user-settings.js`  
-**Review date:** 2026-05-29 (Round 1 + Round 2 QA fix)
+**Endpoint:** `GET /api/my-characters/:characterName/profile`
+**File:** `index.cjs` (~line 13184), `public/character-profile.js`
+**Last reviewed:** 2026-05-29
 
 ---
 
 ## Authentication Requirements
 
-- All API calls require `req.isAuthenticated()` (session-based, passport-discord)
-- Unauthenticated requests → 401
+- `isAuthenticated()` check at endpoint entry — returns 401 if not authenticated.
+- Ownership check: `charRow.discord_id === req.user.id` — only the character's linked Discord user may access.
+- Admin override: `hasManagementRoleById(req.user.id)` — management-role admins may also access.
+- Returns 403 if neither owner nor admin.
 
 ## Authorization Rules
 
-- Endpoint: `GET /api/my-characters/:characterName/profile`
-- Authorization check: `charRow.discord_id === req.user.id` (ownership) OR `hasManagementRoleById(req.user.id)` (admin)
-- Unauthorized requests → 403
-- Character not found → 404
+- Character lookup is by `characterName` URL param (case-insensitive LOWER()).
+- The endpoint fetches `discord_id` from the `guildies` table and compares against `req.user.id` (from session).
+- Admin check uses the existing `hasManagementRoleById` helper — consistent with other protected routes.
 
 ## Input Validation
 
-- `characterName` URL param: max 50 chars, otherwise 400
-- All DB lookups use `LOWER()` for case-insensitive matching
-- All queries use parameterized `$1` placeholders — no raw concatenation
-
-## SQL Injection Prevention
-
-- `loot_items` query: `WHERE LOWER(li.player_name) = LOWER($1)` — parameterized
-- `manual_rewards_deductions` query: `WHERE discord_id = $1` — parameterized
-- `roster_overrides` query: `WHERE LOWER(ro.assigned_char_name) = LOWER($1)` — parameterized
-- `LEFT JOIN raid_helper_events_cache` (Round 2 fix): joins on `event_id` column — no user input involved
+- `characterName` length guard: max 50 characters (returns 400 if exceeded or empty).
+- All SQL queries use parameterized values (`$1`, `$2`, etc.) — no user input is string-interpolated.
+- Dynamic column name `roleMetric` is derived from server-side logic only:
+  - `isDamage ? 'dps_value' : isHealing ? 'hps_value' : null`
+  - These values come from a hardcoded class comparison, never from user-supplied input.
+  - When `roleMetric` is null, the SQL block is skipped entirely.
+- `classPlaceholders` for role class IN-clause are generated from hardcoded `roleClasses` arrays — not from any user-provided value.
 
 ## XSS Prevention
 
-- All user-facing output in `character-profile.js` uses `escapeHtml()` before inserting into DOM
-- `raidName` (extracted from `event_data` JSON, Round 2 fix) rendered via `escapeHtml(item.raidName || item.eventId || '-')`
-- `wowheadLink`/`iconLink` are admin-set DB values, still wrapped in `escapeHtml()`
+All user-facing string values in `character-profile.js` pass through `escapeHtml()`:
+- Character name, class, race, rank, profile fields
+- Item names, raid names, wowhead links, icon links
+- Manual reward descriptions
+- Top wins: event names, panel names
+- Performance stats: role label, class name
 
-## Data Exposure
+Numeric values (`fmtNum()`, direct numbers) cannot cause XSS.
+`typeIcon` in manual rewards table is hardcoded HTML — not user-influenced.
+Class color hex (`classColorHex`) is sourced from the internal `class_spec_mappings` table — not user input — and is used in a `style` attribute. If this table were compromised, CSS injection would be possible; however, it is not directly user-writable.
 
-- `manual_rewards_deductions` returns ALL rewards for the player's `discord_id` (not scoped to one character) — this is intentional per spec; players may have multiple characters
-- `classColorHex` sourced from `class_spec_mappings` (admin-controlled, not user input)
+## SQL Security Notes
 
-## JSON Parsing Safety (Round 2 Fix)
+- All new queries for this feature (lootGoldByEvent, topRankWins, avgDps/avgHps, rankVsRole, rankVsClass) use parameterized `$n` syntax.
+- `panel_name IN ('God Gamer DPS', 'God Gamer Healer', 'Damage Dealers', 'Healers')` — hardcoded list, no user input.
+- `ranking_number_original = 1` — hardcoded constant, no user input.
+- `gold_amount::int` cast in loot aggregation prevents type confusion.
 
-- `event_data` JSON from `raid_helper_events_cache` parsed with `try-catch` + fallback to `null`
-- Applied to both loot section and raid history section — no crash risk on malformed data
+## Error Handling
 
-## Route Order Safety
+- Gold calculation errors are caught and logged (`console.error`) with `goldEarned = 0` fallback — no error details exposed to the client.
+- Main handler `catch` returns generic `"Error fetching character profile."` — no stack trace or SQL detail in response.
+- JSON parse errors for `event_data` are silently swallowed — no leakage.
 
-- `PATCH /api/my-characters/:name/profile` registered BEFORE `GET /api/my-characters/:characterName/profile` — no route conflict
+## Known Assumptions / Scope Notes
 
-## Known Limitations
+- **Paladin excluded from performance stats:** Paladin class has no DPS/HPS tracking in `log_data` (neither damage nor healing group). Returns null for avgDps/avgHps/rankVsRole/rankVsClass. Documented as intentional.
+- **Hybrid classes (Paladin, etc.):** Excluded from both role groups; no performance cards shown.
+- **`discordId` may be null:** If a character has no linked Discord ID, `manualRewards` query returns an empty result (guarded by `discordId ? client.query(...) : Promise.resolve({ rows: [] })`).
 
-- No rate limiting on the profile endpoint — acceptable given auth requirement and internal use
-- `characterName` max length is 50 (WoW limit is 12) — slightly permissive but harmless
+## Dependency Notes (as of 2026-05-29)
 
-## Dependency Status (2026-05-29)
+Pre-existing vulnerabilities in the project (not introduced by this feature):
+- **Critical:** `fast-xml-parser` — transitive dependency via AWS SDK. Not used in the character profile endpoint. Track for resolution in a dedicated dependency-update sprint.
+- **High:** `axios` (direct), `multer` (direct) — pre-existing. Not used in this feature's code paths. Requires a separate fix sprint.
+- **High:** `lodash`, `minimatch`, `path-to-regexp`, `picomatch`, `socket.io-parser`, `undici` — transitive.
 
-- 39 pre-existing vulnerabilities (30 moderate, 8 high, 1 critical) — not introduced by this feature
-- No new packages added
+No new packages were added for this feature.

@@ -4264,6 +4264,195 @@ app.delete('/api/admin/maya/notes/:noteId', requireManagement, async (req, res) 
 // End Maya Admin API
 // ════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════
+// Character Claims Admin API
+// ════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/admin/character-claims
+ * Returns all character claims with resolved owner usernames, sorted by created_at DESC.
+ * Protected by requireManagement middleware.
+ */
+app.get('/api/admin/character-claims', requireManagement, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT cc.id, cc.claimant_discord_id, cc.claimant_discord_username,
+             cc.character_name, cc.character_class, cc.existing_discord_id,
+             cc.status, cc.decided_by, cc.created_at, cc.decided_at,
+             du.username AS current_owner_username
+      FROM character_claims cc
+      LEFT JOIN discord_users du ON cc.existing_discord_id = du.discord_id
+      ORDER BY cc.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('[admin-claims] Error fetching claims:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error fetching character claims' });
+  }
+});
+
+/**
+ * POST /api/admin/character-claims/:id/approve
+ * Approves a pending character claim. Updates guildies ownership and claim status.
+ * Sends DM to claimant and posts notification to management Discord channel.
+ * Returns 409 if claim is already resolved.
+ */
+app.post('/api/admin/character-claims/:id/approve', requireManagement, async (req, res) => {
+  const claimId = parseInt(req.params.id, 10);
+  if (isNaN(claimId) || claimId < 1) {
+    return res.status(400).json({ success: false, message: 'Invalid claim ID' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const claimResult = await client.query(
+      `SELECT id, claimant_discord_id, claimant_discord_username, character_name, character_class, existing_discord_id, status
+       FROM character_claims WHERE id = $1 FOR UPDATE`,
+      [claimId]
+    );
+
+    if (claimResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Claim not found' });
+    }
+
+    const claim = claimResult.rows[0];
+
+    if (claim.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, message: 'Claim has already been resolved' });
+    }
+
+    // Update guildies to assign the character to the claimant
+    await client.query(
+      `UPDATE guildies SET discord_id = $1 WHERE LOWER(character_name) = LOWER($2)`,
+      [claim.claimant_discord_id, claim.character_name]
+    );
+
+    // Update claim status
+    await client.query(
+      `UPDATE character_claims SET status = 'approved', decided_by = $1, decided_at = NOW() WHERE id = $2`,
+      [req.user.username, claimId]
+    );
+
+    await client.query('COMMIT');
+
+    // Send DM to claimant (non-blocking)
+    if (personaBotInstance) {
+      personaBotInstance.sendDM(
+        claim.claimant_discord_id,
+        `✅ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been approved by ${req.user.username}. The character is now linked to your profile!`
+      ).catch(err => console.error('[admin-claims] Failed to send approval DM:', err.message));
+    }
+
+    // Post notification to management Discord channel (non-blocking)
+    if (personaBotInstance) {
+      try {
+        const discordClient = personaBotInstance.getClient();
+        if (discordClient) {
+          const channel = await discordClient.channels.fetch('1479091461982126181');
+          if (channel) {
+            channel.send(`Claim for **${claim.character_name}** approved by ${req.user.username} via the website.`);
+          }
+        }
+      } catch (notifyErr) {
+        console.error('[admin-claims] Failed to post Discord notification:', notifyErr.message);
+      }
+    }
+
+    res.json({ success: true, message: `Claim for ${claim.character_name} approved` });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin-claims] Error approving claim:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error approving claim' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+/**
+ * POST /api/admin/character-claims/:id/decline
+ * Declines a pending character claim. Does NOT update guildies ownership.
+ * Sends DM to claimant and posts notification to management Discord channel.
+ * Returns 409 if claim is already resolved.
+ */
+app.post('/api/admin/character-claims/:id/decline', requireManagement, async (req, res) => {
+  const claimId = parseInt(req.params.id, 10);
+  if (isNaN(claimId) || claimId < 1) {
+    return res.status(400).json({ success: false, message: 'Invalid claim ID' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const claimResult = await client.query(
+      `SELECT id, claimant_discord_id, claimant_discord_username, character_name, character_class, status
+       FROM character_claims WHERE id = $1 FOR UPDATE`,
+      [claimId]
+    );
+
+    if (claimResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Claim not found' });
+    }
+
+    const claim = claimResult.rows[0];
+
+    if (claim.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, message: 'Claim has already been resolved' });
+    }
+
+    // Update claim status only — do NOT update guildies
+    await client.query(
+      `UPDATE character_claims SET status = 'declined', decided_by = $1, decided_at = NOW() WHERE id = $2`,
+      [req.user.username, claimId]
+    );
+
+    await client.query('COMMIT');
+
+    // Send DM to claimant (non-blocking)
+    if (personaBotInstance) {
+      personaBotInstance.sendDM(
+        claim.claimant_discord_id,
+        `❌ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been declined by ${req.user.username}.`
+      ).catch(err => console.error('[admin-claims] Failed to send decline DM:', err.message));
+    }
+
+    // Post notification to management Discord channel (non-blocking)
+    if (personaBotInstance) {
+      try {
+        const discordClient = personaBotInstance.getClient();
+        if (discordClient) {
+          const channel = await discordClient.channels.fetch('1479091461982126181');
+          if (channel) {
+            channel.send(`Claim for **${claim.character_name}** declined by ${req.user.username} via the website.`);
+          }
+        }
+      } catch (notifyErr) {
+        console.error('[admin-claims] Failed to post Discord notification:', notifyErr.message);
+      }
+    }
+
+    res.json({ success: true, message: `Claim for ${claim.character_name} declined` });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin-claims] Error declining claim:', err.message || err);
+    res.status(500).json({ success: false, message: 'Error declining claim' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// End Character Claims Admin API
+// ════════════════════════════════════════════════════════════════════════
+
 app.get('/voice-check', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'voice-check.html'));
 });
