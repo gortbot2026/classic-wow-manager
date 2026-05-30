@@ -38,8 +38,8 @@ async function loadPersona() {
   document.getElementById('candidate-outreach-context').value = p.candidate_outreach_context || '';
 
   // Claim notification settings
-  document.getElementById('claim-notification-channel').value = p.claim_notification_channel_id || '';
-  document.getElementById('claim-tag-user').value = p.claim_tag_discord_id || '';
+  document.getElementById('claim-notification-channel').value = p.claim_notification_channel_id || '1479091461982126181';
+  document.getElementById('claim-tag-user').value = p.claim_tag_discord_id || '248439633271062529';
   document.getElementById('claim-dm-toggle').checked = p.claim_dm_on_resolve != null ? p.claim_dm_on_resolve : true;
 }
 
