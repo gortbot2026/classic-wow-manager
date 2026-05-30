@@ -529,9 +529,12 @@ async function loadAccountInfo() {
     const user = await response.json();
 
     if (user.loggedIn) {
+      // Use .gif extension for animated Discord avatars (hash starts with a_)
+      const avatarExt = user.avatar && user.avatar.startsWith('a_') ? 'gif' : 'png';
       const avatarUrl = user.avatar
-        ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64`
+        ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${avatarExt}?size=64`
         : `https://cdn.discordapp.com/embed/avatars/${parseInt(user.discriminator || '0') % 5}.png`;
+      const fallbackUrl = `https://cdn.discordapp.com/embed/avatars/${parseInt(user.discriminator || '0') % 5}.png`;
 
       container.innerHTML = `
         <div class="account-details">
@@ -549,6 +552,15 @@ async function loadAccountInfo() {
           </div>
         </div>
       `;
+
+      // Attach onerror fallback so broken avatar URLs degrade to Discord default
+      const avatarImg = container.querySelector('.account-avatar img');
+      if (avatarImg) {
+        avatarImg.onerror = function () {
+          this.src = fallbackUrl;
+          this.onerror = null; // Prevent infinite loop if fallback also fails
+        };
+      }
     } else {
       container.innerHTML = '<p class="error-message">Not logged in</p>';
     }

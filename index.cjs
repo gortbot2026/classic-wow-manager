@@ -6254,6 +6254,21 @@ app.get('/auth/qa-bypass', (req, res) => {
 
 app.get('/user', async (req, res) => {
   if (req.isAuthenticated()) {
+    // Fetch the latest avatar hash from discord_users (fresher than session)
+    let freshAvatar = req.user.avatar;
+    try {
+      const avatarRow = await pool.query(
+        'SELECT avatar FROM discord_users WHERE discord_id = $1',
+        [req.user.id]
+      );
+      if (avatarRow.rows.length > 0 && avatarRow.rows[0].avatar !== undefined) {
+        freshAvatar = avatarRow.rows[0].avatar;
+      }
+    } catch (avatarErr) {
+      // Fall back to session avatar if DB query fails
+      console.error('Error fetching fresh avatar from discord_users:', avatarErr);
+    }
+
     try {
       // Local DB roles only
       const perms = await getUserPermissionsFromDb(req.user.id);
@@ -6280,7 +6295,7 @@ app.get('/user', async (req, res) => {
         id: req.user.id,
         username: req.user.username,
         discriminator: req.user.discriminator,
-        avatar: req.user.avatar,
+        avatar: freshAvatar,
         email: req.user.email,
         authProvider: req.user.authProvider || 'discord',
         hasManagementRole: isManagement,
@@ -6298,7 +6313,7 @@ app.get('/user', async (req, res) => {
         id: req.user.id,
         username: req.user.username,
         discriminator: req.user.discriminator,
-        avatar: req.user.avatar,
+        avatar: freshAvatar,
         email: req.user.email,
         authProvider: req.user.authProvider || 'discord',
         hasManagementRole: false,
@@ -12034,7 +12049,7 @@ app.get('/api/admin/player/:discordId', requireManagement, async (req, res) => {
       username: discordUser?.username || memberEventUsername || rosterUsername || null,
       discriminator: discordUser?.discriminator || (memberEventsRes.rows[0]?.tag || null),
       avatar: discordUser?.avatar
-        ? `https://cdn.discordapp.com/avatars/${discordId}/${discordUser.avatar}.png`
+        ? `https://cdn.discordapp.com/avatars/${discordId}/${discordUser.avatar}.${discordUser.avatar.startsWith('a_') ? 'gif' : 'png'}`
         : (memberEventAvatar || null),
       email: discordUser?.email || (altAuth ? altAuth.email : null),
       authProvider: altAuth ? altAuth.provider : (discordUser ? 'discord' : null),
@@ -31662,7 +31677,9 @@ app.get('/api/auth/whoami', (req, res) => {
       // Google avatars are full URLs
       avatarUrl = u.avatar;
     } else if (u.avatar && userId) {
-      avatarUrl = `https://cdn.discordapp.com/avatars/${userId}/${u.avatar}.png`;
+      // Use .gif for animated Discord avatars (hash starts with a_)
+      const avatarExt = u.avatar.startsWith('a_') ? 'gif' : 'png';
+      avatarUrl = `https://cdn.discordapp.com/avatars/${userId}/${u.avatar}.${avatarExt}`;
     }
     const roles = [];
     return res.json({ ok: true, userId, userName, avatarUrl, authProvider, roles });
