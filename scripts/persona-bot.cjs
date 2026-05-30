@@ -240,6 +240,23 @@ function createPersonaBot(options = {}) {
     };
   }
 
+  /**
+   * Reads the claim_dm_on_resolve setting from bot_persona.
+   * Returns true (default) if not configured or on error.
+   * @returns {Promise<boolean>}
+   */
+  async function getClaimDmOnResolveSetting() {
+    try {
+      const result = await pool.query('SELECT claim_dm_on_resolve FROM bot_persona ORDER BY id LIMIT 1');
+      if (result.rows.length > 0 && result.rows[0].claim_dm_on_resolve != null) {
+        return result.rows[0].claim_dm_on_resolve;
+      }
+    } catch (err) {
+      console.error('[persona-bot] Failed to read claim_dm_on_resolve setting:', err.message);
+    }
+    return true; // default: send DMs
+  }
+
   /** @type {Client} */
   const client = new Client({
     intents: [
@@ -523,7 +540,13 @@ function createPersonaBot(options = {}) {
         const toolResults = [];
         for (const tb of toolUseBlocks) {
           console.log(`[persona-bot] Mgmt DM tool call: ${tb.name}(${JSON.stringify(tb.input)})`);
-          const result = await executeManagementTool(tb.name, tb.input, pool, { sendDM });
+          const toolOpts = { sendDM };
+          // Pass claimDmOnResolve flag for resolve_character_claim so DMs respect admin setting
+          if (tb.name === 'resolve_character_claim') {
+            const dmSetting = await getClaimDmOnResolveSetting();
+            toolOpts.claimDmOnResolve = dmSetting;
+          }
+          const result = await executeManagementTool(tb.name, tb.input, pool, toolOpts);
           toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result });
         }
         messages.push({ role: 'user', content: toolResults });
@@ -741,7 +764,11 @@ FORMATTING: Never use em-dashes or en-dashes. Use commas, hyphens, or semicolons
         const toolResults = [];
         for (const toolBlock of toolUseBlocks) {
           console.log(`[persona-bot] Management tool call: ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
-          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, { sendDM });
+          const toolOpts = { sendDM };
+          if (toolBlock.name === 'resolve_character_claim') {
+            toolOpts.claimDmOnResolve = await getClaimDmOnResolveSetting();
+          }
+          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, toolOpts);
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolBlock.id,
@@ -906,7 +933,11 @@ FORMATTING: Never use em-dashes (\u2014) or en-dashes (\u2013) in your response.
         const toolResults = [];
         for (const toolBlock of toolUseBlocks) {
           console.log(`[persona-bot] Mention tool call (${tier}): ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
-          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, { tier, sendDM });
+          const toolOpts = { tier, sendDM };
+          if (toolBlock.name === 'resolve_character_claim') {
+            toolOpts.claimDmOnResolve = await getClaimDmOnResolveSetting();
+          }
+          const result = await executeManagementTool(toolBlock.name, toolBlock.input, pool, toolOpts);
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolBlock.id,

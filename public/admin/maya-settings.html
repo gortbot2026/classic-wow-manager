@@ -362,6 +362,29 @@
             </div>
         </div>
 
+        <!-- Character Claim Notifications -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2><i class="fas fa-bell"></i> Character Claim Notifications</h2>
+                <button class="btn btn-primary" onclick="saveClaimSettings()"><i class="fas fa-save"></i> Save</button>
+            </div>
+            <div class="form-row" style="margin-bottom:12px;">
+                <label for="claim-notification-channel">Post claims to channel (Discord channel ID)</label>
+                <input type="text" id="claim-notification-channel" placeholder="e.g. 1479091461982126181" pattern="[0-9]*" style="width:300px;">
+                <small style="color:var(--muted);display:block;margin-top:4px;">Discord channel ID where claim notifications are posted. Leave blank to use the default.</small>
+            </div>
+            <div class="form-row" style="margin-bottom:12px;">
+                <label for="claim-tag-user">Tag this user in claim notifications (Discord user ID)</label>
+                <input type="text" id="claim-tag-user" placeholder="e.g. 248439633271062529" pattern="[0-9]*" style="width:300px;">
+                <small style="color:var(--muted);display:block;margin-top:4px;">Discord user ID to @mention on new claim requests. Leave blank to tag nobody.</small>
+            </div>
+            <div class="form-row" style="margin-bottom:12px;">
+                <label for="claim-dm-toggle" style="display:inline;margin-right:10px;">DM claimant when claim is approved or declined</label>
+                <input type="checkbox" id="claim-dm-toggle" checked>
+                <small style="color:var(--muted);display:block;margin-top:4px;">When enabled, the claimant receives a DM about the outcome. Applies to both admin and Maya-resolved claims.</small>
+            </div>
+        </div>
+
         <!-- Templates -->
         <div class="panel">
             <div class="panel-header">

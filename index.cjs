@@ -96,6 +96,54 @@ try {
 // Global reference to persona bot instance (set after initialization)
 let personaBotInstance = null;
 
+// --- Claim Notification Settings (configurable via Maya Settings panel) ---
+const DEFAULT_CLAIM_CHANNEL = '1479091461982126181';
+const DEFAULT_CLAIM_TAG_USER = '248439633271062529';
+const DEFAULT_CLAIM_DM_ON_RESOLVE = true;
+
+/** @type {{ channelId: string, tagUserId: string, dmOnResolve: boolean }} */
+let claimSettingsCache = {
+  channelId: DEFAULT_CLAIM_CHANNEL,
+  tagUserId: DEFAULT_CLAIM_TAG_USER,
+  dmOnResolve: DEFAULT_CLAIM_DM_ON_RESOLVE,
+};
+
+/** Returns the Discord channel ID for claim notifications, with fallback. */
+function getClaimChannelId() {
+  return claimSettingsCache.channelId || DEFAULT_CLAIM_CHANNEL;
+}
+
+/** Returns the Discord user ID to tag on new claim requests, or empty string to omit. */
+function getClaimTagUserId() {
+  return claimSettingsCache.tagUserId || '';
+}
+
+/** Returns whether to DM the claimant when a claim is approved or declined. */
+function getClaimDmOnResolve() {
+  return claimSettingsCache.dmOnResolve;
+}
+
+/**
+ * Loads claim notification settings from bot_persona into the in-memory cache.
+ * Called at startup and after each PATCH to /api/admin/maya/persona.
+ */
+async function refreshClaimSettingsCache() {
+  try {
+    const result = await pool.query('SELECT claim_notification_channel_id, claim_tag_discord_id, claim_dm_on_resolve FROM bot_persona ORDER BY id LIMIT 1');
+    if (result.rows.length > 0) {
+      const row = result.rows[0];
+      claimSettingsCache = {
+        channelId: row.claim_notification_channel_id || DEFAULT_CLAIM_CHANNEL,
+        tagUserId: row.claim_tag_discord_id != null ? row.claim_tag_discord_id : DEFAULT_CLAIM_TAG_USER,
+        dmOnResolve: row.claim_dm_on_resolve != null ? row.claim_dm_on_resolve : DEFAULT_CLAIM_DM_ON_RESOLVE,
+      };
+    }
+    console.log('[claim-settings] Cache loaded:', JSON.stringify(claimSettingsCache));
+  } catch (err) {
+    console.error('[claim-settings] Failed to load cache, using defaults:', err.message);
+  }
+}
+
 // Fallback voiceStateMap if bridge module not available
 const fallbackVoiceStateMap = new Map();
 
@@ -722,6 +770,9 @@ migratePlayerConfirmedLogsTable();
     // Initialize Maya persona bot tables
     await initializeMayaTables();
 
+    // Load claim notification settings into in-memory cache
+    await refreshClaimSettingsCache();
+
     // Initialize character claims table and guildies profile columns
     await initializeCharacterClaimsTable();
 
@@ -1116,6 +1167,11 @@ async function initializeMayaTables() {
     await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS channel_context TEXT`);
     await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS gear_check_context TEXT`);
     await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS candidate_outreach_context TEXT`);
+
+    // Claim notification settings (configurable via Maya Settings panel)
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS claim_notification_channel_id VARCHAR(32)`);
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS claim_tag_discord_id VARCHAR(32)`);
+    await pool.query(`ALTER TABLE bot_persona ADD COLUMN IF NOT EXISTS claim_dm_on_resolve BOOLEAN DEFAULT TRUE`);
 
     // bot_conversations — One row per player conversation thread
     await pool.query(`
@@ -3967,6 +4023,22 @@ app.patch('/api/admin/maya/persona', requireManagement, express.json(), async (r
       updates.push(`candidate_outreach_context = $${paramIdx++}`);
       params.push(candidate_outreach_context || null);
     }
+
+    // Claim notification settings
+    const { claim_notification_channel_id, claim_tag_discord_id, claim_dm_on_resolve } = req.body;
+    if (claim_notification_channel_id !== undefined) {
+      updates.push(`claim_notification_channel_id = $${paramIdx++}`);
+      params.push((claim_notification_channel_id || '').trim() || null);
+    }
+    if (claim_tag_discord_id !== undefined) {
+      updates.push(`claim_tag_discord_id = $${paramIdx++}`);
+      params.push((claim_tag_discord_id || '').trim() || null);
+    }
+    if (claim_dm_on_resolve !== undefined) {
+      updates.push(`claim_dm_on_resolve = $${paramIdx++}`);
+      params.push(claim_dm_on_resolve);
+    }
+
     if (updates.length === 0) {
       return res.status(400).json({ success: false, message: 'No fields to update' });
     }
@@ -3976,6 +4048,10 @@ app.patch('/api/admin/maya/persona', requireManagement, express.json(), async (r
       `UPDATE bot_persona SET ${updates.join(', ')} WHERE id = (SELECT id FROM bot_persona ORDER BY id LIMIT 1) RETURNING *`,
       params
     );
+
+    // Refresh claim settings cache after any persona update
+    await refreshClaimSettingsCache();
+
     res.json({ success: true, persona: result.rows[0] || null });
   } catch (err) {
     console.error('[maya-api] Error updating persona:', err.message || err);
@@ -4340,8 +4416,8 @@ app.post('/api/admin/character-claims/:id/approve', requireManagement, async (re
 
     await client.query('COMMIT');
 
-    // Send DM to claimant (non-blocking)
-    if (personaBotInstance) {
+    // Send DM to claimant (non-blocking, respects claim_dm_on_resolve setting)
+    if (personaBotInstance && getClaimDmOnResolve()) {
       personaBotInstance.sendDM(
         claim.claimant_discord_id,
         `✅ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been approved by ${req.user.username}. The character is now linked to your profile!`
@@ -4353,7 +4429,7 @@ app.post('/api/admin/character-claims/:id/approve', requireManagement, async (re
       try {
         const discordClient = personaBotInstance.getClient();
         if (discordClient) {
-          const channel = await discordClient.channels.fetch('1479091461982126181');
+          const channel = await discordClient.channels.fetch(getClaimChannelId());
           if (channel) {
             channel.send(`Claim for **${claim.character_name}** approved by ${req.user.username} via the website.`);
           }
@@ -4416,8 +4492,8 @@ app.post('/api/admin/character-claims/:id/decline', requireManagement, async (re
 
     await client.query('COMMIT');
 
-    // Send DM to claimant (non-blocking)
-    if (personaBotInstance) {
+    // Send DM to claimant (non-blocking, respects claim_dm_on_resolve setting)
+    if (personaBotInstance && getClaimDmOnResolve()) {
       personaBotInstance.sendDM(
         claim.claimant_discord_id,
         `❌ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been declined by ${req.user.username}.`
@@ -4429,7 +4505,7 @@ app.post('/api/admin/character-claims/:id/decline', requireManagement, async (re
       try {
         const discordClient = personaBotInstance.getClient();
         if (discordClient) {
-          const channel = await discordClient.channels.fetch('1479091461982126181');
+          const channel = await discordClient.channels.fetch(getClaimChannelId());
           if (channel) {
             channel.send(`Claim for **${claim.character_name}** declined by ${req.user.username} via the website.`);
           }
@@ -13881,7 +13957,7 @@ app.delete('/api/my-characters/:name', async (req, res) => {
             if (personaBotInstance) {
                 const discordClient = personaBotInstance.getClient();
                 if (discordClient) {
-                    const channel = await discordClient.channels.fetch('1479091461982126181');
+                    const channel = await discordClient.channels.fetch(getClaimChannelId());
                     if (channel) {
                         await channel.send(`${req.user.username} removed **${actualName}** (${charClass}) from their profile.`);
                     }
@@ -14047,10 +14123,12 @@ app.post('/api/claim-character', async (req, res) => {
                 if (personaBotInstance) {
                     const discordClient = personaBotInstance.getClient();
                     if (discordClient) {
-                        const channel = await discordClient.channels.fetch('1479091461982126181');
+                        const channel = await discordClient.channels.fetch(getClaimChannelId());
                         if (channel) {
+                            const tagUser = getClaimTagUserId();
+                            const tagPrefix = tagUser ? `<@${tagUser}> ` : '';
                             await channel.send(
-                                `<@248439633271062529> **Character Claim Request**\n${username} wants to claim **${char.character_name}** (${char.class})\nThis character is currently linked to <@${char.discord_id}>.\nReply 'approve ${claimId}' or 'decline ${claimId}' to action this.`
+                                `${tagPrefix}**Character Claim Request**\n${username} wants to claim **${char.character_name}** (${char.class})\nThis character is currently linked to <@${char.discord_id}>.\nReply 'approve ${claimId}' or 'decline ${claimId}' to action this.`
                             );
                         }
                     } else {

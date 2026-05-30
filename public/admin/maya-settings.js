@@ -36,6 +36,11 @@ async function loadPersona() {
   document.getElementById('channel-context').value = p.channel_context || '';
   document.getElementById('gear-check-context').value = p.gear_check_context || '';
   document.getElementById('candidate-outreach-context').value = p.candidate_outreach_context || '';
+
+  // Claim notification settings
+  document.getElementById('claim-notification-channel').value = p.claim_notification_channel_id || '';
+  document.getElementById('claim-tag-user').value = p.claim_tag_discord_id || '';
+  document.getElementById('claim-dm-toggle').checked = p.claim_dm_on_resolve != null ? p.claim_dm_on_resolve : true;
 }
 
 async function savePersona() {
@@ -55,6 +60,25 @@ async function savePersona() {
   });
   if (data && data.success) showToast('Persona saved ✓');
   else showToast('Failed to save persona');
+}
+
+/**
+ * Saves the three claim notification settings to bot_persona via PATCH.
+ * Shows toast on success/failure.
+ */
+async function saveClaimSettings() {
+  const body = {
+    claim_notification_channel_id: document.getElementById('claim-notification-channel').value.trim() || null,
+    claim_tag_discord_id: document.getElementById('claim-tag-user').value.trim() || null,
+    claim_dm_on_resolve: document.getElementById('claim-dm-toggle').checked,
+  };
+  const data = await apiFetch('/api/admin/maya/persona', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (data && data.success) showToast('Claim settings saved ✓');
+  else showToast('Failed to save claim settings');
 }
 
 // ─── Templates ──────────────────────────────────────────────────────────

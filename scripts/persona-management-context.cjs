@@ -2364,8 +2364,8 @@ async function resolveCharacterClaim(pool, input, options = {}) {
         values: [decided_by, claim.id],
       });
 
-      // Send DM to claimant
-      if (options.sendDM) {
+      // Send DM to claimant (respects claimDmOnResolve setting — defaults to true)
+      if (options.sendDM && options.claimDmOnResolve !== false) {
         try {
           await options.sendDM(claim.claimant_discord_id, `✅ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been approved by ${decided_by}. The character is now linked to your profile!`);
         } catch (dmErr) {
@@ -2382,8 +2382,8 @@ async function resolveCharacterClaim(pool, input, options = {}) {
       values: [decided_by, claim.id],
     });
 
-    // Send DM to claimant
-    if (options.sendDM) {
+    // Send DM to claimant (respects claimDmOnResolve setting — defaults to true)
+    if (options.sendDM && options.claimDmOnResolve !== false) {
       try {
         await options.sendDM(claim.claimant_discord_id, `❌ Your claim for **${claim.character_name}** (${claim.character_class || 'Unknown'}) has been declined by ${decided_by}.`);
       } catch (dmErr) {
